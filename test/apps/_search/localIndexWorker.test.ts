@@ -281,6 +281,19 @@ describe("localIndexWorker", () => {
         await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 1 });
     });
 
+    it("records a move's version when given, and keeps a row's folder and flags when a re-import carries none", async () => {
+        await call("init", { mailboxUid: "mb1", indexKey: KEY });
+        await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1", { flags: ",read," })] });
+
+        await call("moveEntity", { mailboxUid: "mb1", entityUid: "m1", folderUid: "archive", entityVersion: "7:archive" });
+        await expect(call("indexedVersions", { mailboxUid: "mb1", entityUids: ["m1"] })).resolves.toEqual({ m1: "7:archive" });
+
+        // A zero-access import knows neither the folder nor the flags.
+        await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1", { folderUid: undefined, flags: "", entityVersion: undefined })] });
+        const hits = await call<{ hits: { entityUid: string }[] }>("search", { mailboxUid: "mb1", parsed: { text: "budget", folderUid: "archive", flags: ["read"] }, limit: 10 });
+        expect(hits.hits.map((h) => h.entityUid)).toEqual(["m1"]);
+    });
+
     it("prunes rows a complete pass didn't see, only within the pass's time floor", async () => {
         await call("init", { mailboxUid: "mb1", indexKey: KEY });
         await call("indexEntities", {

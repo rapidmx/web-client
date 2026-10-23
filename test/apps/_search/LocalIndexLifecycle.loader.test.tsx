@@ -9,14 +9,30 @@ import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Folder } from "../../../lib/mail/mailApi.js";
 
-const state = vi.hoisted(() => ({ loads: 0, failures: 0, builds: [] as string[] }));
+const state = vi.hoisted(() => ({ loads: 0, failures: 0, builds: [] as string[], syncLoads: 0, syncFailures: 0, syncs: [] as string[] }));
 
 beforeEach(() => {
     vi.resetModules();
     state.loads = 0;
     state.failures = 0;
     state.builds = [];
-    vi.doMock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: () => ({ masterKey: new Uint8Array(32) }) }));
+    state.syncLoads = 0;
+    state.syncFailures = 0;
+    state.syncs = [];
+    vi.doMock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: () => ({ masterKey: new Uint8Array(32), zeroAccessKeys: [{}] }) }));
+    vi.doMock("../../../apps/shared/search/zeroAccessIndexSync.js", () => {
+        state.syncLoads++;
+        if (state.syncFailures > 0) {
+            state.syncFailures--;
+            throw new Error("chunk failed");
+        }
+        return {
+            syncZeroAccessIndex: (mailboxUid: string) => {
+                state.syncs.push(mailboxUid);
+                return Promise.resolve({});
+            },
+        };
+    });
     vi.doMock("../../../apps/shared/search/localIndexRpcClient.js", () => ({
         destroyLocalIndex: vi.fn().mockResolvedValue(true),
         pruneInaccessibleLocalIndexes: vi.fn().mockResolvedValue(undefined),
@@ -52,5 +68,21 @@ describe("LocalIndexLifecycle's builder download", () => {
         await act(async () => undefined);
         expect(state.loads).toBe(2);
         expect(state.builds).toEqual(["mb2"]);
+    });
+});
+
+describe("LocalIndexLifecycle's zero-access sync download", () => {
+    it("tries again for the next sync after a download failed", async () => {
+        state.syncFailures = 1;
+        const { default: LocalIndexLifecycle } = await import("../../../apps/shared/search/LocalIndexLifecycle.js");
+        const { rerender } = render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await act(async () => undefined);
+        expect(state.syncLoads).toBe(1);
+        expect(state.syncs).toEqual([]);
+
+        rerender(<LocalIndexLifecycle mailboxUid="mb2" folders={folders} />);
+        await act(async () => undefined);
+        expect(state.syncLoads).toBe(2);
+        expect(state.syncs).toEqual(["mb2"]);
     });
 });

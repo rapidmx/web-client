@@ -3809,3 +3809,21 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - `inviteStore` asks again about a cached "no invitation" once a calendar is registered, since the list chip asks before the message is opened.
   - The registry keeps 100 entries and is cleared on sign-out.
 - **Privacy page:** the export copy says zero-access mail is exported encrypted and opens with the exported keys.
+
+## 2026-10-23 - Zero-access encryption, Phase 5 (client search over the sealed index)
+
+- **`lib/search/zeroAccessIndexApi.ts`** wraps restapi's `/mail/mailboxes/:id/search-index`: manifest, entries, segment download and compaction upload.
+- **`apps/shared/search/zeroAccessIndexSync.ts`**, `syncZeroAccessIndex(mailboxUid, unlocked, client?)`:
+  - It imports each zero-access segment generation not yet imported (newest week first), then the live tail of entries. It asks from `TAIL_OVERLAP_MS` (10 min) before its last pass, since upserts are idempotent.
+  - It then compacts up to `MAX_COMPACTIONS_PER_PASS` (4) closed weeks: it decrypts the week's entries plus its current segment, merges them by `messageUid`, gzips the result, seals it to the active zero-access key with `encryptForRecipients`, and PUTs it. A 409 is left to the next pass.
+  - It folds only the entries it could decrypt, and skips a week whose current segment it can't open.
+  - Pass state (imported ETags, tail time) lives in `localStorage` under `rapidmx:za-index-sync:<mailbox>`. It is reset whenever the local index reports `indexedCount` 0.
+  - Segment format v1 is gzipped JSON `{ v: 1, documents }` (restapi `specs/search.md` §16). Everything is imported through the existing `indexLocalEntities()`, so tauri's native transport needs nothing new.
+- **`LocalIndexLifecycle`** lazy-loads the sync, like the builder. It runs once right after a mailbox's build, then every `ZERO_ACCESS_SYNC_INTERVAL_MS` (2 min) while the mailbox is unlocked, never two passes at once. Locking forgets the schedule.
+- **Builder:** zero-access messages (they also have subject `[...]`) are never decrypted.
+  - Their folder is recorded with `moveLocalEntity(..., folderUid, entityVersion)`, which now takes an optional version, so an unchanged message costs nothing next pass.
+  - They still count as seen, so the prune keeps their imported rows.
+- **Upsert:** `UPSERT_ENTITY_SQL` keeps an existing `folder_uid` (COALESCE) and keeps `flags` when the incoming value is empty, since imported documents carry neither.
+- **Known gaps:**
+  - Flag filters (read, flagged) don't match zero-access rows, because their flags stay empty.
+  - **tauri-client's native upsert and `moveEntity` need the same COALESCE and version handling.** Until then, a re-import there clears a recorded folder, and moves repeat every pass.

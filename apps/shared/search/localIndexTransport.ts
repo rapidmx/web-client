@@ -59,7 +59,8 @@ export interface LocalIndexTransport {
     /** Drops one indexed entity. */
     removeEntity(mailboxUid: string, entityUid: string): Promise<void>;
     /** Re-points one indexed entity at its new folder. */
-    moveEntity(mailboxUid: string, entityUid: string, folderUid: string): Promise<void>;
+    /** `entityVersion`, when given, is recorded with the folder (a transport that can't record it leaves the row's version cleared). */
+    moveEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void>;
     /** The indexed version marker (`Message.version` + folder) currently stored for each of the given entity uids. */
     indexedVersions(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>>;
     /** Removes indexed rows outside `keepEntityUids` (and `since`/`options.folderUids`'s own scope). Returns how many rows were pruned. */

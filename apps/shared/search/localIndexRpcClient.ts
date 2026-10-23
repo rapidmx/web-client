@@ -251,11 +251,13 @@ async function removeLocalEntityImpl(mailboxUid: string, entityUid: string): Pro
 
 /** Re-points one indexed message at its new folder (archive, cancel-scheduled-send) so `folder:`-scoped
  * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntityImpl()`. */
-async function moveLocalEntityImpl(mailboxUid: string, entityUid: string, folderUid: string): Promise<void> {
+async function moveLocalEntityImpl(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
     if (!initializedMailboxes.has(mailboxUid)) {
         return;
     }
-    await call("moveEntity", { mailboxUid, entityUid, folderUid } satisfies MoveEntityParams).catch(() => undefined);
+    await call("moveEntity", { mailboxUid, entityUid, folderUid, ...(entityVersion !== undefined ? { entityVersion } : {}) } satisfies MoveEntityParams).catch(
+        () => undefined,
+    );
 }
 
 function getIndexedVersionsImpl(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>> {
@@ -410,8 +412,10 @@ export function removeLocalEntity(mailboxUid: string, entityUid: string): Promis
 
 /** Re-points one indexed message at its new folder (archive, cancel-scheduled-send) so `folder:`-scoped
  * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntity()`. */
-export function moveLocalEntity(mailboxUid: string, entityUid: string, folderUid: string): Promise<void> {
-    return currentTransport.moveEntity(mailboxUid, entityUid, folderUid);
+export function moveLocalEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
+    return entityVersion !== undefined
+        ? currentTransport.moveEntity(mailboxUid, entityUid, folderUid, entityVersion)
+        : currentTransport.moveEntity(mailboxUid, entityUid, folderUid);
 }
 
 export function getIndexedVersions(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>> {

@@ -28,6 +28,7 @@ const rpc = vi.hoisted(() => ({
     setLocalIndexWindow: vi.fn(),
     setLocalIndexBuilding: vi.fn(),
     getIndexedVersions: vi.fn(),
+    moveLocalEntity: vi.fn(),
     indexLocalEntities: vi.fn(),
     pruneLocalEntities: vi.fn(),
     nextLocalIndexGeneration: vi.fn(),
@@ -84,6 +85,21 @@ beforeEach(() => {
 });
 
 describe("buildLocalIndex", () => {
+    it("never decrypts a zero-access message - its content comes from the server's sealed index - but records its folder and keeps its row", async () => {
+        const sealed = { keyFingerprint: "fp", sealedSummary: "s" };
+        listMessages.mockImplementation(async (folderUid: string) =>
+            folderUid === "inbox" ? [message("za-new", { zeroAccess: sealed }), message("za-same", { zeroAccess: sealed }), message("e2e")] : [],
+        );
+        rpc.getIndexedVersions.mockImplementation(async (_mb: string, uids: string[]) => (uids.includes("za-same") ? { "za-same": "1:inbox" } : {}));
+
+        await buildLocalIndex("mb1", unlocked, [folder("inbox", "inbox")], WINDOW);
+
+        expect(getMessageRawContent.mock.calls.map(([uid]) => uid)).toEqual(["e2e"]);
+        expect(rpc.moveLocalEntity).toHaveBeenCalledTimes(1);
+        expect(rpc.moveLocalEntity).toHaveBeenCalledWith("mb1", "za-new", "inbox", "1:inbox");
+        expect(rpc.pruneLocalEntities.mock.calls[0][1].sort()).toEqual(["e2e", "za-new", "za-same"]);
+    });
+
     it("indexes only changed encrypted messages, skipping ones already indexed at the same version and folder", async () => {
         listMessages.mockImplementation(async (folderUid: string) =>
             folderUid === "inbox"

@@ -44,6 +44,7 @@ import { currentVerificationSeal, readVaultGeneration, sendVerificationSeal, ver
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import {
     getIndexedVersions,
+    moveLocalEntity,
     indexLocalEntities,
     initLocalIndex,
     nextLocalIndexGeneration,
@@ -406,8 +407,20 @@ async function runBuildPass(
                 for (const m of encrypted) {
                     seenEncryptedUids.add(m.uid);
                 }
+                // A zero-access message's content comes from the server's sealed index (`zeroAccessIndexSync.ts`), never decrypted here:
+                // only its folder is recorded on its row - and remembered by version, so an unchanged one costs nothing next time.
+                const sealed = encrypted.filter((m) => m.zeroAccess);
+                if (sealed.length > 0) {
+                    const indexed = await getIndexedVersions(
+                        mailboxUid,
+                        sealed.map((m) => m.uid),
+                    );
+                    for (const m of sealed.filter((s) => indexed[s.uid] !== versionOf(s))) {
+                        await moveLocalEntity(mailboxUid, m.uid, m.folderUid, versionOf(m));
+                    }
+                }
                 // Anything older than the eviction watermark would only be inserted and evicted again.
-                const candidates = encrypted.filter((m) => !isOlderThan(m.receivedDate, evictedBefore));
+                const candidates = encrypted.filter((m) => !m.zeroAccess && !isOlderThan(m.receivedDate, evictedBefore));
                 if (candidates.length > 0) {
                     // Skip anything already indexed at the same version - a re-unlock used to re-fetch and
                     // re-decrypt the entire window every time.

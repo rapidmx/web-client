@@ -8,13 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Folder } from "../../../lib/mail/mailApi.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
-import LocalIndexLifecycle, { POLL_INTERVAL_MS } from "../../../apps/shared/search/LocalIndexLifecycle.js";
+import LocalIndexLifecycle, { POLL_INTERVAL_MS, ZERO_ACCESS_SYNC_INTERVAL_MS } from "../../../apps/shared/search/LocalIndexLifecycle.js";
 
 const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
 const { buildLocalIndex, cancelLocalIndexBuild } = vi.hoisted(() => ({ buildLocalIndex: vi.fn(), cancelLocalIndexBuild: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexBuilder.js", () => ({ buildLocalIndex, cancelLocalIndexBuild }));
+
+const { syncZeroAccessIndex } = vi.hoisted(() => ({ syncZeroAccessIndex: vi.fn() }));
+vi.mock("../../../apps/shared/search/zeroAccessIndexSync.js", () => ({ syncZeroAccessIndex }));
 
 const { destroyLocalIndex, pruneInaccessibleLocalIndexes } = vi.hoisted(() => ({
     destroyLocalIndex: vi.fn(),
@@ -29,10 +32,13 @@ beforeEach(async () => {
     // The component loads the builder with a dynamic import; loaded here, before the timers are faked, so that it resolves from
     // the module cache within a few microtasks (see `flush()`).
     await import("../../../apps/shared/search/localIndexBuilder.js");
+    await import("../../../apps/shared/search/zeroAccessIndexSync.js");
     vi.useFakeTimers();
     unlockedMailboxes = new Set();
     getUnlockedKeys.mockImplementation((uid: string) => (unlockedMailboxes.has(uid) ? { masterKey: new Uint8Array(32) } : undefined));
     buildLocalIndex.mockResolvedValue(undefined);
+    syncZeroAccessIndex.mockReset();
+    syncZeroAccessIndex.mockResolvedValue({});
     destroyLocalIndex.mockResolvedValue(true);
     cancelLocalIndexBuild.mockResolvedValue(undefined);
     pruneInaccessibleLocalIndexes.mockResolvedValue(undefined);
@@ -176,5 +182,59 @@ describe("LocalIndexLifecycle - an explicit ApiClient is threaded through", () =
         unlockedMailboxes.add("mb1");
         await tick();
         expect(buildLocalIndex).toHaveBeenCalledWith("mb1", expect.anything(), folders, undefined, client);
+    });
+});
+
+describe("LocalIndexLifecycle (zero-access sync)", () => {
+    const zeroAccessUnlocked = (uid: string) => (unlockedMailboxes.has(uid) ? { masterKey: new Uint8Array(32), zeroAccessKeys: [{}] } : undefined);
+
+    it("syncs a zero-access mailbox once its build finished, then again each interval, never two at once", async () => {
+        getUnlockedKeys.mockImplementation(zeroAccessUnlocked);
+        unlockedMailboxes.add("mb1");
+        let finish: (() => void) | undefined;
+        syncZeroAccessIndex.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
+        expect(syncZeroAccessIndex).toHaveBeenCalledWith("mb1", expect.anything(), undefined);
+
+        // Still running when the interval comes round: no second pass alongside it.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(ZERO_ACCESS_SYNC_INTERVAL_MS + POLL_INTERVAL_MS);
+        });
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            finish!();
+            await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+        });
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(2);
+
+        // A failed pass is tried again at the next interval.
+        syncZeroAccessIndex.mockRejectedValueOnce(new Error("offline"));
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(ZERO_ACCESS_SYNC_INTERVAL_MS + POLL_INTERVAL_MS);
+        });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(ZERO_ACCESS_SYNC_INTERVAL_MS + POLL_INTERVAL_MS);
+        });
+        expect(syncZeroAccessIndex.mock.calls.length).toBeGreaterThanOrEqual(4);
+    });
+
+    it("never syncs a mailbox without zero-access keys, and starts over after it is locked and unlocked again", async () => {
+        unlockedMailboxes.add("mb1");
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(ZERO_ACCESS_SYNC_INTERVAL_MS + POLL_INTERVAL_MS);
+        });
+        expect(syncZeroAccessIndex).not.toHaveBeenCalled();
+
+        getUnlockedKeys.mockImplementation(zeroAccessUnlocked);
+        unlockedMailboxes.delete("mb1");
+        await tick();
+        unlockedMailboxes.add("mb1");
+        await tick();
+        await flush();
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
     });
 });
