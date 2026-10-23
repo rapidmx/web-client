@@ -3785,3 +3785,16 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - `decryptForDisplay(uid, mailboxUid, sealedSummary?)` (`decryptedMessages.ts`).
   - `apps/www/index.tsx`'s `decryptEncryptedRows` and `ConversationList` (from `ConversationSummary.latestZeroAccess`) feed it the sealed summary.
   - `index.tsx` reads `securityApi` lazily, because the tests' module mocks don't all export it.
+
+## 2026-10-22 - Zero-access encryption, Phase 4 (key export, drafts)
+
+- **"Export keys for Outlook or a phone"** (`KeyExportSetting` on the Encryption settings page, `lib/crypto/keyExport.ts`):
+  - It produces a passphrase-protected PKCS#12 holding every zero-access key, every E2E encryption key (current and retained, each capped like the session) and, only when the user ticks the box, the active signing key.
+  - It is built from a **fresh master-password unlock** (`keySession.openMasterKeyWithPassword()`, which `unlockWithPassword()` now uses too). Session keys are non-extractable, so it can't use them.
+  - Each key gets a PBES2 shrouded key bag (PBKDF2-SHA256, AES-256-CBC, 100k iterations) and a certificate bag, paired by `localKeyID`, under a SHA-256 MAC.
+  - `recordKeyExport()` (`POST .../keyvault/exports`, audit `key_vault.export`) must succeed before the file is handed over.
+  - **pkijs gotcha:** pass the password as UTF-8 for the MAC too. pkijs's `makePKCS12B2Key` re-encodes it as BMPString itself, so encoding it yourself double-encodes it. A pkijs-only round trip still passes with the wrong encoding, but OpenSSL then reports "Mac verify error". The file was checked once with `openssl pkcs12 -info`.
+- **Drafts:**
+  - `assembleDraft`/`assembleDraftRaw` take `intent` (`AssembleIntent`). Autosaves leave it at the default `"save"`, so the server seals them in a zero-access mailbox. The send job passes `"send"`.
+  - `resumeFromDraft()` decrypts a sealed draft (`draft.zeroAccess`) with the unlocked keys and takes its subject from the decrypted message. While the mailbox is locked, the draft stays read-only.
+  - `quotedBody` treats `message.zeroAccess` like `encrypted`: no prefetch and no `/content`, so the body comes only from the decrypted `security`.

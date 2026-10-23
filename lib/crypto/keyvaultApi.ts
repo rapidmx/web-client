@@ -522,6 +522,21 @@ export function removeMasterKeyWrap(mailboxUid: string, method: string, methodId
     });
 }
 
+/** One key a "Export keys for Outlook/phone" file held, as `recordKeyExport()` reports it. */
+export interface ExportedKeyRecord {
+    kind: "zero-access" | "encrypt" | "sign";
+    fingerprint: string;
+}
+
+/** Records with restapi that the owner exported these private keys (`key_vault.export` in the audit log). `keyExport.ts`
+ * calls it before handing over the file, so an export the server refuses to record isn't handed over. Owner-only. */
+export async function recordKeyExport(mailboxUid: string, keys: ExportedKeyRecord[], client?: ApiClient): Promise<void> {
+    await withClient(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/exports`, {
+        method: "POST",
+        body: JSON.stringify({ keys }),
+    });
+}
+
 export interface RekeyInput extends ExpectedMasterKeyGeneration {
     wrappedKeys: WrappedPrivateKey[];
     /** Every wrap of the new master key. For a mailbox assigned an escrow scope, this must include a fresh escrow wrap

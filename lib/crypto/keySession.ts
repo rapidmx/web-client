@@ -22,6 +22,7 @@
  * module today.
  */
 import { type KeyVault, type PublicKey, type WrappedPrivateKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
+import type { ApiClient } from "../util/api.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
@@ -366,7 +367,21 @@ async function openZeroAccessKeys(mailboxUid: string, vault: KeyVault, unlocked:
  */
 export async function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult> {
     const generation = lockGeneration(mailboxUid);
-    const vault = await getKeyVault(mailboxUid);
+    const { vault, masterKey } = await openMasterKeyWithPassword(mailboxUid, password);
+    return openSession(mailboxUid, mailboxKeys, vault, masterKey, generation);
+}
+
+/**
+ * Fetches `mailboxUid`'s vault and opens its master key with the password wrap, touching no session - for an operation that
+ * must re-prove the password even while the mailbox is unlocked (`keyExport.ts`). Rejects exactly as `unlockWithPassword()`
+ * does on a missing wrap, an unknown KDF or a wrong password. The caller owns the returned master key and must zero it.
+ */
+export async function openMasterKeyWithPassword(
+    mailboxUid: string,
+    password: string,
+    client?: ApiClient,
+): Promise<{ vault: KeyVault; masterKey: Uint8Array }> {
+    const vault = await getKeyVault(mailboxUid, client);
     const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
     if (!passwordWrap) {
         throw new Error("This mailbox has no password unlock method enrolled.");
@@ -383,8 +398,7 @@ export async function unlockWithPassword(mailboxUid: string, mailboxKeys: Public
         { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce },
         buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE),
     );
-
-    return openSession(mailboxUid, mailboxKeys, vault, masterKey, generation);
+    return { vault, masterKey };
 }
 
 /** What `unlockWithRecoveryCode()` resolves with. */

@@ -94,10 +94,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 /**
  * Starts fetching what a Reply/Forward of `message` will quote, without waiting for the click - called when the pointer or
  * keyboard reaches a Reply/Reply All/Forward button - so the request is usually already answered when it is clicked.
- * Nothing to fetch for an encrypted message (`loadOriginalMessage()` never asks the server for one's body).
+ * Nothing to fetch for an encrypted or zero-access message (`loadOriginalMessage()` never asks the server for one's body).
  */
 export function prefetchOriginalMessage(message: Message, client?: ApiClient): void {
-    if (!message.encrypted) {
+    if (!message.encrypted && !message.zeroAccess) {
         void fetchContentHtml(message.uid, client);
     }
 }
@@ -201,7 +201,8 @@ export async function loadOriginalMessage(
         ? [...headerRecipients(protectedHeaders.to, "to"), ...headerRecipients(protectedHeaders.cc, "cc")]
         : [];
     const result: OriginalMessage = { body: recovered ?? {}, ...(protectedRecipients.length > 0 ? { recipients: protectedRecipients } : {}) };
-    if (message.encrypted) {
+    // The server holds only ciphertext of an encrypted or zero-access message: its body is what `security` decrypted, or nothing.
+    if (message.encrypted || message.zeroAccess) {
         return result;
     }
     let needsRaw = !!options.recipients && result.recipients === undefined;

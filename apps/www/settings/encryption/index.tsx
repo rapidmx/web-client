@@ -52,6 +52,7 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import ZeroAccessSetting from "../../../shared/components/settings/ZeroAccessSetting.js";
+import KeyExportSetting from "../../../shared/components/settings/KeyExportSetting.js";
 import SigningCertificateCard, { SigningCertificateMode } from "../../../shared/components/settings/SigningCertificateCard.js";
 import { readStoredSignEnrollment, storeSignEnrollment } from "../../../shared/signing/enrollmentStorage.js";
 import {
@@ -977,6 +978,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
                 </div>
 
                 <ZeroAccessSetting mailbox={mailbox} canManage={canManageKeys} />
+                <KeyExportSetting mailbox={mailbox} canManage={canManageKeys} />
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Digital signatures</h2>

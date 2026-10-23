@@ -1085,7 +1085,16 @@ export interface AssembleDraftInput {
     bcc?: ComposeRecipientInput[];
     subject?: string;
     html: string;
+    /** See `AssembleIntent`. */
+    intent?: AssembleIntent;
 }
+
+/**
+ * Why a draft is being assembled (server `ComposeIntent`). `"save"`, the default, keeps an edit: in a zero-access mailbox the server
+ * stores it sealed, which it can't send. `"send"` is the assemble right before `sendMessage()`/`queueMessageSend()`: stored readable
+ * until it is relayed, then sealed as the Sent Items copy.
+ */
+export type AssembleIntent = "save" | "send";
 
 /** What a draft records about the thread it belongs to - see `createDraft()`. */
 export interface DraftThreading {
@@ -1278,6 +1287,8 @@ export interface AssembleDraftRawInput {
      * `crypto/smimeMessage.ts`'s `buildSignedOnlyMessage()`/`buildEncryptedMessage()`, combined with
      * the outer envelope headers (`From`/`To`/`Cc`/`Date`/`Message-ID`/`MIME-Version`) by the caller. */
     rawMime: string;
+    /** See `AssembleIntent`. */
+    intent?: AssembleIntent;
 }
 
 /**

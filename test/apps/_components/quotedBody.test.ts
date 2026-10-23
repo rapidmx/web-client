@@ -165,6 +165,14 @@ describe("what a reply fetches, and when", () => {
         expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/content"))).toHaveLength(2);
     });
 
+    it("neither prefetches nor asks the server for a zero-access message's body, which only its decrypted copy has", async () => {
+        const fetchMock = mockFetch(() => htmlResponse("<p>Body</p>"));
+        const zeroAccess = { ...(message as object), zeroAccess: { keyFingerprint: "fp", sealedSummary: "s" } } as never;
+        prefetchOriginalMessage(zeroAccess);
+        expect(await loadOriginalMessage(zeroAccess, null)).toEqual({ body: {} });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
     it("prefetches nothing for an encrypted message, whose body the server never has to give", () => {
         const fetchMock = mockFetch(() => htmlResponse("<p>Body</p>"));
         prefetchOriginalMessage(encrypted);

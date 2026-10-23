@@ -19,6 +19,7 @@ import {
     lookupKeys,
     normalizeEnrollmentResult,
     rekey,
+    recordKeyExport,
     removeMasterKeyWrap,
     resolveKeyConflict,
     SignerKeyConflictError,
@@ -340,6 +341,18 @@ describe("addMasterKeyWrap", () => {
         expect(fetchMock).toHaveBeenCalledWith(
             "/api/mail/mailboxes/mb1/keyvault/wraps",
             expect.objectContaining({ method: "POST", body: JSON.stringify(wrap) }),
+        );
+    });
+});
+
+describe("recordKeyExport", () => {
+    it("posts the exported keys' kinds and fingerprints", async () => {
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        const keys = [{ kind: "zero-access" as const, fingerprint: "fp" }];
+        await recordKeyExport("mb1", keys);
+        expect(fetchMock).toHaveBeenCalledWith(
+            "/api/mail/mailboxes/mb1/keyvault/exports",
+            expect.objectContaining({ method: "POST", body: JSON.stringify({ keys }) }),
         );
     });
 });

@@ -6,6 +6,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { resumeFromDraft } from "../../../apps/shared/components/mail/compose/draftResume.js";
 
+const { getUnlockedKeys, evaluateMessageSecurity } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), evaluateMessageSecurity: vi.fn() }));
+vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/keySession.js")>()),
+    getUnlockedKeys,
+}));
+vi.mock("../../../lib/crypto/messageSecurity.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/crypto/messageSecurity.js")>()),
+    evaluateMessageSecurity,
+}));
+
 function draft(overrides: Record<string, unknown> = {}) {
     return {
         uid: "d1",
@@ -91,5 +101,60 @@ describe("resumeFromDraft()", () => {
 
     it("returns nothing for an encrypted draft", async () => {
         expect(await resumeFromDraft(draft({ encrypted: true }))).toBeUndefined();
+    });
+});
+
+describe("resumeFromDraft() for a draft sealed in a zero-access mailbox", () => {
+    const sealed = { zeroAccess: { keyFingerprint: "fp", sealedSummary: "s" }, subject: "[...]" };
+    const serveRaw = (raw: Response) =>
+        mockFetch((url) => {
+            if (url.startsWith("/api/mail/messages/d1/raw")) return raw;
+            if (url.startsWith("/api/mail/attachments")) return jsonResponse(200, []);
+            throw new Error(`unexpected ${url}`);
+        });
+
+    afterEach(() => {
+        getUnlockedKeys.mockReset();
+        evaluateMessageSecurity.mockReset();
+    });
+
+    it("decrypts it with the unlocked keys, taking its body and subject from the decrypted message, never the server's /content", async () => {
+        const keys = { masterKey: new Uint8Array(1) };
+        getUnlockedKeys.mockReturnValue(keys);
+        evaluateMessageSecurity.mockResolvedValue({ state: "protected_at_rest", zeroAccess: true, subject: "The real subject", html: "<p>Hidden body</p>", attachments: [] });
+        const fetchMock = serveRaw(new Response("sealed mime", { status: 200 }));
+
+        const resume = await resumeFromDraft(draft(sealed));
+
+        expect(resume).toMatchObject({ subject: "The real subject", to: "Tina <tina@example.com>" });
+        expect(resume!.html).toContain("Hidden body");
+        expect(evaluateMessageSecurity).toHaveBeenCalledWith("sealed mime", keys);
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/content"))).toBe(false);
+    });
+
+    it("keeps the draft's own subject when the decrypted message has none", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(1) });
+        evaluateMessageSecurity.mockResolvedValue({ state: "protected_at_rest", zeroAccess: true, text: "plain body", attachments: [] });
+        serveRaw(new Response("sealed mime", { status: 200 }));
+
+        const resume = await resumeFromDraft(draft(sealed));
+
+        expect(resume).toMatchObject({ subject: "[...]" });
+        expect(resume!.html).toContain("plain body");
+    });
+
+    it("leaves it to read while the mailbox is locked", async () => {
+        getUnlockedKeys.mockReturnValue(undefined);
+        expect(await resumeFromDraft(draft(sealed))).toBeUndefined();
+    });
+
+    it("leaves it to read when it doesn't open with the unlocked keys, or can't be fetched", async () => {
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(1) });
+        evaluateMessageSecurity.mockResolvedValue({ state: "none" });
+        serveRaw(new Response("sealed mime", { status: 200 }));
+        expect(await resumeFromDraft(draft(sealed))).toBeUndefined();
+
+        serveRaw(new Response("nope", { status: 500 }));
+        expect(await resumeFromDraft(draft(sealed))).toBeUndefined();
     });
 });

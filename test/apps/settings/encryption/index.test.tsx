@@ -62,9 +62,11 @@ vi.mock("../../../../lib/crypto/keySession.js", () => ({
     destroyUnlockedKeys,
     subscribeKeySession: () => () => undefined,
 }));
-// The zero-access key and setting have their own tests (zeroAccessKey.test.ts, ZeroAccessSetting.test.tsx).
+// The zero-access key and setting, and the key export, have their own tests (zeroAccessKey.test.ts, ZeroAccessSetting.test.tsx,
+// KeyExportSetting.test.tsx).
 vi.mock("../../../../lib/crypto/zeroAccessKey.js", () => ({ ensureZeroAccessKey: async () => false, provisionZeroAccessKey: async () => undefined }));
 vi.mock("../../../../apps/shared/components/settings/ZeroAccessSetting.js", () => ({ default: () => null }));
+vi.mock("../../../../apps/shared/components/settings/KeyExportSetting.js", () => ({ default: () => null }));
 
 const { buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap } = vi.hoisted(() => ({
     buildPasswordWrap: vi.fn(),

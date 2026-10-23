@@ -193,7 +193,7 @@ async function assemble(
 ): Promise<Message> {
     const { draft, to, cc, bcc, subject, html } = request;
     if (mode === "plain") {
-        return assembleDraft(draft.uid, { to, cc, bcc, subject, html }, client);
+        return assembleDraft(draft.uid, { to, cc, bcc, subject, html, intent: "send" }, client);
     }
     const keys = readSendKeys(request.mailboxUid, request.signEnabled, mailbox);
     const own = mailbox!;
@@ -227,7 +227,7 @@ async function assemble(
           )
         : await buildSignedOnlyMessage(bodyContentType, html, protectedHeaders, signing!.certDer, signing!.privateKey);
     const rawMime = assembleOutboundMime(outerHeaders, mimePart);
-    return assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime }, client);
+    return assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime, intent: "send" }, client);
 }
 
 function failureOf(err: unknown, fallback: string): Failure {

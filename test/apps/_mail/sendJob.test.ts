@@ -134,7 +134,7 @@ describe("startSend - the happy path", () => {
         expect(startSend(request())).toBe(true);
         expect(isSendPending("m1")).toBe(true);
         await settle();
-        expect(mocks.assembleDraft).toHaveBeenCalledWith("m1", { to: [{ address: "bob@example.com" }], cc: [], bcc: [], subject: "Hello", html: "<p>Hi</p>" }, undefined);
+        expect(mocks.assembleDraft).toHaveBeenCalledWith("m1", { to: [{ address: "bob@example.com" }], cc: [], bcc: [], subject: "Hello", html: "<p>Hi</p>", intent: "send" }, undefined);
         expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", undefined);
         expect(toasts()).toEqual([]);
         expect(retainedRequest("m1")).toBeDefined();
@@ -386,7 +386,7 @@ describe("startSend - encryption and signing", () => {
             unlockedSigning.signingCertDer,
             unlockedSigning.signingPrivateKey,
         );
-        expect(mocks.assembleDraftRaw).toHaveBeenCalledWith("m1", expect.objectContaining({ subject: "Hello", rawMime: expect.stringContaining("SIGNED") }), undefined);
+        expect(mocks.assembleDraftRaw).toHaveBeenCalledWith("m1", expect.objectContaining({ subject: "Hello", rawMime: expect.stringContaining("SIGNED"), intent: "send" }), undefined);
         forgetRetainedRequest("m1");
         startSend(request({ signEnabled: true, offeredSign: true, mailbox: { ...mailbox, displayName: "a@b", primarySmtpAddress: "me" } }));
         await settle();
