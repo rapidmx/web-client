@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.36.0
+
 ### Added
 
 - **Zero-access encryption** (restapi's `specs/search.md` §3/§7-8) - this client holds the keys that open mail sealed at rest.

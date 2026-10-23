@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-10-23
+
+### Added
+- Added zero-access key provisioning with provisionZeroAccessKey and ensureZeroAccessKey, sealing the key under the master key and enrolling it as useType zero-access
+- Added KeyUseType, ZeroAccessKey, KeyVault.zeroAccessKeys, EncryptionPolicy.allowZeroAccess and Mailbox.zeroAccessEnabled to the API types
+- Added an Allow zero-access encryption setting to the admin encryption policy form, confirming before turning it off
+- Added an Enable zero-access encryption setting to the Encryption settings page, disabled with the reason when the administrator turned it off, the server lacks it, the mailbox is shared or the viewer isn't its owner
+- Added PolicyLockedNotice to explain a setting a policy disables
+- Added a restapi-generated zero-access fixture and test that the client's existing S/MIME decryption opens a server-sealed message, summary and index entry
+- Added the protected_at_rest security state, opening zero-access mail with the mailbox's zero-access keys and evaluating its inner MIME
+- Added openZeroAccessSummary for the sealed subject and preview of zero-access messages in message and conversation lists
+- Added Message.zeroAccess and ConversationSummary.latestZeroAccess
+- Added Export keys for Outlook or a phone, a passphrase-protected PKCS#12 of the zero-access and encryption keys and optionally the signing key, built from a fresh master-password unlock and recorded with the server first
+- Added openMasterKeyWithPassword and recordKeyExport
+- Added MessageSecurityResult.calendar and extractCalendarText
+- Added zeroAccessIndexApi for the search index manifest, entries and segments
+- Added the shared mailbox key session and API helpers
+- Added putZeroAccessEscrowWraps and the escrow fields of the shared key status
+
+### Changed
+- Record the zero-access encryption standing decisions in NOTES.md
+- Provision the zero-access key during first-time key setup and give existing mailboxes one on their owner's next unlock
+- Open zero-access private keys from the vault on unlock into UnlockedKeys.zeroAccessKeys and destroy them on lock
+- Show "Protected at rest" in the reading pane and take zero-access message bodies, attachments, print and source from the decrypted MIME
+- Read securityApi lazily in the mail app
+- Assemble drafts with an intent, sending with intent send so a zero-access mailbox stores autosaved drafts sealed
+- Reopen a draft stored zero-access sealed by decrypting it with the unlocked keys
+- Never fetch a zero-access message's body from the server when quoting it
+- Upgrade @rapidrest/react devDependency to the real published 2.2.0, closing the stale-mountRouter-less-copy hazard a client host could pick up instead of the project's own
+- Send the decrypted source of a zero-access message when reporting it, so the spam filter can learn from it
+- Read and answer invitations in zero-access messages from the calendar file decrypted on the device
+- Say on the privacy page that zero-access mail is exported encrypted
+- Sync a zero-access mailbox's local search index from the server's sealed index: import segments and the live tail of entries, and compact closed weeks into sealed segment generations
+- Run the zero-access index sync after each local index build and every two minutes while the mailbox is unlocked
+- Skip decrypting zero-access messages in the local index builder, recording only their folder with a version
+- Keep a local index row's folder and flags when an import carries none
+- Updated rapidrest/react dep
+- Show the real title, location and description of calendar events sealed for a zero-access mailbox, decrypted with its unlocked keys
+- Show the whole escrow release in the escrow console, including the wrapped private keys and their certificates
+- Open mailboxes shared with the user through their member key wraps, without a password, once a mailbox of their own is unlocked
+- Look after shared mailboxes' zero-access keys in the background: provision a mailbox-without-an-owner's key, share keys with members still waiting, and rotate after a member leaves
+- Never ask a member for a shared mailbox's password, telling them instead when its key isn't shared with them yet or their own mailbox is locked
+- Stop excluding shared mailboxes from the zero-access encryption setting
+- Lock the shared mailbox sessions opened through a personal mailbox when that mailbox is locked, recording in each shared session the own mailboxes whose keys opened it
+- Export personallyUnlockedKeys from the keySession mocks of tests rendering MailShell, whose shared mailbox key manager calls it
+- Wrap a new key of a mailbox without an owner to its escrow scope's certificate when provisioning or rotating it
+- Wrap the keys a mailbox-without-an-owner's escrow scope is missing in the background, through PUT keyvault/escrow-wraps
+- Upload the end-to-end mail a local index build decrypts as client segments sealed to the mailbox's zero-access key, merged per ISO week into the current one
+- Import other devices' client segments before a build decrypts anything, so mail already indexed at its version isn't decrypted again, and in every sync pass
+- Describe zero-access encryption in the release notes
+
 ## [0.35.0] - 2026-10-09
 
 ### Added
@@ -1384,7 +1435,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/rapidmx/web-client/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/rapidmx/web-client/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/rapidmx/web-client/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/rapidmx/web-client/compare/v0.32.0...v0.33.0
