@@ -139,16 +139,24 @@ export function useUnlockEpoch(): number {
  * Decrypts one message to recover its subject and preview, when its mailbox's keys are unlocked and it isn't already known. Best effort: a
  * message that can't be fetched or opened is simply left as it was. Never prompts.
  */
-export async function decryptForDisplay(uid: string, mailboxUid: string): Promise<void> {
+export async function decryptForDisplay(uid: string, mailboxUid: string, sealedSummary?: string): Promise<void> {
     const unlocked = getUnlockedKeys(mailboxUid);
     if (!unlocked || entries[uid] || inFlight.has(uid) || decryptFailedBefore(uid)) {
         return;
     }
     inFlight.add(uid);
     try {
+        const securityApi = await import("../../../lib/crypto/messageSecurity.js");
+        // A message sealed at rest has its subject and preview sealed on its row: opening that small summary saves downloading it.
+        const summary = sealedSummary ? await securityApi.openZeroAccessSummary(sealedSummary, unlocked.zeroAccessKeys) : undefined;
+        if (summary) {
+            if (getUnlockedKeys(mailboxUid) === unlocked) {
+                rememberDecrypted(uid, mailboxUid, { subject: summary.subject, preview: summary.preview.slice(0, PREVIEW_MAX_LENGTH) });
+            }
+            return;
+        }
         const rawMime = await getMessageRawContent(uid);
-        const { evaluateMessageSecurity } = await import("../../../lib/crypto/messageSecurity.js");
-        const security = await evaluateMessageSecurity(rawMime, unlocked);
+        const security = await securityApi.evaluateMessageSecurity(rawMime, unlocked);
         // A lock while this ran: the result must not go back on screen.
         if (getUnlockedKeys(mailboxUid) === unlocked) {
             rememberDecrypted(uid, mailboxUid, { subject: security.subject, preview: security.html ? previewOf(security.html) : security.text?.slice(0, PREVIEW_MAX_LENGTH) });

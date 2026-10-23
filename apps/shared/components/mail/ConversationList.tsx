@@ -125,7 +125,7 @@ export default function ConversationList({
         let stale = false;
         void mapWithConcurrency(conversations.filter(conversationLooksEncrypted), 4, async (conversation) => {
             if (!stale) {
-                await decryptForDisplay(conversation.latestMessageUid, conversation.mailboxUid ?? mailboxUid);
+                await decryptForDisplay(conversation.latestMessageUid, conversation.mailboxUid ?? mailboxUid, conversation.latestZeroAccess?.sealedSummary);
             }
         });
         return () => {

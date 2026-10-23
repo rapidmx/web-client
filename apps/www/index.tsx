@@ -160,11 +160,18 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
         DECRYPT_CONCURRENCY,
         async (message): Promise<[string, DecryptedRow] | null> => {
             try {
-                const rawMime = await getMessageRawContent(message.uid);
                 // Loaded here, on first use: the S/MIME code (PKI.js, ASN.1, X.509) is over half a megabyte and an inbox with
                 // no encrypted mail in it never needs it.
-                const { evaluateMessageSecurity } = await (securityModule ??= import("../../lib/crypto/messageSecurity.js"));
-                const security = await evaluateMessageSecurity(rawMime, unlocked);
+                const securityApi = await (securityModule ??= import("../../lib/crypto/messageSecurity.js"));
+                // A message sealed at rest carries its subject and preview sealed on the row: no download needed.
+                const summary = message.zeroAccess ? await securityApi.openZeroAccessSummary(message.zeroAccess.sealedSummary, unlocked.zeroAccessKeys) : undefined;
+                if (summary) {
+                    const preview = summary.preview.slice(0, LIST_PREVIEW_MAX_LENGTH);
+                    rememberDecrypted(message.uid, message.mailboxUid, { subject: summary.subject, preview });
+                    return [message.uid, { subject: summary.subject, preview }];
+                }
+                const rawMime = await getMessageRawContent(message.uid);
+                const security = await securityApi.evaluateMessageSecurity(rawMime, unlocked);
                 if (!security.subject && !security.html) {
                     markDecryptFailed(message.uid);
                     return null;

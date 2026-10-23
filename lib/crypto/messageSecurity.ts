@@ -37,9 +37,22 @@
  * `untrusted_signer`. Previously pinned keys count as pins (see `signingKeyFingerprints()`), so mail signed before an
  * accepted or automatic rotation still verifies.
  */
-import { DisplayBody, MimeAttachment, MimeHeaderField, decodeHeaderText, extractAddresses, parseMimeEntity, parseParameterizedHeader, plainTextToHtml } from "./mime.js";
-import { toBase64 } from "./encoding.js";
-import { computeCertFingerprint, extractCertificateEmails } from "./smime.js";
+import {
+    DisplayBody,
+    MimeAttachment,
+    MimeHeaderField,
+    bytesToBinaryString,
+    decodeBase64Text,
+    decodeHeaderText,
+    extractAddresses,
+    extractAttachments,
+    extractDisplayBody,
+    parseMimeEntity,
+    parseParameterizedHeader,
+    plainTextToHtml,
+} from "./mime.js";
+import { fromBase64, toBase64 } from "./encoding.js";
+import { type DecryptionKey, computeCertFingerprint, decryptEnvelopedDataWithKeys, extractCertificateEmails } from "./smime.js";
 import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessageWithKeys, parseSignedOnlyMessage } from "./smimeMessage.js";
 import { type PublicKey, isTrustedForVerification } from "./keyvaultApi.js";
 import { KeysLockedError } from "./masterKey.js";
@@ -67,6 +80,7 @@ export type MessageSecurityState =
     | "encrypted_unverified_signer"
     | "signature_failed"
     | "verified_at_first_open"
+    | "protected_at_rest"
     | "unprotected";
 
 /** Why a message is `"signature_failed"`. `invalid_signature`: the CMS signature itself is malformed or
@@ -113,6 +127,10 @@ export interface MessageSecurityResult {
      * since-rotated key, non-AEAD content encryption, or corrupt/foreign data) - the caller should keep
      * showing whatever `GET /:id/content` already produced alongside this explanation. */
     decryptError?: string;
+    /** Set when the stored message was sealed at rest by the server (restapi `specs/search.md` §3) and opened here with the mailbox's
+     * zero-access key. `state` then describes the original message inside: `protected_at_rest` when it arrived unprotected, or its own
+     * signed/encrypted state otherwise. */
+    zeroAccess?: boolean;
     /** See `ParsedEncryptedMessage.headerTamperDetected`'s own doc comment - a deliberately separate,
      * orthogonal signal from `state`, since RFC 9788's `HP-Outer` is written on every encrypted message
      * regardless of whether it's also signed. `undefined` for anything that isn't an encrypted message
@@ -347,6 +365,47 @@ export interface MessageSecurityKeys {
     encryptionCertDer?: Uint8Array;
     retainedEncryptionKeys?: { certDer: Uint8Array; privateKey: CryptoKey }[];
     signingFingerprint?: string;
+    /** The mailbox's zero-access keys (`keySession.ts`'s `UnlockedKeys.zeroAccessKeys`) - what opens a message the server sealed at
+     * rest on arrival. */
+    zeroAccessKeys?: { certDer: Uint8Array; privateKey: CryptoKey }[];
+}
+
+/**
+ * The subject and preview of a zero-access message (`Message.zeroAccess.sealedSummary`, base64 CMS of JSON `{ subject, preview }`),
+ * decrypted with the mailbox's zero-access keys - a few hundred bytes, so a message list shows real subjects without downloading
+ * each message. `undefined` when no key opens it or it isn't a summary.
+ */
+export async function openZeroAccessSummary(
+    sealedSummary: string,
+    keys: DecryptionKey[] | undefined,
+): Promise<{ subject: string; preview: string } | undefined> {
+    if (!keys?.length) {
+        return undefined;
+    }
+    try {
+        const json: unknown = JSON.parse(new TextDecoder().decode(await decryptEnvelopedDataWithKeys(fromBase64(sealedSummary), keys)));
+        const { subject, preview } = (json ?? {}) as Record<string, unknown>;
+        return typeof subject === "string" && typeof preview === "string" ? { subject, preview } : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * The original MIME of a message the server sealed at rest (restapi `specs/search.md` §3) - the stored S/MIME `enveloped-data`
+ * message's content, decrypted with one of `keys` - or `undefined` when none of them opens it. Only the server ever encrypts to a
+ * zero-access key (it is never published), so a message that opens with one was sealed at rest, never sent end-to-end.
+ */
+async function openZeroAccess(body: string, keys: DecryptionKey[]): Promise<string | undefined> {
+    const der = decodeBase64Text(body);
+    if (!der) {
+        return undefined;
+    }
+    try {
+        return bytesToBinaryString(await decryptEnvelopedDataWithKeys(der, keys));
+    } catch {
+        return undefined;
+    }
 }
 
 /** `evaluateMessageSecurity()`'s result plus what the seal-aware wrapper needs: which kind of protected message it was,
@@ -362,6 +421,7 @@ async function evaluateLive(
     unlocked: MessageSecurityKeys | undefined,
     pinnedSignerFingerprints: string | string[] | undefined,
     readerAddress: string | undefined,
+    sealedAtRest = false,
 ): Promise<LiveEvaluation> {
     const { headers, body, fields } = parseMimeEntity(rawMime);
     const rawContentType = headers["content-type"];
@@ -450,6 +510,32 @@ async function evaluateLive(
             result: { state: trusted ? "signed_verified" : "signed_unverified_signer", ...content, ...acceptedSigner, ...addressing(parsed.protectedHeaders) },
             kind: "signed",
         };
+    }
+
+    // A message the server sealed at rest: evaluate the original it holds - which may itself be signed or end-to-end encrypted -
+    // and report one that was unprotected when it arrived as `protected_at_rest`, with its content.
+    if (isEncryptedContentType(contentType) && !sealedAtRest && unlocked?.zeroAccessKeys?.length) {
+        const original = await openZeroAccess(body, unlocked.zeroAccessKeys);
+        if (original !== undefined) {
+            const inner = await evaluateLive(original, unlocked, pinnedSignerFingerprints, readerAddress, true);
+            const entity = parseMimeEntity(original);
+            const subject = entity.headers["subject"];
+            if (inner.result.state !== "unprotected") {
+                // The stored message's own Subject is the placeholder: the original's stands in when the inner result has none.
+                const fallbackSubject = inner.result.subject === undefined && subject !== undefined ? { subject: decodeHeaderText(subject) } : {};
+                return { ...inner, result: { ...inner.result, ...fallbackSubject, zeroAccess: true } };
+            }
+            return {
+                result: {
+                    state: "protected_at_rest",
+                    zeroAccess: true,
+                    ...renderDisplayBody(extractDisplayBody(entity)),
+                    ...(subject !== undefined ? { subject: decodeHeaderText(subject) } : {}),
+                    attachments: extractAttachments(entity),
+                },
+                kind: "other",
+            };
+        }
     }
 
     if (isEncryptedContentType(contentType)) {

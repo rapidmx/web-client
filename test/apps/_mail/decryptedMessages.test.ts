@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type KeyEvent = { mailboxUid: string; state: "locked" | "unlocked" };
 
-const { getUnlockedKeys, subscribeKeySession, getMessageRawContent, evaluateMessageSecurity, listeners } = vi.hoisted(() => {
+const { getUnlockedKeys, subscribeKeySession, getMessageRawContent, evaluateMessageSecurity, openZeroAccessSummary, listeners } = vi.hoisted(() => {
     const listeners: ((event: KeyEvent) => void)[] = [];
     return {
         listeners,
@@ -19,11 +19,12 @@ const { getUnlockedKeys, subscribeKeySession, getMessageRawContent, evaluateMess
         }),
         getMessageRawContent: vi.fn(),
         evaluateMessageSecurity: vi.fn(),
+        openZeroAccessSummary: vi.fn(),
     };
 });
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession }));
 vi.mock("../../../lib/mail/mailApi.js", () => ({ getMessageRawContent }));
-vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, openZeroAccessSummary }));
 
 import {
     clearDecryptedMessages,
@@ -85,6 +86,32 @@ describe("rememberDecrypted and the hooks", () => {
 });
 
 describe("decryptForDisplay", () => {
+    it("opens a sealed-at-rest message's summary instead of downloading it", async () => {
+        openZeroAccessSummary.mockResolvedValueOnce({ subject: "Sealed subject", preview: "Sealed preview" });
+        const { result } = renderHook(() => useDecryptedMessages());
+        await act(() => decryptForDisplay("m1", "mb1", "c2VhbGVk"));
+        expect(result.current.m1).toEqual({ mailboxUid: "mb1", subject: "Sealed subject", preview: "Sealed preview" });
+        expect(getMessageRawContent).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the whole message when its sealed summary doesn't open", async () => {
+        openZeroAccessSummary.mockResolvedValueOnce(undefined);
+        evaluateMessageSecurity.mockResolvedValue({ subject: "From the message", html: "<p>Body</p>" });
+        const { result } = renderHook(() => useDecryptedMessages());
+        await act(() => decryptForDisplay("m1", "mb1", "c2VhbGVk"));
+        expect(result.current.m1.subject).toBe("From the message");
+    });
+
+    it("forgets a summary opened while the keys were locked", async () => {
+        openZeroAccessSummary.mockImplementationOnce(async () => {
+            getUnlockedKeys.mockReturnValue({ other: true });
+            return { subject: "Too late", preview: "" };
+        });
+        const { result } = renderHook(() => useDecryptedMessages());
+        await act(() => decryptForDisplay("m1", "mb1", "c2VhbGVk"));
+        expect(result.current.m1).toBeUndefined();
+    });
+
     it("remembers the subject and an HTML preview of a message it can open", async () => {
         evaluateMessageSecurity.mockResolvedValue({ subject: "Plans", html: "<p>Body</p>" });
         const { result } = renderHook(() => useDecryptedMessages());

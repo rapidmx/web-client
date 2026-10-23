@@ -64,8 +64,8 @@ vi.mock("../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, unlockWithPa
 // reasoning). Mocked here so the inbox-list decrypt tests below only verify InboxContent's own
 // decryptEncryptedRows() orchestration (which rows it decrypts, how it renders the result), not
 // re-proving decryption correctness.
-const { evaluateMessageSecurity } = vi.hoisted(() => ({ evaluateMessageSecurity: vi.fn() }));
-vi.mock("../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity }));
+const { evaluateMessageSecurity, openZeroAccessSummary } = vi.hoisted(() => ({ evaluateMessageSecurity: vi.fn(), openZeroAccessSummary: vi.fn() }));
+vi.mock("../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, openZeroAccessSummary }));
 
 // `MessageDetailPane`'s own exhaustive rendering (header fields, attachments, back link, iframe,
 // formatting) is tested in its own `MessageDetailPane.test.tsx` — mocked here to a thin stand-in so this
@@ -5479,6 +5479,32 @@ describe("InboxPage", () => {
             expect(await screen.findByText("Already unlocked subject")).toBeInTheDocument();
             expect(screen.getByText("Already unlocked body")).toBeInTheDocument();
             expect(screen.queryByText(/Unlock to show/)).not.toBeInTheDocument();
+        });
+
+        it("shows a sealed-at-rest row's subject and preview from its sealed summary, without downloading the message", async () => {
+            const sealedMsg = messageFixture({ uid: "m-za", subject: "[...]", bodyPreview: "", zeroAccess: { keyFingerprint: "fp", sealedSummary: "c2VhbGVk" } });
+            mockShellAndInbox([sealedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), zeroAccessKeys: [{}] });
+            openZeroAccessSummary.mockResolvedValue({ subject: "Summary subject", preview: "Summary preview" });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("Summary subject")).toBeInTheDocument();
+            expect(screen.getByText("Summary preview")).toBeInTheDocument();
+            expect(openZeroAccessSummary).toHaveBeenCalledWith("c2VhbGVk", [{}]);
+            expect(evaluateMessageSecurity).not.toHaveBeenCalled();
+            openZeroAccessSummary.mockReset();
+        });
+
+        it("falls back to opening the whole sealed message when its summary doesn't open", async () => {
+            const sealedMsg = messageFixture({ uid: "m-za", subject: "[...]", bodyPreview: "", zeroAccess: { keyFingerprint: "fp", sealedSummary: "c2VhbGVk" } });
+            mockShellAndInbox([sealedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), zeroAccessKeys: [{}] });
+            openZeroAccessSummary.mockResolvedValue(undefined);
+            evaluateMessageSecurity.mockResolvedValue({ state: "protected_at_rest", subject: "From the message itself", html: "<p>Body</p>" });
+            render(<InboxPage userUid="u1" />);
+
+            expect(await screen.findByText("From the message itself")).toBeInTheDocument();
+            openZeroAccessSummary.mockReset();
         });
 
         it("leaves the row as its placeholder and shows no unlock banner when the mailbox has nothing encrypted to show", async () => {

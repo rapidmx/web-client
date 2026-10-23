@@ -37,6 +37,9 @@ export interface ConversationSummary {
     latestFrom: Recipient;
     /** The most recent message's `bodyPreview` — the snippet a collapsed row shows. */
     latestPreview: string;
+    /** Set when the latest message is sealed at rest (zero-access): its subject and preview are only in `sealedSummary`, which
+     * `messageSecurity.ts`'s `openZeroAccessSummary()` opens with the mailbox's zero-access keys. */
+    latestZeroAccess?: { keyFingerprint: string; sealedSummary: string };
     /** The most recent message's folder. */
     latestFolderUid: string;
     /** The iTIP `METHOD` of the calendar file the most recent message carries (`Message.meetingMethod`) - `"REQUEST"`, `"REPLY"`,

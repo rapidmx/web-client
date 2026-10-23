@@ -602,6 +602,10 @@ export interface Message {
      * stored body, not from a flag this API exposes. Always present on a real `Message` (defaults
      * `false` server-side), same optional-for-old-fixtures caveat as `Mailbox.oofEnabled`. */
     encrypted?: boolean;
+    /** Set when the server sealed this message at rest on arrival (zero-access, restapi `specs/search.md` §3): its stored body is an
+     * S/MIME message only the mailbox's zero-access key opens, `subject` is `[...]` and `bodyPreview` empty - the real ones are in
+     * `sealedSummary`. */
+    zeroAccess?: { keyFingerprint: string; sealedSummary: string };
     /** The raw RFC 2369/8058 `List-Unsubscribe` header value, if present — computed server-side by
      * `@rapidmx/restapi`'s `ScanPipeline` from the stored MIME, the strongest single bulk-mail signal it
      * captures. Used client-side to detect list traffic when replying, per

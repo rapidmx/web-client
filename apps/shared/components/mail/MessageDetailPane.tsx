@@ -116,6 +116,9 @@ const SECURITY_INDICATOR: Record<MessageSecurityResult["state"], { label: string
     // Verified when first opened (a verification seal), but not live: muted, never the green verified pill. A signer key
     // later reported compromised switches it to `LATER_COMPROMISED_INDICATOR_CLASS`.
     verified_at_first_open: { label: "Verified when first opened", className: "bg-surface-alt text-text-muted" },
+    // Sealed by the server on arrival (zero-access): distinct from "Encrypted" - the server held this message in the clear while it
+    // delivered it - and never worded as end-to-end, per the spec's indicator table.
+    protected_at_rest: { label: "Protected at rest", className: "bg-primary/5 text-text" },
 };
 
 /** The amber `verified_at_first_open` badge for a signer key since reported compromised. */
@@ -289,11 +292,14 @@ function IconAction({
     );
 }
 
-function SecurityIndicator({ security }: { security: MessageSecurityResult }) {
-    const { label, className } = SECURITY_INDICATOR[security.state];
+function SecurityIndicator({ security, zeroAccess }: { security: MessageSecurityResult; zeroAccess?: boolean }) {
+    // A zero-access message this device can't open yet (keys locked) evaluates as an encrypted one it has no key for: it is still
+    // labelled for what it is.
+    const state = zeroAccess && security.state === "encrypted" && security.decryptError !== undefined ? "protected_at_rest" : security.state;
+    const { label, className } = SECURITY_INDICATOR[state];
     if (security.state !== "verified_at_first_open") {
         // Every encrypted state carries a small lock, so the badge reads at a glance; the words are unchanged.
-        const encrypted = security.state.startsWith("encrypted");
+        const encrypted = state.startsWith("encrypted") || state === "protected_at_rest";
         return (
             <span className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 py-1 px-2.5 rounded-pill ${className}`}>
                 {encrypted && <HiOutlineLockClosed size={12} aria-hidden="true" />}
@@ -473,7 +479,7 @@ export default function MessageDetailPane(props: MessageDetailPaneProps) {
  * surfaced as an attachment - so a message with neither flag can't carry a signature to verify, and
  * fetching its full raw source (attachments included) would be pure waste. */
 function needsRawSecurityEvaluation(message: Message): boolean {
-    return !!message.encrypted || message.hasAttachments;
+    return !!message.encrypted || !!message.zeroAccess || message.hasAttachments;
 }
 
 function MessageDetailContent({
@@ -686,14 +692,14 @@ function MessageDetailContent({
             .catch(() => {
                 if (!cancelled) {
                     setSecurity(
-                        message.encrypted ? { state: "encrypted", decryptError: ENCRYPTED_LOAD_ERROR } : { state: "unprotected" },
+                        message.encrypted || message.zeroAccess ? { state: "encrypted", decryptError: ENCRYPTED_LOAD_ERROR } : { state: "unprotected" },
                     );
                 }
             });
         return () => {
             cancelled = true;
         };
-    }, [message.uid, message.mailboxUid, message.from.address, message.encrypted, rawEvaluationNeeded, unlockRefresh, readerAddressesKey, client]);
+    }, [message.uid, message.mailboxUid, message.from.address, message.encrypted, message.zeroAccess?.keyFingerprint, rawEvaluationNeeded, unlockRefresh, readerAddressesKey, client]);
 
     // Whether the body is the locked state right now (an encrypted message this device holds no unlocked keys for), for the subscription below.
     const lockedRef = useRef(false);
@@ -1078,7 +1084,11 @@ function MessageDetailContent({
     // listed with a warning. A signed-only failure never carries recovered attachments.
     const innerAttachments =
         security?.attachments !== undefined &&
-        (verifiedOrSealed || security.state === "encrypted" || security.state === "encrypted_unverified_signer" || security.state === "signature_failed")
+        (verifiedOrSealed ||
+            security.zeroAccess ||
+            security.state === "encrypted" ||
+            security.state === "encrypted_unverified_signer" ||
+            security.state === "signature_failed")
             ? security.attachments
             : undefined;
     // Any state with a valid signature shows the address actually signed for (the protected From when the message
@@ -1247,7 +1257,7 @@ function MessageDetailContent({
     /** The rules page's "New mail filter", started from this message: its sender and (for a message the server can read) its subject. */
     function handleCreateRule() {
         const params = new URLSearchParams({ mailboxUid: message.mailboxUid, from: message.from.address });
-        const subject = message.encrypted ? "" : withoutSubjectPrefixes(message.subject);
+        const subject = message.encrypted || message.zeroAccess ? "" : withoutSubjectPrefixes(message.subject);
         if (subject) {
             params.set("subject", subject);
         }
@@ -1273,7 +1283,7 @@ function MessageDetailContent({
         createRule: handleCreateRule,
     };
     // An encrypted message can be printed once it has been opened here: while it is still opening, or when it can't be, there is nothing to print.
-    const printReason = !message.encrypted
+    const printReason = !message.encrypted && !message.zeroAccess
         ? undefined
         : security === null
           ? "Still opening this message"
@@ -1325,7 +1335,7 @@ function MessageDetailContent({
                                 </ParticipantLink>
                             </p>
                         )}
-                        {security && <SecurityIndicator security={security} />}
+                        {security && <SecurityIndicator security={security} zeroAccess={!!message.zeroAccess} />}
                     </div>
                     {senderNameCheck.misleading && (
                         <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
@@ -1711,7 +1721,7 @@ function MessageDetailContent({
                     body never came through the server's own sanitizer (the server never saw the plaintext); `MessageBody` sanitizes every body
                     client-side regardless, behind a no-remote-loads CSP, in a frame that runs no script. */}
                 <div ref={bodyRegionRef} tabIndex={-1} className="outline-none">
-                    {message.encrypted && security === null ? (
+                    {(message.encrypted || message.zeroAccess) && security === null ? (
                         <BodySkeleton />
                     ) : security?.decryptError !== undefined ? (
                         // An encrypted message that could not be read: locked (no unlocked keys - the button asks the app's own unlock prompt, and the message
@@ -1804,7 +1814,7 @@ function MessageDetailContent({
                 onClose={closeSource}
                 mode={sourceView?.mode ?? "source"}
                 source={sourceView?.source ?? { status: "loading" }}
-                encrypted={!!message.encrypted}
+                encrypted={!!message.encrypted || !!message.zeroAccess}
             />
             <Modal open={confirming} onClose={() => setConfirming(false)} title="Recall this message?">
                 <p className="text-sm text-text-muted mb-4">
