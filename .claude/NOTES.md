@@ -3877,7 +3877,7 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 ### 2026-10-24: OpenPGP interoperability (Phases 3/4)
 - Plan: `C:\Users\caska\.claude\plans\openpgp-interop.md`. Spec: restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*.
 - **Library:** OpenPGP.js 6.3.2 (LGPL-3.0+), always imported dynamically (`lib/crypto/openpgp.ts`, `pgpMessage.ts`).
-  - Keys are v6 (`config: { v6Keys: true }`, `type: "curve25519"`).
+  - (Changed 2026-10-24, JP) `generateOpenPgpKey()` makes **v4** keys by default (`type: "ecc"`, `curve: "curve25519Legacy"`: EdDSA plus ECDH Curve25519, which GnuPG and every other OpenPGP app read). `version: 6` gives an RFC 9580 Ed25519/X25519 key (`config: { v6Keys: true }`). Both versions are read, encrypted to and verified; existing v6 keys keep working.
   - `@openpgp/web-stream-tools` is a dev dependency, needed only for the types.
   - `clearPrivateParams()` exists at runtime but is missing from the typings, so it is called through a cast.
 - **Own key:** `openPgpKey.ts`'s `ensureOpenPgpKey()` runs after `ensureZeroAccessKey()` in `KeyEnrollmentGate`. It does nothing unless `EncryptionPolicy.allowOpenPgp === true`.

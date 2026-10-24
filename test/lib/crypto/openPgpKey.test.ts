@@ -97,7 +97,7 @@ describe("ensureOpenPgpKey", () => {
         expect([first, second]).toEqual([true, true]);
         expect(enrollKey).toHaveBeenCalledTimes(1);
         expect(enrollKey.mock.calls[0][1].expectedMasterKeyGeneration).toBe(4);
-        expect(addOpenPgpKey).toHaveBeenCalledWith(MAILBOX_UID, session, expect.objectContaining({ fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) }));
+        expect(addOpenPgpKey).toHaveBeenCalledWith(MAILBOX_UID, session, expect.objectContaining({ fingerprint: expect.stringMatching(/^[0-9a-f]{40}$/) }));
     });
 
     it.each([

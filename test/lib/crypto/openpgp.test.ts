@@ -19,13 +19,16 @@ import {
 } from "../../../lib/crypto/openpgp.js";
 
 describe("openpgp", () => {
-    it("generates a v6 key that never expires, with the address as its user ID", async () => {
+    it("generates a v4 Curve25519 key by default, never expiring, with the address as its user ID", async () => {
         const generated = await generateOpenPgpKey("Alice@Example.com", "Alice");
-        expect(generated.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+        expect(generated.fingerprint).toMatch(/^[0-9a-f]{40}$/);
         expect(generated.armoredPublicKey).toContain("-----BEGIN PGP PUBLIC KEY BLOCK-----");
         const certificate = (await readPublicKey(generated.publicKey))!;
         expect(certificate.getFingerprint()).toBe(generated.fingerprint);
-        expect(certificate.keyPacket.version).toBe(6);
+        expect(certificate.keyPacket.version).toBe(4);
+        // The long-established Curve25519 algorithms (EdDSA signing, ECDH encryption) every OpenPGP app reads.
+        expect(certificate.getAlgorithmInfo().algorithm).toBe("eddsaLegacy");
+        expect(certificate.subkeys.map((subkey) => subkey.getAlgorithmInfo().algorithm)).toEqual(["ecdh"]);
         expect(await certificate.getExpirationTime()).toBe(Infinity);
         expect(certificate.getUserIDs()).toEqual(["Alice <Alice@Example.com>"]);
         expect(await keyEmails(certificate)).toEqual(["alice@example.com"]);
@@ -35,6 +38,16 @@ describe("openpgp", () => {
         expect(publicKeyBase64(secret)).toBe(generated.publicKey);
         expect(publicKeyBase64(certificate)).toBe(generated.publicKey);
         expect(armorPublicKey(certificate)).toBe(generated.armoredPublicKey);
+    });
+
+    it("generates a v6 (RFC 9580) Ed25519/X25519 key when asked", async () => {
+        const generated = await generateOpenPgpKey("alice@example.com", "Alice", 6);
+        expect(generated.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+        const certificate = (await readPublicKey(generated.publicKey))!;
+        expect(certificate.keyPacket.version).toBe(6);
+        expect(certificate.getAlgorithmInfo().algorithm).toBe("ed25519");
+        expect(await keyEmails(certificate)).toEqual(["alice@example.com"]);
+        expect((await readSecretKey(generated.secretKey)).getFingerprint()).toBe(generated.fingerprint);
     });
 
     it("names the address alone when there is no display name", async () => {

@@ -23,22 +23,25 @@ export interface GeneratedOpenPgpKey {
     armoredPublicKey: string;
     /** The binary transferable secret key, unencrypted - the caller seals it under the master key and zeroes this copy. */
     secretKey: Uint8Array;
-    /** The primary key's fingerprint (64 hex characters for a v6 key). */
+    /** The primary key's fingerprint (40 hex characters for a v4 key, 64 for v6). */
     fingerprint: string;
 }
 
+/** Which OpenPGP key version to generate: 4 (RFC 4880, the default - what every OpenPGP app reads, GnuPG included) or 6 (RFC 9580). */
+export type OpenPgpKeyVersion = 4 | 6;
+
 /**
- * Generates the mailbox's OpenPGP key: a v6 (RFC 9580) Ed25519 primary key with an X25519 encryption subkey and one user ID,
- * `displayName <address>`, never expiring (rotation replaces it). It carries no passphrase: like every other private key, its
- * secret half is sealed under the master key before it leaves this device.
+ * Generates the mailbox's OpenPGP key: an Ed25519 primary key with a Curve25519 encryption subkey and one user ID,
+ * `displayName <address>`, never expiring (rotation replaces it). A v4 key uses the long-established EdDSA/ECDH Curve25519
+ * algorithms; a v6 key RFC 9580's Ed25519/X25519. It carries no passphrase: like every other private key, its secret half is
+ * sealed under the master key before it leaves this device.
  */
-export async function generateOpenPgpKey(address: string, displayName?: string): Promise<GeneratedOpenPgpKey> {
-    const { privateKey, publicKey } = await openpgp.generateKey({
-        type: "curve25519",
-        userIDs: [{ ...(displayName ? { name: displayName } : {}), email: address }],
-        format: "object",
-        config: { v6Keys: true },
-    });
+export async function generateOpenPgpKey(address: string, displayName?: string, version: OpenPgpKeyVersion = 4): Promise<GeneratedOpenPgpKey> {
+    const userIDs = [{ ...(displayName ? { name: displayName } : {}), email: address }];
+    const { privateKey, publicKey } =
+        version === 6
+            ? await openpgp.generateKey({ type: "curve25519", userIDs, format: "object", config: { v6Keys: true } })
+            : await openpgp.generateKey({ type: "ecc", curve: "curve25519Legacy", userIDs, format: "object" });
     return {
         publicKey: toBase64(publicKey.write()),
         armoredPublicKey: publicKey.armor(),

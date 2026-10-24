@@ -19,8 +19,8 @@ const headers: ProtectedHeaders = {
     messageId: "<m1@rapidmx.example>",
 };
 
-async function identity(address: string) {
-    const generated = await generateOpenPgpKey(address, "Test");
+async function identity(address: string, version: 4 | 6 = 4) {
+    const generated = await generateOpenPgpKey(address, "Test", version);
     const privateKey = await readSecretKey(generated.secretKey);
     return { generated, privateKey, unlocked: { openPgpKeys: [{ fingerprint: generated.fingerprint, privateKey }] } };
 }
@@ -62,6 +62,23 @@ describe("PGP/MIME messages", () => {
         const eve = await identity("eve@example.com");
         expect((await evaluateMessageSecurity(raw, eve.unlocked)).decryptError).toBeTruthy();
         expect((await evaluateMessageSecurity(raw, undefined)).state).toBe("encrypted");
+    });
+
+    it("works between a v4 key and a v6 key, both ways", async () => {
+        const alice = await identity("alice@rapidmx.example");
+        const bob = await identity("bob@proton.example", 6);
+        const outer = applyBaselineOuterHeaders(headers);
+        const raw = assembleOutboundMime(outer, await buildPgpEncryptedMessage("text/plain", "Mixed versions", headers, outer, [bob.privateKey.toPublic(), alice.privateKey.toPublic()], alice.privateKey));
+        const pins = { fingerprints: [], openPgpKeys: [alice.generated.publicKey] };
+        expect(await evaluateMessageSecurity(raw, bob.unlocked, pins)).toMatchObject({ state: "encrypted_verified", text: "Mixed versions" });
+
+        const reply = { ...headers, from: "bob@proton.example", to: "alice@rapidmx.example" };
+        const replyOuter = applyBaselineOuterHeaders(reply);
+        const back = assembleOutboundMime(replyOuter, await buildPgpEncryptedMessage("text/plain", "Got it", reply, replyOuter, [alice.privateKey.toPublic()], bob.privateKey));
+        expect(await evaluateMessageSecurity(back, alice.unlocked, { fingerprints: [], openPgpKeys: [bob.generated.publicKey] })).toMatchObject({
+            state: "encrypted_verified",
+            text: "Got it",
+        });
     });
 
     it("signs a message with the public key attached, which a new correspondent sees as signed by an untrusted key", async () => {
