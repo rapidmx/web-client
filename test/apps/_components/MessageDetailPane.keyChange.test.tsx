@@ -39,7 +39,7 @@ vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
     resolveKeyConflict,
 }));
 vi.mock("../../../lib/mail/mailboxAccessApi.js", () => ({ getMyMailboxAccess }));
-vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getSignerKeyState, clearPinnedSignerCache }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getPinnedSigners: (...args: unknown[]) => Promise.resolve(getPinnedSignerFingerprints(...args)).then((fingerprints: string[]) => ({ fingerprints, openPgpKeys: [] as string[] })), getSignerKeyState, clearPinnedSignerCache }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn() }));
 
@@ -215,6 +215,33 @@ describe("MessageDetailPane: signing key changed", () => {
         expect(evaluateMessageSecurity).toHaveBeenCalledTimes(2);
         expect(getPinnedSignerFingerprints).toHaveBeenCalledTimes(2);
         expect(screen.queryByRole("region", { name: "Signing key changed" })).not.toBeInTheDocument();
+    });
+
+    it("compares an OpenPGP signer's new key with the pinned OpenPGP key and accepts it as one", async () => {
+        const openPgpPinned = { ...pinnedKey, type: "openpgp", useType: "encrypt", fingerprint: "eeee5555ffff6666" };
+        setUp({ ...keyState, openPgp: [openPgpPinned], openPgpPinnedSince: PINNED_SINCE });
+        evaluateMessageSecurity.mockResolvedValue({ ...keyChanged, signerKeyType: "openpgp" });
+        resolveKeyConflict.mockResolvedValue({ keys: [] });
+        const user = userEvent.setup();
+        renderPane();
+
+        const notice = await findNotice();
+        expect(notice.getByText("eeee 5555 ffff 6666")).toBeInTheDocument();
+        evaluateMessageSecurity.mockResolvedValue({ ...keyChanged, signerKeyType: "openpgp", state: "signed_verified", signatureFailureReason: undefined });
+        await user.click(notice.getByRole("button", { name: "Accept new key" }));
+        const dialog = within(screen.getByRole("dialog"));
+        expect(dialog.getByText(/The current OpenPGP key moves/)).toBeInTheDocument();
+        await user.click(dialog.getByRole("button", { name: "Accept new key" }));
+
+        expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
+        expect(resolveKeyConflict).toHaveBeenCalledWith("mb1", {
+            address: "sender@example.com",
+            useType: "encrypt",
+            action: "accept",
+            expectedPinnedFingerprint: "eeee5555ffff6666",
+            certificate: "bmV3Y2VydA==",
+            type: "openpgp",
+        });
     });
 
     it("keeps the current key for a recorded conflict, then says so after re-evaluating", async () => {

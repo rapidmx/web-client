@@ -20,6 +20,7 @@ vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecuri
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
     getPinnedSignerFingerprints,
+    getPinnedSigners: (...args: unknown[]) => Promise.resolve(getPinnedSignerFingerprints(...args)).then((fingerprints: string[]) => ({ fingerprints, openPgpKeys: [] as string[] })),
     getSignerKeyState: async () => ({ pinned: [], previous: [] }),
 }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));

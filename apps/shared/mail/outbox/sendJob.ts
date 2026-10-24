@@ -11,6 +11,7 @@ import {
     Message,
     assembleDraft,
     assembleDraftRaw,
+    createDraft,
     forgetDraftImages,
     getMailbox,
     getMessage,
@@ -182,7 +183,10 @@ async function completeContext(request: SendRequest, client: ApiClient | undefin
     return { mailbox, policy };
 }
 
-/** Builds the message's final content into the draft (plain, signed, or signed and encrypted in this browser) and returns the stored message. */
+/** Builds the message's final content into the draft (plain, signed, or signed and encrypted in this browser) and returns the stored
+ * message(s) to send: one, or - for an encrypted message whose recipients need both formats (restapi `specs/end-to-end_encryption.md`
+ * *OpenPGP Interoperability*) - an S/MIME copy (this draft) and an OpenPGP copy (a second draft), each listing every recipient but
+ * delivered only to the recipients of its own format (`deliverTo`). Never a plaintext copy. */
 async function assemble(
     request: SendRequest,
     mailbox: Mailbox | undefined,
@@ -190,10 +194,10 @@ async function assemble(
     statuses: (RecipientEncryptionStatus | undefined)[],
     withSignature: boolean,
     client: ApiClient | undefined,
-): Promise<Message> {
+): Promise<Message[]> {
     const { draft, to, cc, bcc, subject, html } = request;
     if (mode === "plain") {
-        return assembleDraft(draft.uid, { to, cc, bcc, subject, html, intent: "send" }, client);
+        return [await assembleDraft(draft.uid, { to, cc, bcc, subject, html, intent: "send" }, client)];
     }
     const keys = readSendKeys(request.mailboxUid, request.signEnabled, mailbox);
     const own = mailbox!;
@@ -216,18 +220,53 @@ async function assemble(
     );
     const encrypt = mode === "encrypt";
     const outerHeaders = encrypt ? applyBaselineOuterHeaders(protectedHeaders) : protectedHeaders;
-    const mimePart = encrypt
-        ? await buildEncryptedMessage(
-              bodyContentType,
-              html,
-              protectedHeaders,
-              outerHeaders,
-              [keys.unlocked!.encryptionCertDer!, ...statuses.map((status) => fromBase64(status!.encryptCert!.publicKey))],
-              signing,
-          )
-        : await buildSignedOnlyMessage(bodyContentType, html, protectedHeaders, signing!.certDer, signing!.privateKey);
-    const rawMime = assembleOutboundMime(outerHeaders, mimePart);
-    return assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime, intent: "send" }, client);
+    if (!encrypt) {
+        const signedPart = await buildSignedOnlyMessage(bodyContentType, html, protectedHeaders, signing!.certDer, signing!.privateKey);
+        return [await assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime: assembleOutboundMime(outerHeaders, signedPart), intent: "send" }, client)];
+    }
+    const smime = statuses.filter((status) => status!.format !== "openpgp");
+    const pgp = statuses.filter((status) => status!.format === "openpgp");
+    const deliverTo = (group: (RecipientEncryptionStatus | undefined)[]) => (smime.length > 0 && pgp.length > 0 ? { deliverTo: group.map((status) => status!.address) } : {});
+    const sent: Message[] = [];
+    if (smime.length > 0) {
+        const part = await buildEncryptedMessage(
+            bodyContentType,
+            html,
+            protectedHeaders,
+            outerHeaders,
+            [keys.unlocked!.encryptionCertDer!, ...smime.map((status) => fromBase64(status!.encryptCert!.publicKey))],
+            signing,
+        );
+        const rawMime = assembleOutboundMime(outerHeaders, part);
+        sent.push(await assembleDraftRaw(draft.uid, { to, cc, bcc, subject: outerHeaders.subject, rawMime, intent: "send", ...deliverTo(smime) }, client));
+    }
+    if (pgp.length > 0) {
+        // OpenPGP.js and the PGP/MIME builder load only for a message that has OpenPGP recipients.
+        const [{ buildPgpEncryptedMessage, readKeysBase64 }, { armorPublicKey }] = await Promise.all([
+            import("../../../../lib/crypto/pgpMessage.js"),
+            import("../../../../lib/crypto/openpgp.js"),
+        ]);
+        const ownKey = keys.unlocked!.openPgpKeys![0].privateKey;
+        const recipientKeys = await readKeysBase64(pgp.map((status) => status!.openPgpKey!.publicKey));
+        // Its own Message-ID: a second message, even though it is the same one for its readers.
+        const pgpHeaders: ProtectedHeaders = { ...protectedHeaders, messageId: `<${crypto.randomUUID()}@${domain}>` };
+        const pgpOuter = applyBaselineOuterHeaders(pgpHeaders);
+        // Signed with the sender's OpenPGP key (what an OpenPGP reader can check) whenever the message is signed, and carrying the
+        // sender's public key, so a correspondent without it can verify and reply encrypted.
+        const part = await buildPgpEncryptedMessage(
+            bodyContentType,
+            html,
+            pgpHeaders,
+            pgpOuter,
+            [ownKey.toPublic(), ...recipientKeys],
+            withSignature ? ownKey : undefined,
+            armorPublicKey(ownKey.toPublic()),
+        );
+        const rawMime = assembleOutboundMime(pgpOuter, part);
+        const target = smime.length > 0 ? await createDraft(request.mailboxUid, draft.folderUid, undefined, client) : draft;
+        sent.push(await assembleDraftRaw(target.uid, { to, cc, bcc, subject: pgpOuter.subject, rawMime, intent: "send", ...deliverTo(pgp) }, client));
+    }
+    return sent;
 }
 
 function failureOf(err: unknown, fallback: string): Failure {
@@ -272,9 +311,12 @@ async function attempt(request: SendRequest, client: ApiClient | undefined): Pro
                         ),
                     ),
                 );
+                const ownOpenPgp = !!keys.unlocked?.openPgpKeys?.length;
                 statuses = all.map((recipient, index) => {
                     const found = lookups[index];
-                    return found ? resolveRecipientEncryption(own.primarySmtpAddress, ownPrefersMutual, policy ?? OPEN_POLICY, recipient.address, found.lookup) : undefined;
+                    const status = found ? resolveRecipientEncryption(own.primarySmtpAddress, ownPrefersMutual, policy ?? OPEN_POLICY, recipient.address, found.lookup) : undefined;
+                    // An OpenPGP copy is encrypted to the sender too, with their own OpenPGP key: without one unlocked here it can't be made.
+                    return status?.format === "openpgp" && !ownOpenPgp ? { ...status, canEncrypt: false, autoEncrypt: false } : status;
                 });
             }
             lookupsComplete = true;
@@ -289,15 +331,20 @@ async function attempt(request: SendRequest, client: ApiClient | undefined): Pro
         }
 
         const assembled = await assemble(request, mailbox, decision.action, statuses, decision.action === "sign" || (decision.action === "encrypt" && decision.sign), client);
-        const withReceipt = request.requestReceipt ? await setMessageRequestReceipt(assembled, true, client) : assembled;
+        const copies = request.requestReceipt ? await Promise.all(assembled.map((copy) => setMessageRequestReceipt(copy, true, client))) : assembled;
         setPendingStage(request.draft.uid, "queuing");
         try {
             if (request.scheduledSendTime) {
-                await sendMessage(withReceipt.uid, { scheduledSendTime: request.scheduledSendTime }, client);
+                for (const copy of copies) {
+                    await sendMessage(copy.uid, { scheduledSendTime: request.scheduledSendTime }, client);
+                }
                 return { kind: "scheduled" };
             }
-            const result = await queueMessageSend(withReceipt.uid, client);
-            return { kind: result.queued ? "queued" : "sent" };
+            let queued = false;
+            for (const copy of copies) {
+                queued = (await queueMessageSend(copy.uid, client)).queued || queued;
+            }
+            return { kind: queued ? "queued" : "sent" };
         } catch (err) {
             // A request that never came back may still have landed: never offer to send it twice if it did.
             if (!(err instanceof ApiRequestError) && (await alreadyAccepted(request, client))) {

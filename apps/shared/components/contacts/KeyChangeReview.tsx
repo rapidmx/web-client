@@ -16,6 +16,8 @@ export interface KeyChangeReviewProps {
     /** The contact's address `resolveKeyConflict()` looks the contact up by; absent hides the actions. */
     address?: string;
     useType: "sign" | "encrypt";
+    /** `"openpgp"` for an OpenPGP certificate (pinned as `useType: "encrypt"`; it signs too); omitted for an S/MIME certificate. */
+    keyType?: "openpgp";
     /** Who the key belongs to, for the advice ("confirm with <name>"). */
     ownerName: string;
     /** The currently pinned key and when it was first trusted; absent (couldn't be loaded) hides the actions. */
@@ -44,6 +46,7 @@ export default function KeyChangeReview({
     mailboxUid,
     address,
     useType,
+    keyType,
     ownerName,
     current,
     proposed,
@@ -57,7 +60,7 @@ export default function KeyChangeReview({
     const [busy, setBusy] = useState<"accept" | "reject" | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [forbidden, setForbidden] = useState(false);
-    const kind = useType === "sign" ? "signing" : "encryption";
+    const kind = keyType === "openpgp" ? "OpenPGP" : useType === "sign" ? "signing" : "encryption";
     const actionable = !!address && !!current && canResolve !== false && !forbidden;
 
     async function resolve(action: "accept" | "reject") {
@@ -70,6 +73,7 @@ export default function KeyChangeReview({
                 action,
                 expectedPinnedFingerprint: current!.fingerprint,
                 ...(action === "accept" && certificate !== undefined ? { certificate } : {}),
+                ...(keyType ? { type: keyType } : {}),
             });
             setConfirmOpen(false);
             onResolved(action);

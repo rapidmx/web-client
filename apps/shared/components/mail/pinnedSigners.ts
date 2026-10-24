@@ -28,6 +28,7 @@ import {
     PINNED_FINGERPRINT_PAGE_SIZE,
     SignerKeyState,
     listContacts,
+    pinnedOpenPgpKeysFor,
     pinnedSigningFingerprintsFor,
     signerKeyStateFor,
 } from "../../../../lib/contacts/contactsApi.js";
@@ -35,6 +36,7 @@ import { keyPinnedSince } from "../contacts/contactKeys.js";
 import { listFolders } from "../../../../lib/mail/mailApi.js";
 import { subscribeKeySession } from "../../../../lib/crypto/keySession.js";
 import type { ApiClient } from "../../../../lib/util/api.js";
+import type { SignerPins } from "../../../../lib/crypto/messageSecurity.js";
 
 /** How long one mailbox's loaded contact list is reused before it is fetched again. */
 export const CONTACTS_CACHE_TTL_MS = 60_000;
@@ -120,12 +122,21 @@ export async function getPinnedSignerFingerprints(mailboxUid: string, address: s
     return pinnedSigningFingerprintsFor(await cachedMailboxContacts(mailboxUid, client), address);
 }
 
+/** The sender `address`'s pinned signing fingerprints and pinned OpenPGP certificates from `mailboxUid`'s contacts - what
+ * `evaluateMessageSecurity()` takes as `SignerPins`. Rejects if they can't be loaded. */
+export async function getPinnedSigners(mailboxUid: string, address: string, client?: ApiClient): Promise<SignerPins> {
+    const contacts = await cachedMailboxContacts(mailboxUid, client);
+    return { fingerprints: pinnedSigningFingerprintsFor(contacts, address), openPgpKeys: pinnedOpenPgpKeysFor(contacts, address) };
+}
+
 /** A sender's signing-key state (`signerKeyStateFor()`) plus what a key-changed notice needs to show and link. */
 export interface SenderKeyState extends SignerKeyState {
     /** The contact holding the first pinned signing key, else the one holding the conflict, else the first match. */
     contactUid?: string;
     /** When the first pinned signing key started being trusted - see `keyPinnedSince()`. */
     pinnedSince?: number;
+    /** When the first pinned OpenPGP certificate (`openPgp[0]`) started being trusted. */
+    openPgpPinnedSince?: number;
 }
 
 /** The sender `address`'s signing-key state from `mailboxUid`'s (cached) contacts, for a "signing key changed" comparison
@@ -142,9 +153,12 @@ export async function getSignerKeyState(mailboxUid: string, address: string, cli
         holder ??
         matching.find((candidate) => (candidate.keyConflicts ?? []).some((conflict) => conflict.useType === "sign")) ??
         matching[0];
+    const openPgpKey = state.openPgp?.[0];
+    const openPgpHolder = openPgpKey && matching.find((candidate) => (candidate.keys ?? []).includes(openPgpKey));
     return {
         ...state,
         ...(contact ? { contactUid: contact.uid } : {}),
         ...(holder ? { pinnedSince: keyPinnedSince(holder, pinned) } : {}),
+        ...(openPgpHolder ? { openPgpPinnedSince: keyPinnedSince(openPgpHolder, openPgpKey) } : {}),
     };
 }

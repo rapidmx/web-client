@@ -17,14 +17,17 @@ import {
     getCurrentSignEnrollment,
     getEscrowInfo,
     getKeyVault,
+    isOpenPgpKey,
     rekey,
     removeMasterKeyWrap,
     startSignEnrollment,
 } from "../../../../lib/crypto/keyvaultApi.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
+    OPENPGP_PRIVATE_KEY_AAD_PURPOSE,
     SIGNING_PRIVATE_KEY_AAD_PURPOSE,
     UnlockedKeys,
+    ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE,
     destroyUnlockedKeys,
     getUnlockedKeys,
     unlockWithPassword,
@@ -53,6 +56,7 @@ import Button from "../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import ZeroAccessSetting from "../../../shared/components/settings/ZeroAccessSetting.js";
 import KeyExportSetting from "../../../shared/components/settings/KeyExportSetting.js";
+import OpenPgpKeySetting from "../../../shared/components/settings/OpenPgpKeySetting.js";
 import SigningCertificateCard, { SigningCertificateMode } from "../../../shared/components/settings/SigningCertificateCard.js";
 import { readStoredSignEnrollment, storeSignEnrollment } from "../../../shared/signing/enrollmentStorage.js";
 import {
@@ -103,7 +107,14 @@ class StaleSessionKeysError extends Error {
 const STALE_KEYS_MESSAGE =
     "Your encryption keys were changed on another device (for example, rotated), so the copy unlocked in this session no longer works. Nothing was changed. Unlock again with your current password, then try again.";
 
+/** The AAD a vault key is sealed with - by what it is: an OpenPGP secret key, a zero-access key, a signing key or an encryption key. */
 function wrappedKeyAad(mailboxUid: string, entry: WrappedPrivateKey): Uint8Array {
+    if (isOpenPgpKey(entry)) {
+        return buildAad(mailboxUid, OPENPGP_PRIVATE_KEY_AAD_PURPOSE);
+    }
+    if (entry.useType === "zero-access") {
+        return buildAad(mailboxUid, ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE);
+    }
     return buildAad(mailboxUid, entry.useType === "sign" ? SIGNING_PRIVATE_KEY_AAD_PURPOSE : ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
 }
 
@@ -169,6 +180,8 @@ async function rewrapVaultPrivateKeys(
                 algorithm: "AES-256-GCM",
                 fingerprint: entry.fingerprint,
                 useType: entry.useType,
+                // An OpenPGP secret key stays one: without its type it would read back as an S/MIME key.
+                ...(isOpenPgpKey(entry) ? { type: entry.type } : {}),
             });
         }
         return { mk, wrappedKeys: rewrapped };
@@ -979,6 +992,7 @@ function EncryptionContent({ canManageKeys }: { canManageKeys: boolean }) {
 
                 <ZeroAccessSetting mailbox={mailbox} canManage={canManageKeys} />
                 <KeyExportSetting mailbox={mailbox} canManage={canManageKeys} />
+                <OpenPgpKeySetting mailbox={mailbox} canManage={canManageKeys} />
 
                 <div>
                     <h2 className="text-sm font-semibold mb-2">Digital signatures</h2>

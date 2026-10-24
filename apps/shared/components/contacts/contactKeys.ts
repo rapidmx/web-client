@@ -6,7 +6,7 @@
  * `MessageDetailPane`). */
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import type { Contact } from "../../../../lib/contacts/contactsApi.js";
-import { PinnedKeyChangedError, type KeyConflict, type PublicKey } from "../../../../lib/crypto/keyvaultApi.js";
+import { keyFormat, PinnedKeyChangedError, type KeyConflict, type PublicKey } from "../../../../lib/crypto/keyvaultApi.js";
 
 export const KEY_CHANGE_STALE_MESSAGE = "This contact's keys changed while you were looking; reload to see the latest.";
 export const KEY_CHANGE_INVALID_MESSAGE =
@@ -64,9 +64,9 @@ export function conflictSourceLabel(source: KeyConflict["source"]): string {
 type ContactWithFirstSeen = Pick<Contact, "previousKeys"> & { keysFirstSeen?: number };
 
 /** When `key` (one of `contact`'s pinned keys) started being trusted: when it replaced the newest previous key of its
- * use, else the contact's `keysFirstSeen`, else the key's own `notBefore`. */
+ * use and format, else the contact's `keysFirstSeen`, else the key's own `notBefore`. */
 export function keyPinnedSince(contact: ContactWithFirstSeen, key: PublicKey): number {
-    const replaced = (contact.previousKeys ?? []).filter((previous) => previous.useType === key.useType).map((previous) => previous.replacedAt);
+    const replaced = (contact.previousKeys ?? []).filter((previous) => previous.useType === key.useType && keyFormat(previous) === keyFormat(key)).map((previous) => previous.replacedAt);
     if (replaced.length > 0) {
         return Math.max(...replaced);
     }

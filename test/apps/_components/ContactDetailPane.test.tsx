@@ -25,15 +25,18 @@ vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
     prepareContactPhoto: vi.fn(async (file: File) => file),
 }));
 
-const { resolveKeyConflict, clearPinnedSignerCache } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn(), clearPinnedSignerCache: vi.fn() }));
+const { resolveKeyConflict, clearPinnedSignerCache, trustSigner } = vi.hoisted(() => ({ resolveKeyConflict: vi.fn(), clearPinnedSignerCache: vi.fn(), trustSigner: vi.fn() }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     resolveKeyConflict,
+    trustSigner,
 }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
 
 afterEach(() => {
     resolveKeyConflict.mockReset();
+    trustSigner.mockReset();
+    clearPinnedSignerCache.mockReset();
 });
 
 function key(useType: "sign" | "encrypt", fingerprint: string, extra: Partial<PublicKey> = {}): PublicKey {
@@ -312,6 +315,89 @@ describe("ContactDetailPane: key rotation continuity", () => {
         expect(screen.getByText(/Signing key: 3333/)).toHaveTextContent("(revoked)");
         expect(screen.getAllByText("(revoked)").every((el) => el.classList.contains("text-danger"))).toBe(true);
         expect(screen.getByText(/Signing key: 4444/)).not.toHaveTextContent("(");
+    });
+});
+
+describe("ContactDetailPane: OpenPGP keys", () => {
+    const openPgp = (fingerprint: string) => key("encrypt", fingerprint, { type: "openpgp" });
+    const jane = (overrides: Partial<Contact> = {}) => contactFixture({ emails: [{ address: "jane@proton.me", type: "work" }], ...overrides });
+    const ARMORED = ["-----BEGIN PGP PUBLIC KEY BLOCK-----", "abc", "-----END PGP PUBLIC KEY BLOCK-----"].join("\n");
+
+    it("labels a pinned OpenPGP key and reviews its change against the pinned OpenPGP key, not the S/MIME one", async () => {
+        resolveKeyConflict.mockResolvedValue({ keys: [] });
+        const user = userEvent.setup();
+        render(
+            <ContactDetailPane
+                contact={jane({
+                    keys: [key("encrypt", "eeee2222"), openPgp("aaaa1111")],
+                    keyConflicts: [{ useType: "encrypt", observedKey: openPgp("bbbb3333"), observedAt: Date.UTC(2026, 1, 3), source: "discovery" }],
+                })}
+                onEdit={vi.fn()}
+                onDelete={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByText(/OpenPGP key: aaaa 1111/)).toBeInTheDocument();
+        expect(screen.getByText(/Encryption key: eeee 2222/)).toBeInTheDocument();
+        const review = within(screen.getByRole("region", { name: "OpenPGP key change" }));
+        expect(review.getByText("aaaa 1111")).toBeInTheDocument();
+        await user.click(review.getByRole("button", { name: "Keep current key" }));
+        await waitFor(() => expect(resolveKeyConflict).toHaveBeenCalled());
+        expect(resolveKeyConflict.mock.calls[0][1]).toMatchObject({ useType: "encrypt", expectedPinnedFingerprint: "aaaa1111", type: "openpgp" });
+        // Nothing to add while one is pinned.
+        expect(screen.queryByRole("button", { name: /Add OpenPGP key/ })).not.toBeInTheDocument();
+    });
+
+    it("pins a pasted OpenPGP key for the contact's address and says so", async () => {
+        trustSigner.mockResolvedValue({ keys: [] });
+        const onKeysChanged = vi.fn();
+        const user = userEvent.setup();
+        const { rerender } = render(<ContactDetailPane contact={jane()} onEdit={vi.fn()} onDelete={vi.fn()} onKeysChanged={onKeysChanged} />);
+
+        await user.click(screen.getByRole("button", { name: /Add OpenPGP key/ }));
+        const add = screen.getByRole("button", { name: "Add key" });
+        expect(add).toBeDisabled();
+        fireEvent.change(screen.getByLabelText("OpenPGP public key for jane@proton.me"), { target: { value: `  ${ARMORED}\n` } });
+        await user.click(add);
+
+        await waitFor(() => expect(onKeysChanged).toHaveBeenCalled());
+        expect(trustSigner).toHaveBeenCalledWith("mb1", { address: "jane@proton.me", certificate: ARMORED, type: "openpgp" }, undefined);
+        expect(clearPinnedSignerCache).toHaveBeenCalled();
+        // The parent reloads the contact, which now has the key.
+        rerender(<ContactDetailPane contact={jane({ keys: [openPgp("aaaa1111")] })} onEdit={vi.fn()} onDelete={vi.fn()} onKeysChanged={onKeysChanged} />);
+        expect(screen.getByText("The OpenPGP key is now trusted for this contact.")).toBeInTheDocument();
+        expect(screen.queryByLabelText("OpenPGP public key for jane@proton.me")).not.toBeInTheDocument();
+    });
+
+    it.each([
+        [new ApiRequestError("bad key", 400), "That isn't an OpenPGP public key for jane@proton.me that can be used now."],
+        [new ApiRequestError("conflict", 409), "A different OpenPGP key is already trusted for this contact."],
+        [new ApiRequestError("down", 503), "Couldn't add the key. Try again."],
+        [new Error("offline"), "Couldn't add the key. Try again."],
+    ])("explains a refused key (%s)", async (error, message) => {
+        trustSigner.mockRejectedValue(error);
+        const user = userEvent.setup();
+        render(<ContactDetailPane contact={jane()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        await user.click(screen.getByRole("button", { name: /Add OpenPGP key/ }));
+        fireEvent.change(screen.getByLabelText("OpenPGP public key for jane@proton.me"), { target: { value: ARMORED } });
+        await user.click(screen.getByRole("button", { name: "Add key" }));
+        expect(await screen.findByText(message)).toBeInTheDocument();
+        expect(clearPinnedSignerCache).not.toHaveBeenCalled();
+    });
+
+    it("cancels the form, and offers nothing without an address or write access", async () => {
+        const user = userEvent.setup();
+        const { unmount } = render(<ContactDetailPane contact={jane()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        await user.click(screen.getByRole("button", { name: /Add OpenPGP key/ }));
+        await user.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(screen.getByRole("button", { name: /Add OpenPGP key/ })).toBeInTheDocument();
+        unmount();
+
+        const second = render(<ContactDetailPane contact={contactFixture()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        expect(screen.queryByRole("button", { name: /Add OpenPGP key/ })).not.toBeInTheDocument();
+        second.unmount();
+        render(<ContactDetailPane contact={jane()} onEdit={vi.fn()} onDelete={vi.fn()} canWrite={false} />);
+        expect(screen.queryByRole("button", { name: /Add OpenPGP key/ })).not.toBeInTheDocument();
     });
 });
 

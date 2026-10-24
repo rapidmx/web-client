@@ -57,6 +57,8 @@ vi.mock("../../../../lib/crypto/keySession.js", () => ({
     MASTER_KEY_AAD_PURPOSE: "master-key",
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE: "encrypt-private-key",
     SIGNING_PRIVATE_KEY_AAD_PURPOSE: "sign-private-key",
+    ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE: "zero-access-private-key",
+    OPENPGP_PRIVATE_KEY_AAD_PURPOSE: "openpgp-private-key",
     getUnlockedKeys,
     unlockWithPassword,
     destroyUnlockedKeys,
@@ -67,6 +69,7 @@ vi.mock("../../../../lib/crypto/keySession.js", () => ({
 vi.mock("../../../../lib/crypto/zeroAccessKey.js", () => ({ ensureZeroAccessKey: async () => false, provisionZeroAccessKey: async () => undefined }));
 vi.mock("../../../../apps/shared/components/settings/ZeroAccessSetting.js", () => ({ default: () => null }));
 vi.mock("../../../../apps/shared/components/settings/KeyExportSetting.js", () => ({ default: () => null }));
+vi.mock("../../../../apps/shared/components/settings/OpenPgpKeySetting.js", () => ({ default: () => null }));
 
 const { buildPasswordWrap, buildRecoveryWraps, buildEscrowWrap } = vi.hoisted(() => ({
     buildPasswordWrap: vi.fn(),
@@ -1162,6 +1165,36 @@ describe("SettingsEncryptionPage", () => {
         await user.click(screen.getByRole("checkbox"));
         await user.click(screen.getByRole("button", { name: "Done" }));
         expect(await screen.findByText(/Signing key: new-sign-fp/)).toBeInTheDocument();
+    });
+
+    it("rotates a zero-access key and an OpenPGP key under their own AAD purposes, keeping the OpenPGP key's type", async () => {
+        const unlockedFixture = { masterKey: new Uint8Array(32).fill(3), encryptionFingerprint: mailbox.keys[0].fingerprint };
+        getUnlockedKeys.mockReturnValue(unlockedFixture);
+        const zeroAccess = { ciphertext: "za-ct", nonce: "n1", algorithm: "AES-256-GCM", fingerprint: "za-fp", useType: "zero-access" as const };
+        const openPgp = { ciphertext: "pgp-ct", nonce: "n2", algorithm: "AES-256-GCM", fingerprint: "pgp-fp", useType: "encrypt" as const, type: "openpgp" as const };
+        getKeyVault.mockResolvedValue({ wrappedKeys: [...vault.wrappedKeys, zeroAccess, openPgp], masterKeyWraps: vault.masterKeyWraps });
+        mockRotationCrypto();
+        openWithKey.mockImplementation(async () => new Uint8Array([5]));
+        buildPasswordWrap.mockResolvedValue({ ...passwordWrapFixture(), ciphertext: "ct3" });
+        buildRecoveryWraps.mockResolvedValue(recoveryFixture(8));
+        rekey.mockResolvedValue(vault);
+        unlockWithPassword.mockResolvedValue({ unopenableKeys: [] });
+        mockShell();
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+        await screen.findByText("Password");
+
+        await submitRotation(user);
+
+        await waitFor(() => expect(rekey).toHaveBeenCalled());
+        expect(openWithKey).toHaveBeenCalledWith(unlockedFixture.masterKey, zeroAccess, expect.anything());
+        expect(buildAad).toHaveBeenCalledWith("mb1", "zero-access-private-key");
+        expect(buildAad).toHaveBeenCalledWith("mb1", "openpgp-private-key");
+        expect(rekey.mock.calls[0][1].wrappedKeys).toEqual([
+            expect.objectContaining({ ciphertext: "sealed:mb1:encrypt-private-key", useType: "encrypt" }),
+            { ciphertext: "sealed:mb1:zero-access-private-key", nonce: "fresh-nonce", algorithm: "AES-256-GCM", fingerprint: "za-fp", useType: "zero-access" },
+            { ciphertext: "sealed:mb1:openpgp-private-key", nonce: "fresh-nonce", algorithm: "AES-256-GCM", fingerprint: "pgp-fp", useType: "encrypt", type: "openpgp" },
+        ]);
     });
 
     describe("round 5: escrow in the rekey request", () => {

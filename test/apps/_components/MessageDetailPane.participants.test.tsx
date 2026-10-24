@@ -20,6 +20,7 @@ vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecuri
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: vi.fn(), subscribeKeySession: () => () => undefined }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
     getPinnedSignerFingerprints: async () => [],
+    getPinnedSigners: async () => ({ fingerprints: [], openPgpKeys: [] }),
     getSignerKeyState: async () => ({ pinned: [], previous: [] }),
     clearPinnedSignerCache: vi.fn(),
 }));

@@ -21,7 +21,8 @@ import MessageDetailPane, {
     trustSignerErrorMessage,
 } from "../../../apps/shared/components/mail/MessageDetailPane.js";
 
-const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints, clearPinnedSignerCache, trustSigner } = vi.hoisted(() => ({
+const { evaluateMessageSecurity, getUnlockedKeys, getPinnedSignerFingerprints, clearPinnedSignerCache, trustSigner, pinnedOpenPgp } = vi.hoisted(() => ({
+    pinnedOpenPgp: { keys: [] as string[] },
     evaluateMessageSecurity: vi.fn(),
     getUnlockedKeys: vi.fn(),
     getPinnedSignerFingerprints: vi.fn(),
@@ -36,6 +37,8 @@ vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
 }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({
     getPinnedSignerFingerprints,
+    getPinnedSigners: (...args: unknown[]) =>
+        Promise.resolve(getPinnedSignerFingerprints(...args)).then((fingerprints: string[]) => ({ fingerprints, openPgpKeys: [...pinnedOpenPgp.keys] })),
     clearPinnedSignerCache,
     // No recorded key conflicts - see MessageDetailPane.keyChange.test.tsx for those.
     getSignerKeyState: async () => ({ pinned: [], previous: [] }),
@@ -90,6 +93,7 @@ afterEach(() => {
     getUnlockedKeys.mockReset();
     getPinnedSignerFingerprints.mockReset();
     trustSigner.mockReset();
+    pinnedOpenPgp.keys = [];
 });
 
 describe("formatFingerprint", () => {
@@ -274,5 +278,42 @@ describe("MessageDetailPane: Trust this signer", () => {
         expect(await screen.findByText(TRUST_SIGNER_FORBIDDEN_MESSAGE)).toBeInTheDocument();
         await user.keyboard("{Escape}");
         await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+});
+
+describe("MessageDetailPane: OpenPGP signers", () => {
+    const openPgpUnverified = { ...unverified, signerKeyType: "openpgp", signerCertificate: "cGdw" };
+
+    it("trusts an OpenPGP signer's key as an OpenPGP key", async () => {
+        getPinnedSignerFingerprints.mockResolvedValue([]);
+        evaluateMessageSecurity.mockResolvedValueOnce(openPgpUnverified).mockResolvedValue({ ...openPgpUnverified, state: "signed_verified" });
+        trustSigner.mockResolvedValue({ keys: [] });
+        const user = userEvent.setup();
+        renderPane();
+
+        await openDialog(user);
+        await user.click(screen.getByRole("button", { name: "Trust" }));
+
+        expect(await screen.findByText("Signed & verified")).toBeInTheDocument();
+        expect(trustSigner).toHaveBeenCalledWith("mb-shared", { address: "sender@example.com", certificate: "cGdw", type: "openpgp" }, undefined);
+    });
+
+    it("checks the signature against the sender's pinned OpenPGP keys, and doesn't offer to trust a sender who has one", async () => {
+        getPinnedSignerFingerprints.mockResolvedValue([]);
+        pinnedOpenPgp.keys = ["pinned-pgp"];
+        evaluateMessageSecurity.mockResolvedValue(openPgpUnverified);
+        renderPane();
+
+        await screen.findByText("Signed - signer not verified");
+        expect(evaluateMessageSecurity.mock.calls[0][2]).toEqual({ fingerprints: [], openPgpKeys: ["pinned-pgp"] });
+        expect(screen.queryByRole("button", { name: "Trust this signer" })).not.toBeInTheDocument();
+    });
+
+    it("says when the signature couldn't be checked because the sender's OpenPGP key isn't known", async () => {
+        getPinnedSignerFingerprints.mockResolvedValue([]);
+        evaluateMessageSecurity.mockResolvedValue({ state: "unprotected", html: "<p>Hi</p>", signerKeyType: "openpgp", signerKeyUnknown: true });
+        renderPane();
+
+        expect(await screen.findByText(/Signed with an OpenPGP key RapidMX doesn.t have for this sender yet/)).toBeInTheDocument();
     });
 });

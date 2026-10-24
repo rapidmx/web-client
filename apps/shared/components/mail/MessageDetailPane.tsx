@@ -50,11 +50,11 @@ import { isCalendarAttachment } from "./invite/inviteFormat.js";
 import { useMessageInvite } from "./invite/inviteStore.js";
 import { rememberSealedInvite } from "../../../../lib/calendar/sealedInvites.js";
 import { getUnlockedKeys, subscribeKeySession } from "../../../../lib/crypto/keySession.js";
-import type { MessageSecurityResult, SignatureFailureReason } from "../../../../lib/crypto/messageSecurity.js";
+import type { MessageSecurityResult, SignatureFailureReason, SignerPinsInput } from "../../../../lib/crypto/messageSecurity.js";
 import { extractAddresses, type MimeAttachment } from "../../../../lib/crypto/mime.js";
 import { SignerKeyConflictError, signingKeyFingerprints, trustSigner } from "../../../../lib/crypto/keyvaultApi.js";
 import { isLikelyMailingList } from "../../../../lib/crypto/composeSecurity.js";
-import { SenderKeyState, clearPinnedSignerCache, getPinnedSignerFingerprints, getSignerKeyState } from "./pinnedSigners.js";
+import { SenderKeyState, clearPinnedSignerCache, getPinnedSigners, getSignerKeyState } from "./pinnedSigners.js";
 import { currentVerificationSeal, getVaultGeneration, sendVerificationSeal } from "./verificationSeals.js";
 import { getMyMailboxAccess } from "../../../../lib/mail/mailboxAccessApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
@@ -612,9 +612,9 @@ function MessageDetailContent({
         // mailbox's own signing keys when it sent the message itself. A failed lookup means no pins, which can only
         // ever make a signature "signer not verified", never verified.
         const senderAddress = message.from.address;
-        const pinsPromise = getPinnedSignerFingerprints(message.mailboxUid, senderAddress, client).then(
-            (fingerprints) => ({ loaded: true, fingerprints }),
-            () => ({ loaded: false, fingerprints: [] as string[] }),
+        const pinsPromise = getPinnedSigners(message.mailboxUid, senderAddress, client).then(
+            (signers) => ({ loaded: true, ...signers }),
+            () => ({ loaded: false, fingerprints: [] as string[], openPgpKeys: [] as string[] }),
         );
         // Verification seals (see `verificationSeals.ts`) need unlocked keys and the vault's current master key
         // generation; without either the message is evaluated exactly as before, with no seal. The sender's key records
@@ -640,7 +640,9 @@ function MessageDetailContent({
                 const ownPins = signingKeyFingerprints(ownKeys);
                 const [contactPins, sealContext] = await Promise.all([pinsPromise, sealContextPromise]);
                 const pins = [...new Set([...contactPins.fingerprints, ...ownPins])];
-                const pinned = pins.length > 0 ? pins : undefined;
+                // An OpenPGP signature is checked against the sender's pinned OpenPGP certificates themselves (it names only a key ID).
+                const pinned: SignerPinsInput =
+                    contactPins.openPgpKeys.length > 0 ? { fingerprints: pins, openPgpKeys: contactPins.openPgpKeys } : pins.length > 0 ? pins : undefined;
                 // The raw content is a byte string - only ever handed to evaluateMessageSecurity(), never shown. Keys
                 // are read after the pin lookup's await, so a lock that happened meanwhile is honored.
                 const unlocked = getUnlockedKeys(message.mailboxUid);
@@ -677,7 +679,7 @@ function MessageDetailContent({
                     const viaAlias = await messageSecurity.evaluateMessageSecurity(rawMime, unlocked, pinned, alias);
                     result = { ...result, notAddressedToReader: viaAlias.notAddressedToReader };
                 }
-                const unpinned = contactPins.loaded && pins.length === 0;
+                const unpinned = contactPins.loaded && pins.length === 0 && contactPins.openPgpKeys.length === 0;
                 const keyChanged = signerKeyChanged(result);
                 const [keyState, access] = await Promise.all([
                     keyChanged || (unpinned && UNVERIFIED_SIGNER_STATES.has(result.state)) ? loadKeyState() : undefined,
@@ -783,11 +785,11 @@ function MessageDetailContent({
     // Only ever invoked from the "Trust this signer" dialog, which only opens for an unverified-signer result carrying
     // `signerCertificate`. The pin goes on the contact in the mailbox the message belongs to; the evaluation is then
     // re-run against a fresh pinned-signer lookup, so the badge turns verified.
-    async function handleTrustSigner(address: string, certificate: string) {
+    async function handleTrustSigner(address: string, certificate: string, type?: "openpgp") {
         setTrusting(true);
         setTrustError(null);
         try {
-            await trustSigner(message.mailboxUid, { address, certificate }, client);
+            await trustSigner(message.mailboxUid, { address, certificate, ...(type ? { type } : {}) }, client);
             clearPinnedSignerCache();
             setTrustConfirmOpen(false);
             setUnlockRefresh((n) => n + 1);
@@ -1112,7 +1114,10 @@ function MessageDetailContent({
             ? security.signerCertificate
             : undefined;
     const keyChanged = security && signerKeyChanged(security) ? security : undefined;
-    const pinnedSignerKey = senderKeyState?.pinned[0];
+    // An OpenPGP signer's key is pinned as the contact's OpenPGP certificate, not a signing certificate.
+    const openPgpSigner = keyChanged?.signerKeyType === "openpgp";
+    const pinnedSignerKey = openPgpSigner ? senderKeyState?.openPgp?.[0] : senderKeyState?.pinned[0];
+    const pinnedSignerSince = openPgpSigner ? senderKeyState?.openPgpPinnedSince : senderKeyState?.pinnedSince;
     const recordedConflict =
         keyChanged && sameFingerprint(senderKeyState?.conflict?.observedKey.fingerprint, keyChanged.signerFingerprint)
             ? senderKeyState!.conflict
@@ -1349,6 +1354,11 @@ function MessageDetailContent({
                         )}
                         {security && <SecurityIndicator security={security} zeroAccess={!!message.zeroAccess} />}
                     </div>
+                    {security?.signerKeyUnknown && (
+                        <p role="status" className="mt-2 text-sm text-text-muted">
+                            Signed with an OpenPGP key RapidMX doesn&rsquo;t have for this sender yet, so the signature couldn&rsquo;t be checked.
+                        </p>
+                    )}
                     {senderNameCheck.misleading && (
                         <p role="status" className="mt-2 py-2 px-3 rounded-sm text-sm bg-warning/15 text-text">
                             The sender&rsquo;s name &ldquo;{senderName}&rdquo; looks like an email address, but this message was
@@ -1577,9 +1587,10 @@ function MessageDetailContent({
                         <KeyChangeReview
                             mailboxUid={message.mailboxUid}
                             address={senderAddress}
-                            useType="sign"
+                            useType={openPgpSigner ? "encrypt" : "sign"}
+                            {...(openPgpSigner ? { keyType: "openpgp" as const } : {})}
                             ownerName="the sender"
-                            current={pinnedSignerKey && { fingerprint: pinnedSignerKey.fingerprint, since: senderKeyState.pinnedSince! }}
+                            current={pinnedSignerKey && { fingerprint: pinnedSignerKey.fingerprint, since: pinnedSignerSince! }}
                             proposed={{
                                 fingerprint: keyChanged.signerFingerprint!,
                                 emails: keyChanged.signerEmails,
@@ -1879,7 +1890,7 @@ function MessageDetailContent({
                             className="!w-auto"
                             loading={trusting}
                             disabled={trusting}
-                            onClick={() => handleTrustSigner(senderAddress, trustableCertificate!)}
+                            onClick={() => handleTrustSigner(senderAddress, trustableCertificate!, security?.signerKeyType)}
                         >
                             Trust
                         </Button>

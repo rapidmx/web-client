@@ -15,6 +15,8 @@ import ContactPhotoEditor from "./ContactPhotoEditor.js";
 import KeyChangeReview from "./KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, formatDate, keyPinnedSince, revocationLabel } from "./contactKeys.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
+import { isOpenPgpKey, keyFormat, OPENPGP_KEY_TYPE, type PublicKey, trustSigner } from "../../../../lib/crypto/keyvaultApi.js";
+import { ApiRequestError } from "../../../../lib/util/api.js";
 
 /** Groups a hex fingerprint into 4-character blocks (`ab12 cd34 ...`) for out-of-band verification -
  * the spec's own use case ("compare this over the phone") is materially easier with a grouped string
@@ -202,12 +204,14 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                             </p>
                         )}
                         {keyConflicts.map((conflict) => {
-                            const pinned = contact.keys?.find((key) => key.useType === conflict.useType);
-                            const kind = conflict.useType === "sign" ? "signing" : "encryption";
+                            // Each format's key is pinned on its own: an OpenPGP key's conflict is with the pinned OpenPGP key.
+                            const openPgp = isOpenPgpKey(conflict.observedKey);
+                            const pinned = contact.keys?.find((key) => key.useType === conflict.useType && keyFormat(key) === keyFormat(conflict.observedKey));
+                            const kind = openPgp ? "OpenPGP" : conflict.useType === "sign" ? "signing" : "encryption";
                             return (
                                 <section
-                                    key={conflict.useType}
-                                    aria-label={`${conflict.useType === "sign" ? "Signing" : "Encryption"} key change`}
+                                    key={`${conflict.useType}:${keyFormat(conflict.observedKey)}`}
+                                    aria-label={`${openPgp ? "OpenPGP" : conflict.useType === "sign" ? "Signing" : "Encryption"} key change`}
                                     className="mb-3 py-3 px-3 rounded-sm bg-warning/15 text-text flex flex-col gap-2"
                                 >
                                     <h2 className="font-semibold">
@@ -218,6 +222,7 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                                         mailboxUid={contact.mailboxUid}
                                         address={contact.emails[0]?.address}
                                         useType={conflict.useType}
+                                        {...(openPgp ? { keyType: "openpgp" as const } : {})}
                                         ownerName={contact.displayName}
                                         current={pinned && { fingerprint: pinned.fingerprint, since: keyPinnedSince(contact, pinned) }}
                                         proposed={{
@@ -248,7 +253,7 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                         )}
                         {contact.keys?.map((key) => (
                             <div key={key.fingerprint} className="font-mono text-xs py-0.5">
-                                {key.useType === "sign" ? "Signing" : "Encryption"} key: {formatFingerprint(key.fingerprint)}
+                                {keyLabel(key)} key: {formatFingerprint(key.fingerprint)}
                                 <RevocationBadge label={revocationLabel(key)} />
                             </div>
                         ))}
@@ -259,7 +264,7 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                                     {previousKeys.map((key) => (
                                         <li key={`${key.useType}:${key.fingerprint}:${key.replacedAt}`} className="text-xs py-0.5">
                                             <span className="font-mono">
-                                                {key.useType === "sign" ? "Signing" : "Encryption"} key: {formatFingerprint(key.fingerprint)}
+                                                {keyLabel(key)} key: {formatFingerprint(key.fingerprint)}
                                             </span>
                                             <RevocationBadge label={revocationLabel(key)} />
                                             <span className="text-text-muted">
@@ -275,7 +280,83 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                         )}
                     </div>
                 ) : null}
+                {canWrite && contact.emails[0]?.address && !contact.keys?.some((key) => isOpenPgpKey(key)) && (
+                    <OpenPgpKeyImport contact={contact} onImported={() => refresh("The OpenPGP key is now trusted for this contact.")} />
+                )}
             </div>
         </div>
+    );
+}
+
+/** What a pinned key is called: an OpenPGP certificate by its format (it signs and encrypts), an S/MIME one by its use. */
+function keyLabel(key: Pick<PublicKey, "useType" | "type">): string {
+    return isOpenPgpKey(key) ? "OpenPGP" : key.useType === "sign" ? "Signing" : "Encryption";
+}
+
+/**
+ * "Add OpenPGP key": pins an OpenPGP public key the user pasted (from the contact's website, a key they sent, a key server they
+ * trust) for the contact's first address - `trustSigner()` with `type: "openpgp"`, which restapi checks names that address. For an
+ * OpenPGP user whose domain publishes no Web Key Directory, this is how RapidMX can encrypt to them.
+ */
+function OpenPgpKeyImport({ contact, onImported }: { contact: Contact; onImported: () => void }) {
+    const client = useApiClient();
+    const [open, setOpen] = useState(false);
+    const [text, setText] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    if (!open) {
+        return (
+            <div>
+                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setOpen(true)}>
+                    Add OpenPGP key&hellip;
+                </Button>
+            </div>
+        );
+    }
+    async function handleImport(e: React.FormEvent) {
+        e.preventDefault();
+        setBusy(true);
+        setError(null);
+        try {
+            await trustSigner(contact.mailboxUid, { address: contact.emails[0].address, certificate: text.trim(), type: OPENPGP_KEY_TYPE }, client);
+            clearPinnedSignerCache();
+            setOpen(false);
+            setText("");
+            onImported();
+        } catch (err) {
+            setError(
+                err instanceof ApiRequestError && err.status === 400
+                    ? `That isn't an OpenPGP public key for ${contact.emails[0].address} that can be used now.`
+                    : err instanceof ApiRequestError && err.status === 409
+                      ? "A different OpenPGP key is already trusted for this contact."
+                      : "Couldn't add the key. Try again.",
+            );
+        } finally {
+            setBusy(false);
+        }
+    }
+    return (
+        <form onSubmit={(e) => void handleImport(e)} className="flex flex-col gap-2">
+            <label className="text-sm font-semibold" htmlFor={`openpgp-key-${contact.uid}`}>
+                OpenPGP public key for {contact.emails[0].address}
+            </label>
+            <textarea
+                id={`openpgp-key-${contact.uid}`}
+                className="w-full text-xs font-mono border border-border rounded-sm py-1.5 px-2 bg-surface min-h-[8rem]"
+                placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                disabled={busy}
+            />
+            {error && <Alert>{error}</Alert>}
+            <div className="flex gap-2">
+                <Button type="submit" className="!w-auto" loading={busy} disabled={busy || !text.trim()}>
+                    Add key
+                </Button>
+                <Button type="button" variant="secondary" className="!w-auto" onClick={() => setOpen(false)} disabled={busy}>
+                    Cancel
+                </Button>
+            </div>
+        </form>
     );
 }

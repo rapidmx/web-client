@@ -734,6 +734,21 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@openpgp/web-stream-tools@npm:~0.3.1":
+  version: 0.3.1
+  resolution: "@openpgp/web-stream-tools@npm:0.3.1"
+  peerDependencies:
+    "@types/node": ">=18.0.0"
+    typescript: ">=4.7"
+  peerDependenciesMeta:
+    "@types/node":
+      optional: true
+    typescript:
+      optional: true
+  checksum: 10c0/8fb6913edf2326bc5bb162919ca9e9924d7ea8c03f890b7ce4d377a1a975af12b15ee13765ccdca3150451093e1e6c6f39f0cdceda92cd952764b5efadaf01af
+  languageName: node
+  linkType: hard
+
 "@oxc-project/types@npm:=0.149.0":
   version: 0.149.0
   resolution: "@oxc-project/types@npm:0.149.0"
@@ -928,6 +943,7 @@ __metadata:
     "@dnd-kit/core": "npm:^6.3.1"
     "@emoji-mart/data": "npm:^1.2.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
+    "@openpgp/web-stream-tools": "npm:~0.3.1"
     "@peculiar/x509": "npm:^2.1.0"
     "@rapidrest/react": "npm:^2.2.0"
     "@tailwindcss/vite": "npm:^4.3.3"
@@ -962,6 +978,7 @@ __metadata:
     globals: "npm:^17.12.0"
     hash-wasm: "npm:^4.12.0"
     jsdom: "npm:^30.0.1"
+    openpgp: "npm:^6.3.2"
     pkijs: "npm:^3.4.0"
     react: "npm:^19.2.8"
     react-dom: "npm:^19.2.8"
@@ -4488,6 +4505,18 @@ __metadata:
   dependencies:
     wrappy: "npm:1"
   checksum: 10c0/5d48aca287dfefabd756621c5dfce5c91a549a93e9fdb7b8246bc4c4790aa2ec17b34a260530474635147aeb631a2dcc8b32c613df0675f96041cbb8244517d0
+  languageName: node
+  linkType: hard
+
+"openpgp@npm:^6.3.2":
+  version: 6.3.2
+  resolution: "openpgp@npm:6.3.2"
+  peerDependencies:
+    "@openpgp/web-stream-tools": ~0.3.0
+  peerDependenciesMeta:
+    "@openpgp/web-stream-tools":
+      optional: true
+  checksum: 10c0/f4c4da52b272af5a9d2435143a909f304146a085db5d468affc61c02e954060790a93d17fc9dfce17b59ee3a00fe64340002292259f5b1dcfd94b5bae9e2a0e3
   languageName: node
   linkType: hard
 

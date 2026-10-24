@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -144,6 +144,37 @@ describe("EncryptionPolicyPage", () => {
     it("treats encryption as enabled when any tier allows it", () => {
         expect(isEncryptionEnabled({ encryptSameOrg: "prohibited", encryptFederated: "prohibited", encryptExternal: "prohibited" })).toBe(false);
         expect(isEncryptionEnabled({ encryptSameOrg: "prohibited", encryptFederated: "optional", encryptExternal: "prohibited" })).toBe(true);
+    });
+});
+
+describe("EncryptionPolicyPage - OpenPGP", () => {
+    it("doesn't offer the setting on a server without OpenPGP support", async () => {
+        mockPolicy(undefined);
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+        await screen.findByLabelText("Mail within this server");
+        expect(screen.queryByRole("checkbox", { name: /Allow OpenPGP/ })).not.toBeInTheDocument();
+    });
+
+    it("turns OpenPGP off and back on, saving each without asking", async () => {
+        const saved: any[] = [];
+        mockPolicy((body) => {
+            saved.push(body);
+            return jsonResponse(200, body);
+        }, jsonResponse(200, { ...optional, allowOpenPgp: true }));
+        const user = userEvent.setup();
+        render(<EncryptionPolicyPage userUid="admin-1" authServerUrl="https://auth.example.com" />);
+
+        const checkbox = await screen.findByRole("checkbox", { name: /Allow OpenPGP/ });
+        expect(checkbox).toBeChecked();
+        await user.click(checkbox);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Saved.")).toBeInTheDocument();
+        expect(saved).toEqual([{ ...optional, allowOpenPgp: false }]);
+
+        await user.click(screen.getByRole("checkbox", { name: /Allow OpenPGP/ }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(saved).toHaveLength(2));
+        expect(saved[1]).toEqual({ ...optional, allowOpenPgp: true });
     });
 });
 

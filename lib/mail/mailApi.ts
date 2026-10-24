@@ -1094,6 +1094,10 @@ export interface AssembleDraftInput {
     html: string;
     /** See `AssembleIntent`. */
     intent?: AssembleIntent;
+    /** The addresses this copy is delivered to, when not all of `to`/`cc`/`bcc`: one copy of a message sent in two end-to-end
+     * formats (an S/MIME and an OpenPGP copy, each listing every recipient) goes only to the recipients of its own format. Each
+     * must be one of the recipients. */
+    deliverTo?: string[];
 }
 
 /**

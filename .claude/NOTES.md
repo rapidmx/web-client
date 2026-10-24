@@ -3873,3 +3873,23 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - (Fixed 2026-10-23) A mailbox without an owner assigned to an escrow scope gets each zero-access key wrapped to the scope's certificate (`getEscrowInfo()`): `enrollNewSharedKey` sends `escrowWrap` with a new key, and `maintainSharedMailbox` wraps the keys in `escrowPending` it holds (`putZeroAccessEscrowWraps`, result `escrowed`), skipping them when the escrow info names another scope than the status.
   - (Fixed 2026-10-23) Locking a personal mailbox now also locks the shared sessions opened through it: `UnlockedKeys.openedWith` names the own mailboxes whose keys opened a shared session's wraps, and `destroyUnlockedKeys(uid)` destroys every shared session listing `uid`. `personalSessions()` returns `{ mailboxUid, unlocked }` for the non-shared sessions.
   - Every test that mocks `keySession.js` under `MailShell` must export `personallyUnlockedKeys` (`SharedMailboxKeyManager` calls it); its absence showed only as unhandled errors, which fail the run.
+
+### 2026-10-24: OpenPGP interoperability (Phases 3/4)
+- Plan: `C:\Users\caska\.claude\plans\openpgp-interop.md`. Spec: restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*.
+- **Library:** OpenPGP.js 6.3.2 (LGPL-3.0+), always imported dynamically (`lib/crypto/openpgp.ts`, `pgpMessage.ts`).
+  - Keys are v6 (`config: { v6Keys: true }`, `type: "curve25519"`).
+  - `@openpgp/web-stream-tools` is a dev dependency, needed only for the types.
+  - `clearPrivateParams()` exists at runtime but is missing from the typings, so it is called through a cast.
+- **Own key:** `openPgpKey.ts`'s `ensureOpenPgpKey()` runs after `ensureZeroAccessKey()` in `KeyEnrollmentGate`. It does nothing unless `EncryptionPolicy.allowOpenPgp === true`.
+  - The secret key is sealed under MK with AAD purpose `openpgp-private-key`. `WrappedPrivateKey.type: "openpgp"` must survive every re-wrap; the rotation in settings keeps it.
+  - `keySession` opens the keys into `UnlockedKeys.openPgpKeys`. They are never S/MIME retained keys, and the PKCS#12 export leaves them out.
+  - Settings → Encryption has `OpenPgpKeySetting`: fingerprint, public key download, and a passphrase-protected secret export.
+- **Sending:** S/MIME stays preferred (JP). `resolveRecipientEncryption` picks OpenPGP only for a recipient with no S/MIME certificate.
+  - With mixed recipients, `sendJob.assemble` sends two copies: the draft carries the S/MIME copy and `createDraft` makes the PGP/MIME one. Each gets `deliverTo` (server `assemble-raw` → restapi `envelopeRecipients`). Never a plaintext copy.
+  - The PGP copy has its own Message-ID, is encrypted to self, carries the sender's armored key, and is signed with the OpenPGP key when the message is signed.
+  - An OpenPGP recipient can't be encrypted to while the sender's own OpenPGP key isn't unlocked.
+- **Reading:** `messageSecurity.evaluatePgp` handles PGP/MIME signed or encrypted (including an encrypted `multipart/signed`), inline `PGP MESSAGE`, and cleartext signatures.
+  - Trust works as for S/MIME: pinned contact OpenPGP keys (`SignerPins.openPgpKeys`, from `getPinnedSigners()`) and own keys are trusted. A key that is only attached gives `*_unverified_signer`, or `signer_key_changed` when another key is pinned.
+  - A signature nobody's key can check sets `signerKeyUnknown`. It is never reported as failed.
+- **Contacts:** OpenPGP keys are pinned per slot (use plus format). `keyPinnedSince` and the conflict matching compare `keyFormat` too. `ContactDetailPane` lets the user paste a contact's key (`trustSigner` with `type: "openpgp"`).
+- **Test mocks:** tests that mock `pinnedSigners.js` must export `getPinnedSigners`. When it was missing, 92 MessageDetailPane tests failed.

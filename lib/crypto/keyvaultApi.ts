@@ -15,9 +15,10 @@ import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 /** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
  * `@rapidmx/restapi`'s `PublicKey` type exactly. */
 export interface PublicKey {
-    /** Base64-encoded DER X.509 certificate. */
+    /** Base64-encoded DER X.509 certificate - or, for `type: "openpgp"`, the binary OpenPGP transferable public key. */
     publicKey: string;
-    /** The key's type/format (e.g. `x509`). */
+    /** The key's type/format: `x509` (S/MIME), or `openpgp` - an OpenPGP certificate, which both encrypts and signs and is listed
+     * once, with `useType: "encrypt"` (restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*). */
     type: string;
     useType: "sign" | "encrypt";
     /** SHA-256 fingerprint of the certificate, hex encoded. */
@@ -48,6 +49,23 @@ export interface WrappedPrivateKey {
     algorithm: string;
     fingerprint: string;
     useType: KeyUseType;
+    /** `"openpgp"` for an OpenPGP secret key (sealed with `OPENPGP_PRIVATE_KEY_AAD_PURPOSE`); absent for a PKCS#8 key. */
+    type?: string;
+}
+
+/** `PublicKey.type` of an OpenPGP certificate. */
+export const OPENPGP_KEY_TYPE = "openpgp";
+
+/** Whether `key` is an OpenPGP certificate (or an OpenPGP secret key's wrap). */
+export function isOpenPgpKey(key: { type?: string } | undefined): boolean {
+    return key?.type === OPENPGP_KEY_TYPE;
+}
+
+/** A key's format: `"openpgp"`, or `"x509"` for every other key (S/MIME). */
+export type KeyFormat = "x509" | "openpgp";
+
+export function keyFormat(key: { type?: string }): KeyFormat {
+    return isOpenPgpKey(key) ? "openpgp" : "x509";
 }
 
 /** What a mailbox's own key is used for. `sign`/`encrypt` keys are published (`Mailbox.keys`); `zero-access` keys never are.
@@ -152,10 +170,10 @@ export function getKeyVault(mailboxUid: string, client?: ApiClient): Promise<Key
  * `revocationReason` - a superseded key may still verify old mail (`isTrustedForVerification()`) but is never used for
  * new mail. Shared by `crypto/keySession.ts` (the
  * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
-export function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined {
+export function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt", format: KeyFormat = "x509"): PublicKey | undefined {
     const now = Date.now();
     return keys
-        .filter((k) => k.useType === useType && !k.revokedAt && k.notAfter > now)
+        .filter((k) => k.useType === useType && keyFormat(k) === format && !k.revokedAt && k.notAfter > now)
         .sort((a, b) => b.notBefore - a.notBefore)[0];
 }
 
@@ -199,7 +217,11 @@ export interface EnrollKeyInput extends ExpectedMasterKeyGeneration {
     csr?: string;
     /** An already-issued PEM certificate — required (and only meaningful) for `useType: "sign"`. */
     certificate?: string;
-    wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
+    /** `"openpgp"` to enroll the mailbox's OpenPGP key (with `useType: "encrypt"`): self-certified, no CA. */
+    type?: string;
+    /** The OpenPGP public key (armored or base64 binary) - required, and only meaningful, with `type: "openpgp"`. */
+    publicKey?: string;
+    wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType" | "type">;
     /** Only meaningful the very first time a mailbox enrolls a key at all (bootstraps its master key). */
     masterKeyWraps?: MasterKeyWrap[];
 }
@@ -669,8 +691,11 @@ export function lookupKeys(mailboxUid: string, addr: string, client?: ApiClient)
 /** What `trustSigner()` pins: the sender's address and the certificate that signed their message. */
 export interface TrustSignerInput {
     address: string;
-    /** Base64 DER of the signer certificate - `MessageSecurityResult.signerCertificate`. */
+    /** Base64 DER of the signer certificate - `MessageSecurityResult.signerCertificate` - or, with `type: "openpgp"`, an OpenPGP
+     * public key (armored or base64 binary): a signer's, a key attached to a message, or one the user pasted. */
     certificate: string;
+    /** `"openpgp"` to pin an OpenPGP key (it encrypts and signs); omitted for an X.509 signing certificate. */
+    type?: string;
 }
 
 /**
@@ -696,7 +721,7 @@ export async function trustSigner(mailboxUid: string, input: TrustSignerInput, c
     try {
         return await withClient<KeyLookupResult>(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/trust`, {
             method: "POST",
-            body: JSON.stringify({ address: input.address, certificate: input.certificate }),
+            body: JSON.stringify({ address: input.address, certificate: input.certificate, ...(input.type ? { type: input.type } : {}) }),
         });
     } catch (err) {
         if (err instanceof ApiRequestError && err.status === 409) {
@@ -721,6 +746,8 @@ export interface ResolveKeyConflictInput {
     /** For `"accept"`: base64 DER of the certificate to pin (e.g. `MessageSecurityResult.signerCertificate` of a
      * `signer_key_changed` result). Omitted, restapi pins the recorded conflict's `observedKey`. */
     certificate?: string;
+    /** `"openpgp"` for the contact's OpenPGP key (always `useType: "encrypt"`); omitted for its S/MIME certificate. */
+    type?: string;
 }
 
 /** The contact's resulting key state after `resolveKeyConflict()`. */
@@ -755,6 +782,7 @@ export async function resolveKeyConflict(
         action: input.action,
         expectedPinnedFingerprint: input.expectedPinnedFingerprint,
         ...(input.certificate !== undefined ? { certificate: input.certificate } : {}),
+        ...(input.type ? { type: input.type } : {}),
     };
     try {
         return await withClient<ResolveKeyConflictResult>(client, `/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keys/resolve`, {
@@ -779,6 +807,9 @@ export interface EncryptionPolicy {
      * supports zero-access encryption (its stored value or the server default); absent from one that doesn't, which a
      * caller treats as not allowed. */
     allowZeroAccess?: boolean;
+    /** "Allow OpenPGP": whether mailboxes may enroll and publish OpenPGP keys, for mail with OpenPGP users. Absent from a server
+     * that predates it, which a caller treats as not allowed. */
+    allowOpenPgp?: boolean;
 }
 
 /** The system-wide encryption policy (readable by any authenticated user, used to decide what encryption

@@ -25,6 +25,7 @@ import {
     type UnlockResult,
 } from "../../../../lib/crypto/keySession.js";
 import { ensureZeroAccessKey, provisionZeroAccessKey } from "../../../../lib/crypto/zeroAccessKey.js";
+import { ensureOpenPgpKey } from "../../../../lib/crypto/openPgpKey.js";
 import { buildAad, generateMasterKey, sealWithKey } from "../../../../lib/crypto/masterKey.js";
 import { buildPasswordWrap, buildRecoveryWraps } from "../../../../lib/crypto/masterKeyWraps.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr } from "../../../../lib/crypto/keys.js";
@@ -160,14 +161,20 @@ export default function KeyEnrollmentGate({
         };
     }, [mailboxUid, canProvision]);
 
-    // A mailbox set up before zero-access encryption existed has no zero-access key: give it one whenever its owner has
-    // it unlocked - now, or on a later unlock from anywhere (this gate, an unlock prompt, recovery). Best effort: a
-    // failure is retried on the next unlock.
+    // A mailbox set up before zero-access encryption existed has no zero-access key, and one set up before OpenPGP was supported
+    // has no OpenPGP key (restapi specs/end-to-end_encryption.md *OpenPGP Interoperability*): give it each whenever its owner has
+    // it unlocked - now, or on a later unlock from anywhere (this gate, an unlock prompt, recovery, first-time setup). Best
+    // effort: a failure is retried on the next unlock.
     useEffect(() => {
         if (!mailboxUid || !mailboxAddress || !canProvision) {
             return;
         }
-        const ensure = () => void ensureZeroAccessKey(mailboxUid, mailboxAddress).catch(() => undefined);
+        // One after the other: both enrollments update the vault, which a concurrent write would refuse (409).
+        const ensure = () =>
+            void ensureZeroAccessKey(mailboxUid, mailboxAddress)
+                .catch(() => undefined)
+                .then(() => ensureOpenPgpKey(mailboxUid, mailboxAddress))
+                .catch(() => undefined);
         ensure();
         return subscribeKeySession((event) => {
             if (event.mailboxUid === mailboxUid && event.state === "unlocked") {

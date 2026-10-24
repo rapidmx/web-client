@@ -20,12 +20,17 @@ const mocks = vi.hoisted(() => ({
     getUnlockedKeys: vi.fn(),
     buildEncryptedMessage: vi.fn(),
     buildSignedOnlyMessage: vi.fn(),
+    createDraft: vi.fn(),
+    buildPgpEncryptedMessage: vi.fn(),
+    readKeysBase64: vi.fn(),
+    armorPublicKey: vi.fn(),
 }));
 
 vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     assembleDraft: mocks.assembleDraft,
     assembleDraftRaw: mocks.assembleDraftRaw,
+    createDraft: mocks.createDraft,
     forgetDraftImages: mocks.forgetDraftImages,
     getMailbox: mocks.getMailbox,
     getMessage: mocks.getMessage,
@@ -44,6 +49,9 @@ vi.mock("../../../lib/crypto/smimeMessage.js", async (importOriginal) => ({
     buildEncryptedMessage: mocks.buildEncryptedMessage,
     buildSignedOnlyMessage: mocks.buildSignedOnlyMessage,
 }));
+
+vi.mock("../../../lib/crypto/pgpMessage.js", () => ({ buildPgpEncryptedMessage: mocks.buildPgpEncryptedMessage, readKeysBase64: mocks.readKeysBase64 }));
+vi.mock("../../../lib/crypto/openpgp.js", () => ({ armorPublicKey: mocks.armorPublicKey }));
 
 import {
     CONTEXT_GRACE_MS,
@@ -498,6 +506,97 @@ describe("startSend - encryption and signing", () => {
 });
 
 // A window rendered under an `ApiClientContext.Provider` (e.g. one account of the native, multi-account `tauri-client`) passes its own
+describe("startSend - OpenPGP recipients", () => {
+    const pgpKey = { publicKey: "cGdw", type: "openpgp", useType: "encrypt", fingerprint: "pgp-fp", notBefore: 0, notAfter: 8.64e15 };
+    const ownPublic = { own: "public" };
+    const ownPrivate = { toPublic: () => ownPublic };
+    const unlockedOpenPgp = { ...unlockedEncryption, ...unlockedSigning, openPgpKeys: [{ fingerprint: "own-pgp", privateKey: ownPrivate }] };
+    const PGP_POLICY = { ...AUTO, allowOpenPgp: true };
+    const MUTUAL = { preferEncrypt: "mutual" } as const;
+    const send = (overrides: Partial<SendRequest> = {}) =>
+        startSend(request({ policy: PGP_POLICY, mailbox: { ...mailbox, keys: [enrolledKey] } as Mailbox, offeredEncrypt: true, ...overrides }));
+
+    beforeEach(() => {
+        mocks.buildPgpEncryptedMessage.mockResolvedValue({ contentType: "multipart/encrypted", body: "PGP" });
+        mocks.readKeysBase64.mockResolvedValue([{ recipient: "key" }]);
+        mocks.armorPublicKey.mockReturnValue("ARMORED");
+        mocks.createDraft.mockResolvedValue({ ...draft, uid: "m2" });
+        mocks.assembleDraftRaw.mockImplementation(async (uid: string) => ({ ...draft, uid, version: 4 }));
+    });
+
+    it("encrypts to a recipient with only an OpenPGP key as PGP/MIME in the draft itself, signed with the sender's OpenPGP key", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockResolvedValue({ keys: [pgpKey], encryptPreference: MUTUAL });
+        send({ signEnabled: true, offeredSign: true });
+        await settle();
+
+        expect(mocks.buildEncryptedMessage).not.toHaveBeenCalled();
+        expect(mocks.readKeysBase64).toHaveBeenCalledWith(["cGdw"]);
+        const [, , pgpHeaders, outer, recipients, signingKey, attached] = mocks.buildPgpEncryptedMessage.mock.calls[0];
+        expect(pgpHeaders.subject).toBe("Hello");
+        expect(pgpHeaders.messageId).toMatch(/^<[0-9a-f-]+@example\.com>$/);
+        expect(outer.subject).toBe("[...]");
+        expect(recipients).toEqual([ownPublic, { recipient: "key" }]);
+        expect(signingKey).toBe(ownPrivate);
+        expect(attached).toBe("ARMORED");
+        expect(mocks.createDraft).not.toHaveBeenCalled();
+        const [uid, input] = mocks.assembleDraftRaw.mock.calls[0];
+        expect(uid).toBe("m1");
+        expect(input.deliverTo).toBeUndefined();
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", undefined);
+    });
+
+    it("prefers S/MIME for a recipient who has both, and sends one copy per format to mixed recipients", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [pgpKey, peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend.mockResolvedValueOnce({ queued: true, message: draft }).mockResolvedValueOnce({ queued: false, message: draft });
+        send({ cc: [{ address: "pat@proton.example" }], requestReceipt: true });
+        await settle();
+
+        const [, , , , certs] = mocks.buildEncryptedMessage.mock.calls[0];
+        expect(certs).toHaveLength(2);
+        expect(mocks.readKeysBase64).toHaveBeenCalledWith(["cGdw"]);
+        // Unsigned: the sender didn't sign, so the OpenPGP copy isn't either - but it still carries the sender's key.
+        expect(mocks.buildPgpEncryptedMessage.mock.calls[0][5]).toBeUndefined();
+        expect(mocks.createDraft).toHaveBeenCalledWith("mb1", "drafts", undefined, undefined);
+        expect(mocks.assembleDraftRaw.mock.calls.map(([uid, input]) => [uid, input.deliverTo])).toEqual([
+            ["m1", ["bob@example.com"]],
+            ["m2", ["pat@proton.example"]],
+        ]);
+        expect(mocks.setMessageRequestReceipt).toHaveBeenCalledTimes(2);
+        expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m1", "m2"]);
+    });
+
+    it("schedules every copy of a send-later message", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        send({ cc: [{ address: "pat@proton.example" }], scheduledSendTime: 5_000_000_000_000 });
+        await settle();
+        expect(mocks.sendMessage.mock.calls.map(([uid, input]) => [uid, input])).toEqual([
+            ["m1", { scheduledSendTime: 5_000_000_000_000 }],
+            ["m2", { scheduledSendTime: 5_000_000_000_000 }],
+        ]);
+    });
+
+    it("can't encrypt to an OpenPGP recipient while the sender's own OpenPGP key isn't unlocked", async () => {
+        mocks.getUnlockedKeys.mockReturnValue({ ...unlockedEncryption, ...unlockedSigning });
+        mocks.lookupKeys.mockResolvedValue({ keys: [pgpKey], encryptPreference: MUTUAL });
+        send({ encryptRequested: true });
+        await settle();
+        expect(mocks.buildPgpEncryptedMessage).not.toHaveBeenCalled();
+        expect(mocks.queueMessageSend).not.toHaveBeenCalled();
+    });
+
+    it("ignores a recipient's OpenPGP key when the server doesn't allow OpenPGP", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockResolvedValue({ keys: [pgpKey], encryptPreference: MUTUAL });
+        send({ policy: AUTO });
+        await settle();
+        expect(mocks.buildPgpEncryptedMessage).not.toHaveBeenCalled();
+        expect(mocks.assembleDraft).toHaveBeenCalled();
+    });
+});
+
 // `useApiClient()` value as `startSend()`/`retrySend()`'s trailing `client` argument (see `ComposeWindow.tsx`'s `submit()`); every REST call
 // `sendJob.ts` makes along the way must forward that same instance rather than falling back to the default global cookie-based session. Every
 // test above calls `startSend()`/`retrySend()` with no client at all, proving the other half: that path is untouched, `client` staying

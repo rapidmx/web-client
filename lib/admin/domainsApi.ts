@@ -90,7 +90,7 @@ export function verifyDomain(uid: string, client?: ApiClient): Promise<Domain> {
     return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/verify`, { method: "POST" });
 }
 
-export type DnsRecordType = "ownership" | "mx" | "spf" | "dkim" | "dmarc" | "autodiscover_cname" | "autodiscover_srv";
+export type DnsRecordType = "ownership" | "mx" | "spf" | "dkim" | "dmarc" | "openpgpkey_cname" | "autodiscover_cname" | "autodiscover_srv";
 
 /** One mail-related DNS record this server recommends for a domain, live-checked against real DNS —
  * purely diagnostic, never mutates anything (unlike `verifyDomain`). The two `autodiscover_*` types are only

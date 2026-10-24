@@ -26,7 +26,7 @@ const { evaluateMessageSecurity, evaluateMessageSecurityWithSeal, getUnlockedKey
 vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, evaluateMessageSecurityWithSeal }));
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: () => () => undefined }));
 vi.mock("../../../lib/mail/mailboxAccessApi.js", () => ({ getMyMailboxAccess }));
-vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getSignerKeyState, clearPinnedSignerCache: vi.fn() }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getPinnedSigners: (...args: unknown[]) => Promise.resolve(getPinnedSignerFingerprints(...args)).then((fingerprints: string[]) => ({ fingerprints, openPgpKeys: [] as string[] })), getSignerKeyState, clearPinnedSignerCache: vi.fn() }));
 vi.mock("../../../apps/shared/components/layout/UnlockPromptProvider.js", () => ({ useUnlockPrompt: () => ({ requestUnlock: vi.fn() }) }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => ({ moveLocalEntity: vi.fn() }));
 const { mailShellOverride } = vi.hoisted(() => ({ mailShellOverride: { current: undefined as Record<string, unknown> | undefined } }));

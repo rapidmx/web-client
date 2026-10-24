@@ -31,9 +31,13 @@ const { evaluateMessageSecurity, evaluateMessageSecurityWithSeal } = vi.hoisted(
 }));
 vi.mock("../../../lib/crypto/messageSecurity.js", () => ({ evaluateMessageSecurity, evaluateMessageSecurityWithSeal }));
 
-const { getKeyVault, getPinnedSignerFingerprints } = vi.hoisted(() => ({ getKeyVault: vi.fn(), getPinnedSignerFingerprints: vi.fn() }));
+const { getKeyVault, getPinnedSignerFingerprints, pinnedOpenPgp } = vi.hoisted(() => ({
+    getKeyVault: vi.fn(),
+    getPinnedSignerFingerprints: vi.fn(),
+    pinnedOpenPgp: { keys: [] as string[] },
+}));
 vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({ getKeyVault }));
-vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints }));
+vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ getPinnedSignerFingerprints, getPinnedSigners: (...args: unknown[]) => Promise.resolve(getPinnedSignerFingerprints(...args)).then((fingerprints: string[]) => ({ fingerprints, openPgpKeys: [...pinnedOpenPgp.keys] })) }));
 
 const rpc = vi.hoisted(() => ({
     initLocalIndex: vi.fn(),
@@ -96,6 +100,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    pinnedOpenPgp.keys = [];
     clearVerificationSealCache();
     vi.resetAllMocks();
 });
@@ -105,6 +110,15 @@ function indexedUids(): string[] {
 }
 
 describe("buildLocalIndex: verification seals", () => {
+    it("checks against the sender's pinned OpenPGP keys too, when they have any", async () => {
+        mailbox([message("none")]);
+        pinnedOpenPgp.keys = ["pgp-alice"];
+
+        await buildLocalIndex("mb1", unlocked, [INBOX], WINDOW);
+
+        expect(evaluateMessageSecurityWithSeal.mock.calls[0][2]).toEqual({ fingerprints: ["pin-alice"], openPgpKeys: ["pgp-alice"] });
+    });
+
     it("seals decrypted messages without a current-generation seal, with the sender's pins looked up once per pass", async () => {
         mailbox([
             message("none"),

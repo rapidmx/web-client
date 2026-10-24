@@ -77,7 +77,8 @@ export function applyBaselineOuterHeaders(headers: ProtectedHeaders): ProtectedH
     return { ...headers, subject: "[...]" };
 }
 
-function base64Wrapped(bytes: Uint8Array): string {
+/** @internal Shared with `pgpMessage.ts`. */
+export function base64Wrapped(bytes: Uint8Array): string {
     const encoded = toBase64(bytes);
     const lines: string[] = [];
     for (let i = 0; i < encoded.length; i += BASE64_LINE_WIDTH) {
@@ -86,7 +87,8 @@ function base64Wrapped(bytes: Uint8Array): string {
     return lines.join(CRLF);
 }
 
-function generateBoundary(): string {
+/** @internal Shared with `pgpMessage.ts`. */
+export function generateBoundary(): string {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     return `----=_RapidMX_${Array.from(bytes)
         .map((b) => b.toString(16).padStart(2, "0"))
@@ -94,7 +96,7 @@ function generateBoundary(): string {
 }
 
 /** Strips CR/LF/NUL from a header value that has no further encoding (Date, Message-ID, Content-Type). */
-function flattenHeaderValue(value: string): string {
+export function flattenHeaderValue(value: string): string {
     return value.replace(/[\r\n\0]+/g, " ");
 }
 
@@ -116,7 +118,8 @@ function headerLines(headers: ProtectedHeaders, prefix = ""): string[] {
     ];
 }
 
-function protectedHeaderLines(headers: ProtectedHeaders, hpOuter?: ProtectedHeaders): string {
+/** @internal Shared with `pgpMessage.ts`: the protected header block of an inner entity (with `HP-Outer:` copies of `hpOuter`). */
+export function protectedHeaderLines(headers: ProtectedHeaders, hpOuter?: ProtectedHeaders): string {
     const lines = headerLines(headers);
     if (hpOuter) {
         // RFC 9788 Section 2.2.1's `hp-outer` field: the literal string "HP-Outer:" followed by the
@@ -369,7 +372,7 @@ export type ComparableOuterHeaders = Partial<Pick<ProtectedHeaders, "from" | "to
  * (a real bug if reused for this - JSON/`Record` keys aren't multi-valued). Scans the raw header block
  * text directly instead. Returns `undefined` when no `HP-Outer:` lines are present at all, so a caller
  * can distinguish "nothing to compare" from "compared and everything matched". */
-function extractHpOuterHeaders(fields: MimeHeaderField[]): ComparableOuterHeaders | undefined {
+export function extractHpOuterHeaders(fields: MimeHeaderField[]): ComparableOuterHeaders | undefined {
     const result: ComparableOuterHeaders = {};
     let found = false;
     for (const { name, value } of fields) {
@@ -386,7 +389,7 @@ function extractHpOuterHeaders(fields: MimeHeaderField[]): ComparableOuterHeader
 /** `true` when every field `hpOuter` actually carries matches `actualOuterHeaders`' value for that same
  * field - a field `hpOuter` doesn't carry (e.g. no `Cc` on this message) is not compared, since RFC
  * 9788 never claims coverage for it either way. */
-function outerHeadersMatch(hpOuter: ComparableOuterHeaders, actualOuterHeaders: ComparableOuterHeaders): boolean {
+export function outerHeadersMatch(hpOuter: ComparableOuterHeaders, actualOuterHeaders: ComparableOuterHeaders): boolean {
     return (Object.keys(hpOuter) as (keyof ComparableOuterHeaders)[]).every((field) => hpOuter[field] === actualOuterHeaders[field]);
 }
 
@@ -477,7 +480,8 @@ export function splitHeadersAndBody(entity: string): { headers: Record<string, s
     return { headers, contentType: headers["content-type"], body, rawHeaderBlock };
 }
 
-function headersToProtectedHeaders(headers: Record<string, string>): ProtectedHeaders {
+/** @internal Shared with `pgpMessage.ts`. */
+export function headersToProtectedHeaders(headers: Record<string, string>): ProtectedHeaders {
     return {
         from: headers["from"] ?? "",
         to: headers["to"] ?? "",

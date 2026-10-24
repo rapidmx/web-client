@@ -14,6 +14,8 @@ import {
     UnopenableEncryptionKeyError,
     ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE,
     MAX_RETAINED_ENCRYPTION_KEYS,
+    OPENPGP_PRIVATE_KEY_AAD_PURPOSE,
+    addOpenPgpKey,
     addZeroAccessKey,
     destroyUnlockedKeys,
     getUnlockedKeys,
@@ -28,6 +30,7 @@ import { buildRecoveryWraps } from "../../../lib/crypto/masterKeyWraps.js";
 import { buildAad, generateMasterKey, openWithKey, sealWithKey } from "../../../lib/crypto/masterKey.js";
 import { argon2idKdfLabel, deriveFromPassword, generateSalt } from "../../../lib/crypto/passwordUnlock.js";
 import type { KeyVault, MasterKeyWrap, PublicKey } from "../../../lib/crypto/keyvaultApi.js";
+import { generateOpenPgpKey, readSecretKey } from "../../../lib/crypto/openpgp.js";
 
 const { getKeyVault } = vi.hoisted(() => ({ getKeyVault: vi.fn() }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
@@ -981,5 +984,113 @@ describe("shared sessions (member key wraps)", () => {
         expect(() => installSharedSession("shared-mb", shared, generation)).toThrow(KeysLockedError);
         expect(getUnlockedKeys("shared-mb")).toBeUndefined();
         expect(shared.masterKey.every((b) => b === 0)).toBe(true);
+    });
+});
+
+describe("OpenPGP keys", () => {
+    /** Adds OpenPGP keys to an enrollment, published on the mailbox (`type: "openpgp"`) with their secret keys sealed under `mk`
+     * with the OpenPGP purpose - or, with `wrap: "corrupt"` / `"none"`, a secret key that won't open / none at all. */
+    async function addOpenPgpKeys(
+        vault: KeyVault,
+        mailboxKeys: PublicKey[],
+        mk: Uint8Array,
+        entries: { fingerprint: string; notBefore: number; revokedAt?: number; wrap?: "ok" | "corrupt" | "none" }[],
+    ): Promise<void> {
+        const generated = await generateOpenPgpKey("alice@example.com");
+        const sealed = await sealWithKey(mk, generated.secretKey, buildAad(MAILBOX_UID, OPENPGP_PRIVATE_KEY_AAD_PURPOSE));
+        for (const entry of entries) {
+            mailboxKeys.push({
+                publicKey: generated.publicKey,
+                type: "openpgp",
+                useType: "encrypt",
+                fingerprint: entry.fingerprint,
+                notBefore: entry.notBefore,
+                notAfter: 8.64e15,
+                ...(entry.revokedAt !== undefined ? { revokedAt: entry.revokedAt } : {}),
+            });
+            const wrap = entry.wrap ?? "ok";
+            if (wrap !== "none") {
+                vault.wrappedKeys.push({
+                    ciphertext: wrap === "corrupt" ? toBase64(new Uint8Array(48)) : sealed.ciphertext,
+                    nonce: sealed.nonce,
+                    algorithm: "AES-256-GCM",
+                    fingerprint: entry.fingerprint,
+                    useType: "encrypt",
+                    type: "openpgp",
+                });
+            }
+        }
+    }
+
+    it("opens the active OpenPGP key first, then retained ones newest first - never as an S/MIME encryption key", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addOpenPgpKeys(vault, mailboxKeys, mk, [
+            { fingerprint: "pgp-old", notBefore: 1, revokedAt: 5 },
+            { fingerprint: "pgp-newer-retired", notBefore: 3, revokedAt: 6 },
+            { fingerprint: "pgp-active", notBefore: 2 },
+            { fingerprint: "pgp-unwrapped", notBefore: 4, wrap: "none" },
+        ]);
+        getKeyVault.mockResolvedValue(vault);
+
+        const result = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(result.unopenableKeys).toEqual([]);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        expect(unlocked.openPgpKeys?.map((k) => k.fingerprint)).toEqual(["pgp-active", "pgp-newer-retired", "pgp-old"]);
+        expect(unlocked.openPgpKeys![0].privateKey.isDecrypted()).toBe(true);
+        expect(unlocked.retainedEncryptionKeys ?? []).toEqual([]);
+        expect(unlocked.encryptionFingerprint).toBe("fp-encrypt");
+    });
+
+    it("reports an OpenPGP key that does not open and still unlocks; a mailbox without one has none", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addOpenPgpKeys(vault, mailboxKeys, mk, [{ fingerprint: "pgp-bad", notBefore: 1, wrap: "corrupt" }]);
+        getKeyVault.mockResolvedValue(vault);
+        expect((await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD)).unopenableKeys).toEqual(["pgp-bad"]);
+        expect(getUnlockedKeys(MAILBOX_UID)?.openPgpKeys).toBeUndefined();
+
+        const plain = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(plain.vault);
+        await unlockWithPassword(MAILBOX_UID, plain.mailboxKeys, PASSWORD);
+        expect(getUnlockedKeys(MAILBOX_UID)?.openPgpKeys).toBeUndefined();
+    });
+
+    it("wipes the OpenPGP secret keys when the session is destroyed", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addOpenPgpKeys(vault, mailboxKeys, mk, [{ fingerprint: "pgp-active", notBefore: 1 }]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        const captured = unlocked.openPgpKeys!;
+        const privateKey = captured[0].privateKey;
+
+        destroyUnlockedKeys(MAILBOX_UID);
+
+        expect(unlocked.openPgpKeys).toBeUndefined();
+        expect(captured).toHaveLength(0);
+        expect(privateKey.isDecrypted()).toBe(false);
+    });
+
+    it("addOpenPgpKey makes a key the active one of the current session only", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addOpenPgpKeys(vault, mailboxKeys, mk, [{ fingerprint: "pgp-old", notBefore: 1 }]);
+        getKeyVault.mockResolvedValue(vault);
+        await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+        const first = getUnlockedKeys(MAILBOX_UID)!;
+        const key = { fingerprint: "pgp-new", privateKey: await readSecretKey((await generateOpenPgpKey("alice@example.com")).secretKey) };
+
+        addOpenPgpKey(MAILBOX_UID, first, key);
+        addOpenPgpKey(MAILBOX_UID, first, key);
+        expect(first.openPgpKeys!.map((k) => k.fingerprint)).toEqual(["pgp-new", "pgp-old"]);
+
+        const plain = await enrollForTest(["encrypt"]);
+        getKeyVault.mockResolvedValue(plain.vault);
+        await unlockWithPassword(MAILBOX_UID, plain.mailboxKeys, PASSWORD);
+        const second = getUnlockedKeys(MAILBOX_UID)!;
+        addOpenPgpKey(MAILBOX_UID, second, key);
+        expect(second.openPgpKeys!.map((k) => k.fingerprint)).toEqual(["pgp-new"]);
+        // The replaced session is left alone.
+        addOpenPgpKey(MAILBOX_UID, first, { ...key, fingerprint: "pgp-stale" });
+        expect(first.openPgpKeys?.map((k) => k.fingerprint) ?? []).not.toContain("pgp-stale");
     });
 });

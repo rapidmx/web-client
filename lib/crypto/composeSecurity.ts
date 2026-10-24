@@ -47,9 +47,15 @@ function policyStateForTier(policy: EncryptionPolicy, tier: RecipientTier): Poli
 export interface RecipientEncryptionStatus {
     address: string;
     tier: RecipientTier;
-    /** The recipient's currently-active encryption certificate, if they have published (and this device
+    /** The recipient's currently-active S/MIME encryption certificate, if they have published (and this device
      * has discovered) one. */
     encryptCert?: PublicKey;
+    /** The recipient's active OpenPGP certificate - only when they have no S/MIME certificate and the server allows OpenPGP
+     * (restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*: S/MIME is preferred whenever it can be used). */
+    openPgpKey?: PublicKey;
+    /** Which format this recipient is encrypted in: `"smime"` whenever they have an S/MIME certificate, `"openpgp"` only for
+     * a recipient whose only key is an OpenPGP one. Absent when they can't be encrypted to. */
+    format?: "smime" | "openpgp";
     /** Whether this recipient *can* be encrypted to at all right now - false when there's no usable key,
      * or the tier's policy is `prohibited`. */
     canEncrypt: boolean;
@@ -73,6 +79,8 @@ export function resolveRecipientEncryption(
     lookup: KeyLookupResult | undefined,
 ): RecipientEncryptionStatus {
     const encryptCert = lookup ? findActivePublicKey(lookup.keys, "encrypt") : undefined;
+    // S/MIME whenever the recipient has a certificate; OpenPGP only for one who has nothing else, and only where the server allows it.
+    const openPgpKey = !encryptCert && lookup && policy.allowOpenPgp === true ? findActivePublicKey(lookup.keys, "encrypt", "openpgp") : undefined;
     const tier = classifyRecipientTier(ownAddress, recipientAddress, !!lookup && lookup.keys.length > 0);
     const policyState = policyStateForTier(policy, tier);
 
@@ -87,7 +95,7 @@ export function resolveRecipientEncryption(
         };
     }
 
-    if (!encryptCert) {
+    if (!encryptCert && !openPgpKey) {
         return { address: recipientAddress, tier, canEncrypt: false, autoEncrypt: false };
     }
 
@@ -96,7 +104,7 @@ export function resolveRecipientEncryption(
     return {
         address: recipientAddress,
         tier,
-        encryptCert,
+        ...(encryptCert ? { encryptCert, format: "smime" as const } : { openPgpKey, format: "openpgp" as const }),
         canEncrypt: true,
         autoEncrypt: policyState === "automatic" && mutual,
     };

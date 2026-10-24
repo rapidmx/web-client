@@ -6,6 +6,7 @@ import {
     CONTACTS_CACHE_TTL_MS,
     clearPinnedSignerCache,
     getPinnedSignerFingerprints,
+    getPinnedSigners,
     getSignerKeyState,
 } from "../../../apps/shared/components/mail/pinnedSigners.js";
 
@@ -210,5 +211,42 @@ describe("getSignerKeyState", () => {
     it("rejects when the contacts can't be loaded", async () => {
         listFolders.mockRejectedValue(new Error("down"));
         await expect(getSignerKeyState("mb1", "a@example.com")).rejects.toThrow("down");
+    });
+});
+
+describe("OpenPGP signers", () => {
+    const openPgpKey = (fingerprint: string, fields: Record<string, unknown> = {}) => ({ useType: "encrypt", type: "openpgp", fingerprint, publicKey: `pub-${fingerprint}`, notBefore: 7, ...fields });
+
+    it("gives the sender's pinned OpenPGP certificates, current and still-trusted previous ones, with the signing fingerprints", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-c1", type: "contacts" }]);
+        listContacts.mockResolvedValue([
+            {
+                uid: "c1",
+                emails: [{ address: "pat@proton.me" }],
+                keys: [{ useType: "sign", fingerprint: "s1" }, openPgpKey("p1"), { useType: "encrypt", type: "x509", fingerprint: "enc" }],
+                previousKeys: [
+                    openPgpKey("p0", { revokedAt: 1, revocationReason: "superseded", replacedAt: 20 }),
+                    openPgpKey("px", { revokedAt: 1, revocationReason: "keyCompromise", replacedAt: 30 }),
+                    // An S/MIME key replaced later says nothing about when the OpenPGP key was pinned.
+                    { useType: "encrypt", type: "x509", fingerprint: "enc0", replacedAt: 99 },
+                ],
+                keysFirstSeen: 9,
+            },
+            { uid: "c2", emails: [{ address: "Pat@proton.me" }], keys: [openPgpKey("P1")] },
+        ]);
+
+        expect(await getPinnedSigners("mb1", "pat@proton.me")).toEqual({ fingerprints: ["s1"], openPgpKeys: ["pub-p1", "pub-p0"] });
+        const state = await getSignerKeyState("mb1", "pat@proton.me");
+        expect(state.openPgp?.map((key) => key.fingerprint)).toEqual(["p1"]);
+        expect(state.openPgpPinnedSince).toBe(30);
+    });
+
+    it("leaves the OpenPGP state out for a sender without an OpenPGP key", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-c1", type: "contacts" }]);
+        listContacts.mockResolvedValue([{ uid: "c1", emails: [{ address: "a@example.com" }], keys: [{ useType: "sign", fingerprint: "s1" }] }]);
+        expect(await getPinnedSigners("mb1", "a@example.com")).toEqual({ fingerprints: ["s1"], openPgpKeys: [] });
+        const state = await getSignerKeyState("mb1", "a@example.com");
+        expect(state).not.toHaveProperty("openPgp");
+        expect(state).not.toHaveProperty("openPgpPinnedSince");
     });
 });

@@ -15,7 +15,7 @@ import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
 import type { ApiClient } from "../util/api.js";
 import { fromBase64 } from "./encoding.js";
-import { type KeyVault, type PublicKey, findActivePublicKey, recordKeyExport, type WrappedPrivateKey } from "./keyvaultApi.js";
+import { type KeyVault, type PublicKey, findActivePublicKey, isOpenPgpKey, recordKeyExport, type WrappedPrivateKey } from "./keyvaultApi.js";
 import {
     ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE,
     MAX_RETAINED_ENCRYPTION_KEYS,
@@ -147,7 +147,7 @@ async function openExportedKeys(input: KeyExportInput, vault: KeyVault, masterKe
     const active = findActivePublicKey(input.mailboxKeys, "encrypt");
     const encryption = [
         ...(active ? [active] : []),
-        ...input.mailboxKeys.filter((k) => k.useType === "encrypt" && k !== active).sort((a, b) => b.notBefore - a.notBefore),
+        ...input.mailboxKeys.filter((k) => k.useType === "encrypt" && !isOpenPgpKey(k) && k !== active).sort((a, b) => b.notBefore - a.notBefore),
     ];
     await take("encrypt", encryption, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE, MAX_RETAINED_ENCRYPTION_KEYS + 1);
 

@@ -21,13 +21,14 @@
  * follow-up, not a silent gap: a mailbox enrolled *only* with a passkey has no way to unlock through this
  * module today.
  */
-import { type KeyVault, type PublicKey, type WrappedPrivateKey, findActivePublicKey, getKeyVault } from "./keyvaultApi.js";
+import { type KeyVault, type PublicKey, type WrappedPrivateKey, findActivePublicKey, getKeyVault, isOpenPgpKey } from "./keyvaultApi.js";
 import type { ApiClient } from "../util/api.js";
 import { fromBase64 } from "./encoding.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
 import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
 import { RECOVERY_KDF_LABEL, deriveFromRecoveryCode } from "./recoveryCode.js";
+import type { OpenPgpPrivateKey } from "./openpgp.js";
 
 /** AAD purpose labels — MUST exactly match what `KeyEnrollmentGate.tsx` used when it originally
  * sealed each of these values, or `openWithKey()` fails (GCM authenticates the AAD, not just the
@@ -36,6 +37,7 @@ export const MASTER_KEY_AAD_PURPOSE = "master-key";
 export const SIGNING_PRIVATE_KEY_AAD_PURPOSE = "sign-private-key";
 export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 export const ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE = "zero-access-private-key";
+export const OPENPGP_PRIVATE_KEY_AAD_PURPOSE = "openpgp-private-key";
 
 export { KeysLockedError };
 
@@ -79,6 +81,10 @@ export interface UnlockedKeys {
      * index entries and sealed summaries to - the active one first, then retained ones newest first, at most
      * `MAX_RETAINED_ENCRYPTION_KEYS + 1`. Decryption only. Absent when the mailbox has none (or none opened). */
     zeroAccessKeys?: RetainedEncryptionKey[];
+    /** The mailbox's OpenPGP secret keys (restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*) - the active one
+     * first, then retained ones newest first, at most `MAX_RETAINED_ENCRYPTION_KEYS + 1`: what opens mail OpenPGP users encrypt to
+     * the mailbox, and signs what it sends them. Absent when the mailbox has none (or none opened). */
+    openPgpKeys?: { fingerprint: string; privateKey: OpenPgpPrivateKey }[];
     /** A shared mailbox opened through this user's member key wraps (`sharedMailboxKeys.ts`), not with its own master key: it holds
      * only `zeroAccessKeys`, and `masterKey` is a per-key secret derived from its zero-access private key (what the local search
      * index's key is derived from), never a key that opens the mailbox's vault. */
@@ -170,6 +176,17 @@ export function addZeroAccessKey(mailboxUid: string, unlocked: UnlockedKeys, key
         return;
     }
     unlocked.zeroAccessKeys = [key, ...(unlocked.zeroAccessKeys ?? []).filter((k) => k.fingerprint !== key.fingerprint)];
+}
+
+/**
+ * Makes an OpenPGP key this device has just enrolled (`openPgpKey.ts`'s `ensureOpenPgpKey()`) the active one of `unlocked`, so
+ * OpenPGP mail to it reads without another unlock - the same rules as `addZeroAccessKey()`.
+ */
+export function addOpenPgpKey(mailboxUid: string, unlocked: UnlockedKeys, key: { fingerprint: string; privateKey: OpenPgpPrivateKey }): void {
+    if (unlocked.destroyed || sessions.get(mailboxUid) !== unlocked) {
+        return;
+    }
+    unlocked.openPgpKeys = [key, ...(unlocked.openPgpKeys ?? []).filter((k) => k.fingerprint !== key.fingerprint)];
 }
 
 /**
@@ -272,6 +289,15 @@ function destroyObject(unlocked: UnlockedKeys): void {
         unlocked.zeroAccessKeys.length = 0;
         delete unlocked.zeroAccessKeys;
     }
+    if (unlocked.openPgpKeys) {
+        // OpenPGP.js keeps a decrypted secret key's material in its own objects: wipe it there too.
+        for (const { privateKey } of unlocked.openPgpKeys) {
+            // Present at runtime on every `PrivateKey`, missing from OpenPGP.js's type declarations.
+            (privateKey as unknown as { clearPrivateParams(): void }).clearPrivateParams();
+        }
+        unlocked.openPgpKeys.length = 0;
+        delete unlocked.openPgpKeys;
+    }
 }
 
 /** Finds the wrapped private key whose fingerprint matches a given published public key. */
@@ -345,7 +371,8 @@ async function openRetainedEncryptionKeys(
     const seen = new Set<string>(activeFingerprint !== undefined ? [activeFingerprint] : []);
     const candidates: { publicKey: PublicKey; wrapped: WrappedPrivateKey }[] = [];
     for (const publicKey of [...mailboxKeys].sort((a, b) => b.notBefore - a.notBefore)) {
-        const wrapped = publicKey.useType === "encrypt" && !seen.has(publicKey.fingerprint) ? findWrappedPrivateKey(vault, publicKey.fingerprint) : undefined;
+        const wrapped =
+            publicKey.useType === "encrypt" && !isOpenPgpKey(publicKey) && !seen.has(publicKey.fingerprint) ? findWrappedPrivateKey(vault, publicKey.fingerprint) : undefined;
         if (!wrapped) {
             continue;
         }
@@ -393,6 +420,38 @@ async function openZeroAccessKeys(mailboxUid: string, vault: KeyVault, unlocked:
         }
         if (++opened === MAX_RETAINED_ENCRYPTION_KEYS + 1) {
             break;
+        }
+    }
+}
+
+/**
+ * Opens the mailbox's OpenPGP secret keys into `unlocked.openPgpKeys`: its published OpenPGP certificates (`type: "openpgp"`) that
+ * have a wrapped secret key, the active one first (unrevoked, unexpired, latest `notBefore`), then the rest newest first, at most
+ * `MAX_RETAINED_ENCRYPTION_KEYS + 1`. OpenPGP.js is loaded only for a mailbox that has one. A key that won't open is listed in
+ * `unopenableKeys` and skipped.
+ */
+async function openOpenPgpKeys(mailboxUid: string, mailboxKeys: PublicKey[], vault: KeyVault, unlocked: UnlockedKeys, unopenableKeys: string[]): Promise<void> {
+    const now = Date.now();
+    const active = (key: PublicKey): boolean => !key.revokedAt && key.notAfter > now;
+    const ordered = mailboxKeys
+        .filter((key) => isOpenPgpKey(key) && findWrappedPrivateKey(vault, key.fingerprint))
+        .sort((a, b) => Number(active(b)) - Number(active(a)) || b.notBefore - a.notBefore)
+        .slice(0, MAX_RETAINED_ENCRYPTION_KEYS + 1);
+    if (ordered.length === 0) {
+        return;
+    }
+    const { readSecretKey } = await import("./openpgp.js");
+    const aad = buildAad(mailboxUid, OPENPGP_PRIVATE_KEY_AAD_PURPOSE);
+    for (const publicKey of ordered) {
+        try {
+            const raw = await openWithKey(unlocked.masterKey, findWrappedPrivateKey(vault, publicKey.fingerprint)!, aad);
+            try {
+                (unlocked.openPgpKeys ??= []).push({ fingerprint: publicKey.fingerprint, privateKey: await readSecretKey(raw) });
+            } finally {
+                raw.fill(0);
+            }
+        } catch {
+            unopenableKeys.push(publicKey.fingerprint);
         }
     }
 }
@@ -567,6 +626,7 @@ async function openSession(
 
         await openRetainedEncryptionKeys(mailboxUid, mailboxKeys, vault, unlocked, encryptionPublicKey?.fingerprint, unopenableKeys);
         await openZeroAccessKeys(mailboxUid, vault, unlocked, unopenableKeys);
+        await openOpenPgpKeys(mailboxUid, mailboxKeys, vault, unlocked, unopenableKeys);
         if (lockGeneration(mailboxUid) !== generation) {
             // Locked (e.g. logout) while this unlock was awaiting - never restore keys after that.
             throw new KeysLockedError();

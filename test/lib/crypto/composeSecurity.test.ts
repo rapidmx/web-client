@@ -37,6 +37,31 @@ describe("classifyRecipientTier", () => {
     });
 });
 
+describe("resolveRecipientEncryption - OpenPGP", () => {
+    const openPgpKey: PublicKey = { ...activeKey("encrypt", "pgp"), type: "openpgp" };
+    const withOpenPgp: EncryptionPolicy = { ...ALL_AUTOMATIC, allowOpenPgp: true };
+    const mutual = { encryptPreference: { preferEncrypt: "mutual" } } as const;
+
+    it("encrypts with S/MIME whenever the recipient has a certificate, even with an OpenPGP key too", () => {
+        const status = resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@proton.me", { keys: [openPgpKey, activeKey("encrypt")], ...mutual });
+        expect(status).toMatchObject({ format: "smime", canEncrypt: true, autoEncrypt: true });
+        expect(status.openPgpKey).toBeUndefined();
+    });
+
+    it("encrypts with OpenPGP to a recipient who has only an OpenPGP key", () => {
+        const status = resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@proton.me", { keys: [openPgpKey], ...mutual });
+        expect(status).toMatchObject({ format: "openpgp", openPgpKey, canEncrypt: true, autoEncrypt: true });
+        expect(status.encryptCert).toBeUndefined();
+    });
+
+    it.each([
+        ["doesn't allow OpenPGP", { ...ALL_AUTOMATIC, allowOpenPgp: false }],
+        ["predates OpenPGP", ALL_AUTOMATIC],
+    ])("can't encrypt to an OpenPGP-only recipient when the policy %s", (_label, policy) => {
+        expect(resolveRecipientEncryption("a@x.com", true, policy, "b@proton.me", { keys: [openPgpKey], ...mutual })).toMatchObject({ canEncrypt: false });
+    });
+});
+
 describe("resolveRecipientEncryption", () => {
     const lookupWithKey = (preferMutual: boolean): KeyLookupResult => ({
         keys: [activeKey("encrypt")],

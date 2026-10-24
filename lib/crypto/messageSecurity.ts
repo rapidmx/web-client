@@ -42,6 +42,8 @@ import {
     MimeAttachment,
     MimeHeaderField,
     bytesToBinaryString,
+    decodeBodyText,
+    type MimeEntity,
     decodeBase64Text,
     decodeHeaderText,
     extractAddresses,
@@ -54,7 +56,17 @@ import {
 } from "./mime.js";
 import { fromBase64, toBase64 } from "./encoding.js";
 import { type DecryptionKey, computeCertFingerprint, decryptEnvelopedDataWithKeys, extractCertificateEmails } from "./smime.js";
-import { ComparableOuterHeaders, ProtectedHeaders, parseEncryptedMessageWithKeys, parseSignedOnlyMessage } from "./smimeMessage.js";
+import {
+    ComparableOuterHeaders,
+    ProtectedHeaders,
+    extractHpOuterHeaders,
+    headersToProtectedHeaders,
+    outerHeadersMatch,
+    parseEncryptedMessageWithKeys,
+    parseSignedOnlyMessage,
+} from "./smimeMessage.js";
+import type { OpenPgpPrivateKey } from "./openpgp.js";
+import type { ParsedPgpMessage, PgpSignerCandidate } from "./pgpMessage.js";
 import { type PublicKey, isTrustedForVerification } from "./keyvaultApi.js";
 import { KeysLockedError } from "./masterKey.js";
 import { type SealKeyMaterial, type SealedVerificationState, buildVerificationSeal, openVerificationSeal, rawMimeSha256 } from "./verificationSeal.js";
@@ -161,6 +173,14 @@ export interface MessageSecurityResult {
     signerFingerprint?: string;
     /** The email addresses that signer certificate asserts (lowercased), alongside `signerFingerprint`. */
     signerEmails?: string[];
+    /** `"openpgp"` when the signer is an OpenPGP key: `signerCertificate` is then its certificate (base64 binary) and
+     * `signerFingerprint` its primary key's fingerprint - pin it with `trustSigner()`'s `type: "openpgp"`. */
+    signerKeyType?: "openpgp";
+    /** `true` for an OpenPGP message whose signature was made by a key this reader doesn't have (neither pinned for the sender,
+     * nor the reader's own, nor attached to the message), so it couldn't be checked at all. A signed-only one is then reported
+     * `"unprotected"` (its content is readable anyway), an encrypted one `"encrypted"`; a UI can say the sender's key isn't known
+     * yet. */
+    signerKeyUnknown?: boolean;
     /** Base64 DER of the certificate that verified the signature - what `keyvaultApi.ts`'s `trustSigner()` pins for
      * a "trust this signer" action. Present alongside `signerFingerprint` for `"signed_verified"`,
      * `"encrypted_verified"`, the `*_unverified_signer` states, and `"signature_failed"` with reason
@@ -280,8 +300,13 @@ function sameInstant(signed: string | undefined, outer: string | undefined): boo
     return Number.isNaN(left) || left === Date.parse(String(outer));
 }
 
-function normalizePins(pins: string | string[] | undefined): string[] {
-    return (Array.isArray(pins) ? pins : pins === undefined ? [] : [pins]).map((pin) => pin.toLowerCase());
+function normalizePins(pins: SignerPinsInput): string[] {
+    const list: string[] = Array.isArray(pins) ? pins : pins === undefined ? [] : typeof pins === "string" ? [pins] : pins.fingerprints;
+    return list.map((pin) => pin.toLowerCase());
+}
+
+function pinnedOpenPgpKeys(pins: SignerPinsInput): string[] {
+    return pins !== undefined && typeof pins === "object" && !Array.isArray(pins) ? pins.openPgpKeys : [];
 }
 
 /** Checks 2-4 from this module's doc comment for an already cryptographically verified signature.
@@ -299,13 +324,14 @@ export async function checkSignerBinding(input: SignerBindingInput): Promise<Sig
     if (pins.length > 0 && !pins.includes(await computeCertFingerprint(certDer))) {
         // A certificate that otherwise binds cleanly to the sender is a key change for the user to judge; anything else
         // (no certificate, wrong identity, header tampering) stays a plain untrusted signer.
-        return input.signerCertificateDer && checkIdentityAndHeaders(input, certDer) === undefined ? "signer_key_changed" : "untrusted_signer";
+        return input.signerCertificateDer && checkIdentityAndHeaders(input, extractCertificateEmails(certDer)) === undefined ? "signer_key_changed" : "untrusted_signer";
     }
-    return checkIdentityAndHeaders(input, certDer);
+    return checkIdentityAndHeaders(input, extractCertificateEmails(certDer));
 }
 
-/** Checks 3-4 from this module's doc comment. */
-function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array): SignatureFailureReason | undefined {
+/** Checks 3-4 from this module's doc comment, for a signer whose key names `signerEmails` (an X.509 certificate's, or an
+ * OpenPGP key's user IDs). */
+function checkIdentityAndHeaders(input: Omit<SignerBindingInput, "signerCertificateDer">, signerEmails: string[]): SignatureFailureReason | undefined {
     const { protectedHeaders, outerHeaders } = input;
     if (hasRepeatedAddressField(input.outerFields) || hasRepeatedAddressField(input.protectedFields)) {
         return "header_mismatch";
@@ -313,7 +339,7 @@ function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array)
     const outerFrom = extractAddresses(outerHeaders["from"]);
     const protectedFrom = extractAddresses(protectedHeaders?.from);
     const senderAddresses = protectedFrom.length > 0 ? protectedFrom : outerFrom;
-    if (senderAddresses.length !== 1 || !extractCertificateEmails(certDer).includes(senderAddresses[0])) {
+    if (senderAddresses.length !== 1 || !signerEmails.includes(senderAddresses[0])) {
         return "signer_identity_mismatch";
     }
     const protectedTo = extractAddresses(protectedHeaders?.to);
@@ -357,7 +383,7 @@ function checkIdentityAndHeaders(input: SignerBindingInput, certDer: Uint8Array)
 export async function evaluateMessageSecurity(
     rawMime: string,
     unlocked: MessageSecurityKeys | undefined,
-    pinnedSignerFingerprints?: string | string[],
+    pinnedSignerFingerprints?: SignerPinsInput,
     readerAddress?: string,
 ): Promise<MessageSecurityResult> {
     return (await evaluateLive(rawMime, unlocked, pinnedSignerFingerprints, readerAddress)).result;
@@ -372,7 +398,21 @@ export interface MessageSecurityKeys {
     /** The mailbox's zero-access keys (`keySession.ts`'s `UnlockedKeys.zeroAccessKeys`) - what opens a message the server sealed at
      * rest on arrival. */
     zeroAccessKeys?: { certDer: Uint8Array; privateKey: CryptoKey }[];
+    /** The mailbox's OpenPGP secret keys (`keySession.ts`'s `UnlockedKeys.openPgpKeys`), the active one first - what opens mail an
+     * OpenPGP user encrypted to the mailbox, and verifies mail it signed itself. */
+    openPgpKeys?: { fingerprint: string; privateKey: OpenPgpPrivateKey }[];
 }
+
+/** The sender's trusted keys, when they include OpenPGP certificates: `fingerprints` as `pinnedSignerFingerprints`, and
+ * `openPgpKeys` the pinned OpenPGP certificates themselves (base64, `PublicKey.publicKey`) - an OpenPGP signature carries only
+ * a key ID, so its key has to be supplied to be checked at all (`pinnedSigners.ts`'s `getPinnedSigners()`). */
+export interface SignerPins {
+    fingerprints: string[];
+    openPgpKeys: string[];
+}
+
+/** What `pinnedSignerFingerprints` accepts: one fingerprint, several, or `SignerPins`. */
+export type SignerPinsInput = string | string[] | SignerPins | undefined;
 
 /**
  * The subject and preview of a zero-access message (`Message.zeroAccess.sealedSummary`, base64 CMS of JSON `{ subject, preview }`),
@@ -437,16 +477,21 @@ interface LiveEvaluation {
 async function evaluateLive(
     rawMime: string,
     unlocked: MessageSecurityKeys | undefined,
-    pinnedSignerFingerprints: string | string[] | undefined,
+    pinnedSignerFingerprints: SignerPinsInput,
     readerAddress: string | undefined,
     sealedAtRest = false,
 ): Promise<LiveEvaluation> {
-    const { headers, body, fields } = parseMimeEntity(rawMime);
+    const outerEntity = parseMimeEntity(rawMime);
+    const { headers, body, fields } = outerEntity;
     const rawContentType = headers["content-type"];
+    const contentType = parseParameterizedHeader(rawContentType ?? "text/plain");
+    const pgp = pgpKind(contentType, outerEntity);
+    if (pgp) {
+        return await evaluatePgp(pgp, rawContentType ?? "text/plain", outerEntity, unlocked, pinnedSignerFingerprints, readerAddress);
+    }
     if (!rawContentType) {
         return { result: { state: "unprotected" }, kind: "other" };
     }
-    const contentType = parseParameterizedHeader(rawContentType);
     const callerPins = normalizePins(pinnedSignerFingerprints);
 
     // The received message's own *real* outer envelope - what `HP-Outer`'s field copies (written at
@@ -603,6 +648,122 @@ async function evaluateLive(
     return { result: { state: "unprotected" }, kind: "other" };
 }
 
+/** Which OpenPGP form a received message is, if any: RFC 3156 PGP/MIME (`multipart/signed` or `multipart/encrypted` with an OpenPGP
+ * `protocol`), or an inline message - a `text/plain` body that is one armored `PGP MESSAGE`, or a cleartext signature. */
+type PgpKind = "signed" | "encrypted" | "inline-encrypted" | "inline-signed";
+
+const INLINE_PGP_MESSAGE = /^-----BEGIN PGP MESSAGE-----\r?\n[\s\S]*-----END PGP MESSAGE-----$/;
+const INLINE_PGP_SIGNED = /^-----BEGIN PGP SIGNED MESSAGE-----\r?\n[\s\S]*-----END PGP SIGNATURE-----$/;
+
+function pgpKind(contentType: { value: string; params: Record<string, string> }, entity: MimeEntity): PgpKind | undefined {
+    const protocol = contentType.params["protocol"]?.toLowerCase();
+    if (contentType.value === "multipart/signed" && protocol === "application/pgp-signature") {
+        return "signed";
+    }
+    if (contentType.value === "multipart/encrypted" && protocol === "application/pgp-encrypted") {
+        return "encrypted";
+    }
+    if (contentType.value !== "text/plain") {
+        return undefined;
+    }
+    const text = decodeBodyText(entity).trim();
+    return INLINE_PGP_MESSAGE.test(text) ? "inline-encrypted" : INLINE_PGP_SIGNED.test(text) ? "inline-signed" : undefined;
+}
+
+/**
+ * `evaluateLive()` for an OpenPGP message (restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*), with the same
+ * trust rules as S/MIME: a signature by a key pinned for the sender (`SignerPins.openPgpKeys`) or the reader's own is verified;
+ * one by a key only attached to the message is `*_unverified_signer` - or `signer_key_changed` when the sender has a different key
+ * pinned; and the key must name the sender, with the protected headers matching the outer ones (`checkIdentityAndHeaders()`).
+ * A signature nobody's key can check is reported through `signerKeyUnknown`, never as failed. The crypto is `pgpMessage.ts`'s,
+ * loaded only here.
+ */
+async function evaluatePgp(
+    kind: PgpKind,
+    rawContentType: string,
+    outer: MimeEntity,
+    unlocked: MessageSecurityKeys | undefined,
+    pins: SignerPinsInput,
+    readerAddress: string | undefined,
+): Promise<LiveEvaluation> {
+    const pgp = await import("./pgpMessage.js");
+    const pinned = (await pgp.readKeysBase64(pinnedOpenPgpKeys(pins))).map((key) => ({ key, trusted: true }));
+    const ownKeys = unlocked?.openPgpKeys ?? [];
+    const candidates: PgpSignerCandidate[] = [...pinned, ...ownKeys.map(({ privateKey }) => ({ key: privateKey.toPublic(), trusted: true }))];
+    const decryptionKeys = ownKeys.map(({ privateKey }) => privateKey);
+    const encrypted = kind === "encrypted" || kind === "inline-encrypted";
+    const text = decodeBodyText(outer).trim();
+    let parsed: ParsedPgpMessage;
+    if (kind === "signed") {
+        parsed = await pgp.parsePgpSignedMessage(rawContentType, outer.body, candidates);
+    } else if (kind === "encrypted") {
+        parsed = await pgp.parsePgpEncryptedMessage(rawContentType, outer.body, decryptionKeys, candidates);
+    } else if (kind === "inline-encrypted") {
+        parsed = await pgp.parsePgpInlineEncrypted(text, decryptionKeys, candidates);
+    } else {
+        parsed = await pgp.parsePgpCleartextSigned(text, candidates);
+    }
+    const resultKind: LiveEvaluation["kind"] = encrypted ? "encrypted" : "signed";
+    if (encrypted && !parsed.decrypted) {
+        return { result: { state: "encrypted", decryptError: NO_KEY_ERROR }, kind: resultKind };
+    }
+    if (parsed.entityText === undefined) {
+        return { result: { state: "signature_failed", signatureFailureReason: "invalid_signature" }, kind: resultKind };
+    }
+    const entity = parseMimeEntity(parsed.entityText);
+    const inline = kind === "inline-encrypted" || kind === "inline-signed";
+    const protectedHeaders: ProtectedHeaders | undefined = inline ? undefined : headersToProtectedHeaders(entity.headers);
+    const hasProtected = !!protectedHeaders && extractAddresses(protectedHeaders.from).length > 0;
+    const hpOuter = encrypted && !inline ? extractHpOuterHeaders(entity.fields) : undefined;
+    const outerComparable: ComparableOuterHeaders = { from: outer.headers["from"], to: outer.headers["to"], cc: outer.headers["cc"], date: outer.headers["date"], subject: outer.headers["subject"] };
+    const recipients = [...extractAddresses(protectedHeaders?.to), ...extractAddresses(protectedHeaders?.cc)];
+    const content: Partial<MessageSecurityResult> = {
+        ...renderDisplayBody(extractDisplayBody(entity)),
+        subject: (hasProtected ? protectedHeaders?.subject : undefined) || undefined,
+        attachments: extractAttachments(entity),
+        ...(hpOuter ? { headerTamperDetected: !outerHeadersMatch(hpOuter, outerComparable) } : {}),
+        ...(readerAddress && recipients.length > 0 ? { notAddressedToReader: !recipients.includes(readerAddress.trim().toLowerCase()) } : {}),
+    };
+    const signature = parsed.signature;
+    if (!signature) {
+        // Encrypted without a signature (an unsigned signed-only message can't happen: it is the signature).
+        return { result: { state: "encrypted", ...content }, kind: resultKind };
+    }
+    if (signature.status === "unknown_key") {
+        return { result: encrypted ? { state: "encrypted", ...content, signerKeyUnknown: true } : { state: "unprotected", signerKeyUnknown: true }, kind: resultKind };
+    }
+    if (signature.status === "invalid") {
+        return { result: { state: "signature_failed", signatureFailureReason: "invalid_signature", ...(encrypted ? content : {}) }, kind: resultKind };
+    }
+    const signer = { signerFingerprint: signature.fingerprint, signerEmails: signature.emails, signerKeyType: "openpgp" as const };
+    const acceptedSigner = { ...signer, signerCertificate: toBase64(signature.candidate.key.write()) };
+    const signedHeaders: Partial<MessageSecurityResult> = hasProtected
+        ? { protectedHeaders: { from: protectedHeaders.from, to: protectedHeaders.to, ...(protectedHeaders.cc !== undefined ? { cc: protectedHeaders.cc } : {}), subject: protectedHeaders.subject } }
+        : {};
+    const failure = checkIdentityAndHeaders(
+        {
+            protectedHeaders: hasProtected ? protectedHeaders : undefined,
+            outerHeaders: outer.headers,
+            outerFields: outer.fields,
+            protectedFields: hasProtected ? entity.fields : undefined,
+            compareSubject: !encrypted,
+        },
+        signature.emails,
+    );
+    // Signed by a key only attached to the message while the sender has OpenPGP keys pinned: they appear to use a new key.
+    const keyChanged = !failure && !signature.candidate.trusted && pinned.length > 0;
+    if (failure || keyChanged) {
+        const reason: SignatureFailureReason = failure ?? "signer_key_changed";
+        return {
+            result: { state: "signature_failed", signatureFailureReason: reason, ...(encrypted ? content : {}), ...(reason === "signer_key_changed" ? acceptedSigner : signer) },
+            kind: resultKind,
+            ...(reason === "signer_key_changed" ? { signedContent: { ...content, ...signedHeaders } } : {}),
+        };
+    }
+    const state: MessageSecurityState = signature.candidate.trusted ? (encrypted ? "encrypted_verified" : "signed_verified") : encrypted ? "encrypted_unverified_signer" : "signed_unverified_signer";
+    return { result: { state, ...content, ...signedHeaders, ...acceptedSigner }, kind: resultKind };
+}
+
 /** Options for `evaluateMessageSecurityWithSeal()`. */
 export interface VerificationSealOptions {
     mailboxUid: string;
@@ -669,7 +830,7 @@ function failedOnlyOnKeyStatus(result: MessageSecurityResult): boolean {
 export async function evaluateMessageSecurityWithSeal(
     rawMime: string,
     unlocked: (MessageSecurityKeys & SealKeyMaterial) | undefined,
-    pinnedSignerFingerprints: string | string[] | undefined,
+    pinnedSignerFingerprints: SignerPinsInput,
     readerAddress: string | undefined,
     options: VerificationSealOptions,
 ): Promise<MessageSecurityResult> {

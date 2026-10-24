@@ -149,6 +149,27 @@ describe("KeyChangeReview", () => {
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
+    it("names an OpenPGP key as one and resolves the OpenPGP slot", async () => {
+        resolveKeyConflict.mockResolvedValue({ keys: [] });
+        const user = userEvent.setup();
+        const props = renderReview({ useType: "encrypt", keyType: "openpgp", certificate: "cGdw" });
+
+        await user.click(screen.getByRole("button", { name: "Accept new key" }));
+        const dialog = screen.getByRole("dialog");
+        expect(dialog).toHaveTextContent("The current OpenPGP key moves");
+        await user.click(within(dialog).getByRole("button", { name: "Accept new key" }));
+
+        await waitFor(() => expect(props.onResolved).toHaveBeenCalledWith("accept"));
+        expect(resolveKeyConflict).toHaveBeenCalledWith("mb1", {
+            address: "jane@example.com",
+            useType: "encrypt",
+            action: "accept",
+            expectedPinnedFingerprint: "AAAA1111BBBB2222",
+            certificate: "cGdw",
+            type: "openpgp",
+        });
+    });
+
     it("accepts the recorded key when no certificate is given, ignoring close while the request runs", async () => {
         let finish!: (value: unknown) => void;
         resolveKeyConflict.mockReturnValue(new Promise((resolve) => (finish = resolve)));

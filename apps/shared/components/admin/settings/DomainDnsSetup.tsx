@@ -15,6 +15,7 @@ const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     spf: "SPF",
     dkim: "DKIM",
     dmarc: "DMARC",
+    openpgpkey_cname: "OpenPGP keys (CNAME)",
     autodiscover_cname: "Autodiscover (CNAME)",
     autodiscover_srv: "Autodiscover (SRV)",
 };
@@ -26,6 +27,7 @@ const RECORD_TYPE_NAMES: Record<DnsRecordCheck["type"], string> = {
     spf: "SPF",
     dkim: "DKIM",
     dmarc: "DMARC",
+    openpgpkey_cname: "OpenPGP keys CNAME",
     autodiscover_cname: "Autodiscover CNAME",
     autodiscover_srv: "Autodiscover SRV",
 };
@@ -33,6 +35,8 @@ const RECORD_TYPE_NAMES: Record<DnsRecordCheck["type"], string> = {
 /** A one-line "why this matters", shown under a checklist row's label - only for record types unfamiliar
  * enough to need one; the well-known mail records (ownership/MX/SPF/DKIM/DMARC) don't. */
 const RECORD_TYPE_HELP: Partial<Record<DnsRecordCheck["type"], string>> = {
+    openpgpkey_cname:
+        "So Proton Mail and other OpenPGP apps can find your users' OpenPGP keys (Web Key Directory) and send them encrypted mail. This hostname also needs to be covered by this server's TLS certificate.",
     autodiscover_cname:
         "So EAS and Outlook clients can find this server automatically from just an email address. This hostname also needs to be covered by this server's TLS certificate.",
     autodiscover_srv:

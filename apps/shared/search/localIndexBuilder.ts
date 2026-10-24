@@ -19,7 +19,7 @@
  * cross-folder interleaving imprecision here does not affect *what* ultimately survives the window, only
  * the exact order entities are inserted (and therefore briefly evicted-and-reinserted) in.
  *
- * Only encrypted messages (`subject === "[...]"`) are indexed - see `ENCRYPTED_SUBJECT_PLACEHOLDER`'s
+ * Only encrypted messages (`subject === "[...]"`, or flagged `encrypted` by the server - OpenPGP mail keeps its real outer subject) are indexed - see `ENCRYPTED_SUBJECT_PLACEHOLDER`'s
  * own precedent in `apps/www/index.tsx`'s inbox-list decrypt work. An unencrypted message is already
  * fully searchable via Tier 1; indexing it here too would spend this index's bounded byte budget on
  * content that didn't need it.
@@ -41,10 +41,10 @@
  * above), and fetching it only to seal would cost a download per message; they are sealed when opened.
  */
 import { getMessageRawContent, listFolders, listMessages, type Folder, type Message } from "../../../lib/mail/mailApi.js";
-import { type MessageSecurityResult, evaluateMessageSecurity, evaluateMessageSecurityWithSeal } from "../../../lib/crypto/messageSecurity.js";
+import { type MessageSecurityResult, type SignerPinsInput, evaluateMessageSecurity, evaluateMessageSecurityWithSeal } from "../../../lib/crypto/messageSecurity.js";
 import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
 import type { ApiClient } from "../../../lib/util/api.js";
-import { getPinnedSignerFingerprints } from "../components/mail/pinnedSigners.js";
+import { getPinnedSigners } from "../components/mail/pinnedSigners.js";
 import { currentVerificationSeal, readVaultGeneration, sendVerificationSeal, verificationSealPending } from "../components/mail/verificationSeals.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import {
@@ -121,7 +121,7 @@ interface PassSealer {
 
 function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: AbortSignal, client: ApiClient | undefined): PassSealer {
     let generation: Promise<number | undefined> | undefined;
-    const pins = new Map<string, Promise<string[] | undefined>>();
+    const pins = new Map<string, Promise<SignerPinsInput>>();
     const queue: (() => Promise<unknown>)[] = [];
     let queued = 0;
     let active = 0;
@@ -134,8 +134,9 @@ function createPassSealer(mailboxUid: string, unlocked: UnlockedKeys, signal: Ab
         const key = address.toLowerCase();
         let entry = pins.get(key);
         if (!entry) {
-            entry = getPinnedSignerFingerprints(mailboxUid, address, client).then(
-                (fingerprints) => (fingerprints.length > 0 ? fingerprints : undefined),
+            entry = getPinnedSigners(mailboxUid, address, client).then(
+                (signers): SignerPinsInput =>
+                    signers.openPgpKeys.length > 0 ? signers : signers.fingerprints.length > 0 ? signers.fingerprints : undefined,
                 () => undefined,
             );
             pins.set(key, entry);
@@ -414,7 +415,8 @@ async function runBuildPass(
                 if (messages.length === 0) {
                     return "done";
                 }
-                const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER);
+                // The server's `encrypted` flag too: an OpenPGP sender (Proton Mail and others) keeps the real outer subject.
+                const encrypted = messages.filter((m) => m.subject === ENCRYPTED_SUBJECT_PLACEHOLDER || m.encrypted);
                 for (const m of encrypted) {
                     seenEncryptedUids.add(m.uid);
                 }

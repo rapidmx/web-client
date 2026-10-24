@@ -7,14 +7,7 @@
 
 import { ApiClient, apiUrl, withClient, withClientRaw } from "../util/api.js";
 import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
-import {
-    type EncryptionPreference,
-    type KeyConflict,
-    type PreviousKey,
-    type PublicKey,
-    type RejectedKey,
-    signingKeyFingerprints,
-} from "../crypto/keyvaultApi.js";
+import { type EncryptionPreference, type KeyConflict, type PreviousKey, type PublicKey, type RejectedKey, signingKeyFingerprints, isOpenPgpKey, isTrustedForVerification } from "../crypto/keyvaultApi.js";
 
 export type ContactAddressKind = "home" | "work" | "other";
 
@@ -106,6 +99,14 @@ export function pinnedSigningFingerprintsFor(contacts: Contact[], address: strin
     return [...new Set(contactsMatching(contacts, address).flatMap((contact) => signingKeyFingerprints(contact.keys, contact.previousKeys)))];
 }
 
+/** The OpenPGP certificates (base64, `PublicKey.publicKey`) pinned on every contact in `contacts` for `address` - current and
+ * previous ones still trusted for verification (`isTrustedForVerification()`) - which an OpenPGP signature from that sender is
+ * checked against (an OpenPGP signature carries only a key ID, so the key itself is needed). De-duplicated by fingerprint. */
+export function pinnedOpenPgpKeysFor(contacts: Contact[], address: string): string[] {
+    const keys = contactsMatching(contacts, address).flatMap((contact) => [...(contact.keys ?? []), ...(contact.previousKeys ?? [])]);
+    return uniqueByFingerprint(keys.filter((key) => isOpenPgpKey(key) && isTrustedForVerification(key))).map((key) => key.publicKey);
+}
+
 /** Page size and page cap for `fetchPinnedSigningFingerprints()` and `fetchSignerKeyState()` (500 is restapi's own
  * `limit` cap). */
 export const PINNED_FINGERPRINT_PAGE_SIZE = 500;
@@ -149,6 +150,9 @@ export interface SignerKeyState {
     previous: PreviousKey[];
     /** The first unresolved signing-key conflict found, if any. */
     conflict?: KeyConflict;
+    /** The pinned OpenPGP certificates (which sign as well as encrypt), de-duplicated by fingerprint - what an OpenPGP signer's
+     * key-changed comparison shows. Absent when there are none. */
+    openPgp?: PublicKey[];
 }
 
 function uniqueByFingerprint<T extends PublicKey>(keys: T[]): T[] {
@@ -174,7 +178,8 @@ export function signerKeyStateFor(contacts: Contact[], address: string): SignerK
         matching.flatMap((contact) => (contact.previousKeys ?? []).filter((key) => key.useType === "sign")).sort((a, b) => b.replacedAt - a.replacedAt),
     );
     const conflict = matching.flatMap((contact) => contact.keyConflicts ?? []).find((entry) => entry.useType === "sign");
-    return { pinned, previous, ...(conflict ? { conflict } : {}) };
+    const openPgp = uniqueByFingerprint(matching.flatMap((contact) => (contact.keys ?? []).filter((key) => isOpenPgpKey(key))));
+    return { pinned, previous, ...(conflict ? { conflict } : {}), ...(openPgp.length > 0 ? { openPgp } : {}) };
 }
 
 /** Fetches `signerKeyStateFor()` for `address` from the contacts in `folderUids`, paging exactly like

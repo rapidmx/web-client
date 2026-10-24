@@ -56,8 +56,12 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
     const [savedValues, setSavedValues] = useState<EncryptionPolicy>(policy);
     // A server without zero-access encryption sends no `allowZeroAccess`; the checkbox is then not shown at all.
     const zeroAccessSupported: boolean = policy.allowZeroAccess !== undefined;
+    // Likewise `allowOpenPgp`, from a server without OpenPGP support.
+    const openPgpSupported: boolean = policy.allowOpenPgp !== undefined;
     const dirty: boolean =
-        TIERS.some((tier) => values[tier.key] !== savedValues[tier.key]) || (zeroAccessSupported && values.allowZeroAccess !== savedValues.allowZeroAccess);
+        TIERS.some((tier) => values[tier.key] !== savedValues[tier.key]) ||
+        (zeroAccessSupported && values.allowZeroAccess !== savedValues.allowZeroAccess) ||
+        (openPgpSupported && values.allowOpenPgp !== savedValues.allowOpenPgp);
     useEffect(() => onDirtyChange?.(dirty), [dirty]);
 
     // Tiers this save would newly set to "Never encrypt", which switches encryption off for everyone's mail of that kind: confirmed first.
@@ -159,6 +163,30 @@ export default function EncryptionPolicyForm({ policy, onChange, onDirtyChange, 
                                     owner can unlock, and this server keeps no readable copy - administrators can&rsquo;t read it either,
                                     except through an escrow scope. People can still turn it off for their own mailbox. Search of message
                                     contents then happens in the app instead of on the server.
+                                </span>
+                            </span>
+                        </label>
+                    </div>
+                )}
+                {openPgpSupported && (
+                    <div className="mt-2 pt-4 border-t border-border">
+                        <span className="font-semibold text-sm block mb-1">OpenPGP</span>
+                        <label className="flex items-start gap-2 text-sm">
+                            <input
+                                type="checkbox"
+                                className="mt-1"
+                                checked={values.allowOpenPgp !== false}
+                                onChange={(e) => {
+                                    setSaved(false);
+                                    setValues({ ...values, allowOpenPgp: e.target.checked });
+                                }}
+                            />
+                            <span>
+                                <span className="font-semibold block">Allow OpenPGP</span>
+                                <span className="text-xs text-text-muted">
+                                    Gives every mailbox an OpenPGP key and publishes it, so people using Proton Mail, Thunderbird and other
+                                    OpenPGP apps can send encrypted mail to your users, and your users to them. RapidMX still uses S/MIME
+                                    whenever a recipient can receive it. Off, no OpenPGP keys are created or published.
                                 </span>
                             </span>
                         </label>
