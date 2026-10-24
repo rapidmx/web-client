@@ -135,6 +135,12 @@ export interface Mailbox {
     /** "Enable zero-access encryption": unset means on. Only the mailbox's owner can change it - restapi drops anybody
      * else's value. Has no effect while the server's `EncryptionPolicy.allowZeroAccess` is off. */
     zeroAccessEnabled?: boolean;
+    /** Which data types zero-access encryption covers - see `ZeroAccessTypes`. Owner only. */
+    zeroAccessTypes?: ZeroAccessTypes;
+    /** The ActiveSync and Outlook clients that sync this mailbox, as the server last saw them. Server-written. */
+    syncClients?: SyncClients;
+    /** When the owner last exported a zero-access key for a phone or Outlook. Server-written. */
+    zeroAccessKeysExportedAt?: number;
     /** How the caller reaches this mailbox: `"owner"` (theirs) or `"delegate"` (shared with them). Set by the plain list and read of
      * mailboxes - not in an administration-scope answer - so a client can label the shared ones; see `isSharedWithMe()`. */
     accessRole?: "owner" | "delegate";
@@ -263,6 +269,19 @@ export function autoProvisionMailbox(
  * `null` clears them - `JSON.stringify()` drops an `undefined` value entirely, which would instead leave
  * the old value in place.
  */
+/** The data types zero-access encryption can cover (restapi `specs/search.md` §3 *What It Covers*). */
+export type ZeroAccessDataType = "mail" | "calendar" | "contacts" | "tasks";
+
+/** `Mailbox.zeroAccessTypes`: per data type, whether zero-access covers it. A type left out is undecided: mail counts as on, the others
+ * as off, until the server decides them from the owner's devices. */
+export type ZeroAccessTypes = Partial<Record<ZeroAccessDataType, boolean>>;
+
+/** `Mailbox.syncClients`: the ActiveSync devices (each with the data types it syncs) and Outlook. */
+export interface SyncClients {
+    activesync?: { devices: { id: string; model?: string; types: ZeroAccessDataType[]; lastSeenAt: number }[] };
+    mapi?: { lastSeenAt: number };
+}
+
 export interface UpdateMailboxInput {
     uid: string;
     version: number;
@@ -289,6 +308,8 @@ export interface UpdateMailboxInput {
     autoSendReceiptsExternal?: boolean;
     /** Owner-only server-side (anybody else's value is dropped) - see `Mailbox.zeroAccessEnabled`. */
     zeroAccessEnabled?: boolean;
+    /** Owner-only server-side; a partial choice is merged into the stored one - see `Mailbox.zeroAccessTypes`. */
+    zeroAccessTypes?: ZeroAccessTypes;
     /** The mailbox's own encryption preference, replaced whole - see `Mailbox.encryptPreference`. */
     encryptPreference?: EncryptionPreference;
     /** Trusted-caller-only server-side. `null` (or `""`) unassigns the mailbox's escrow scope; the

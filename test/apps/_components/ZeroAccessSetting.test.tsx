@@ -64,12 +64,22 @@ describe("ZeroAccessSetting", () => {
         expect(screen.queryByRole("note")).not.toBeInTheDocument();
     });
 
-    it("shows the mailbox's own choice to turn it off", async () => {
+    it("shows the mailbox's own choice to turn it off, without asking what to protect", async () => {
         mockServer({});
         render(<ZeroAccessSetting mailbox={{ ...MAILBOX, zeroAccessEnabled: false }} canManage />);
 
         await waitFor(() => expect(checkbox()).toBeEnabled());
         expect(checkbox()).not.toBeChecked();
+        expect(screen.queryByText("What to protect")).not.toBeInTheDocument();
+    });
+
+    it("asks what to protect while it is on, offering the types this client can protect", async () => {
+        mockServer({});
+        render(<ZeroAccessSetting mailbox={MAILBOX} canManage />);
+
+        expect(await screen.findByText("What to protect")).toBeInTheDocument();
+        expect(screen.getByRole("checkbox", { name: /^Mail/ })).toBeChecked();
+        expect(screen.queryByRole("checkbox", { name: /^Calendar/ })).not.toBeInTheDocument();
     });
 
     it("is disabled, unchecked and explained when the administrator turned it off for the server", async () => {

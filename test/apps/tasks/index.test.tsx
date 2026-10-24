@@ -30,6 +30,13 @@ vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
     };
 });
 
+// A protected task opens to its real title here; `sealedRecords.test.ts` covers the decryption itself.
+vi.mock("../../../apps/shared/zeroAccess/sealedRecords.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../apps/shared/zeroAccess/sealedRecords.js")>();
+    const open = (record: any) => (record.sealedFields ? { ...record, title: `Opened ${record.uid}` } : record);
+    return { ...actual, openSealedRecords: async (records: any[]) => records.map(open), openSealedRecord: async (record: any) => open(record) };
+});
+
 const mailbox = {
     uid: "mb1",
     version: 0,
@@ -122,6 +129,22 @@ async function confirmDelete(user: ReturnType<typeof userEvent.setup>) {
 const BUCKET_TEST_NOW = new Date("2026-06-15T12:00:00.000Z"); // a Monday
 
 describe("TasksPage", () => {
+    it("shows a protected task by its opened title, marked as protected, and keeps it opened after completing it", async () => {
+        const sealed = task({ uid: "t-sealed", title: "Protected task", sealedFields: { title: "c2VhbGVk" } });
+        mockShellAndTasks([sealed, noDueDateTask], (url, init) =>
+            url === "/api/mail/tasks/t-sealed" && init?.method === "PUT" ? jsonResponse(200, { ...sealed, version: 1, completed: true }) : undefined,
+        );
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+
+        expect(await screen.findByText("Opened t-sealed")).toBeInTheDocument();
+        expect(screen.getAllByRole("img", { name: "Protected by zero-access encryption" })).toHaveLength(1);
+        expect(screen.queryByText("Protected task")).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("checkbox", { name: /Mark "Opened t-sealed" as complete/ }));
+        await waitFor(() => expect(screen.getByRole("checkbox", { name: /Mark "Opened t-sealed" as not complete/ })).toBeInTheDocument());
+    });
+
     it("passes the server's plugin nav through to the app rail", async () => {
         mockShellAndTasks([]);
         render(<TasksPage userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }} />);

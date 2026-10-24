@@ -36,6 +36,8 @@ import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
+import ProtectedMark from "../../shared/zeroAccess/ProtectedMark.js";
+import { openSealedRecord, openSealedRecords } from "../../shared/zeroAccess/sealedRecords.js";
 
 /** The published model class name of a task on either database (`TaskMongo`, `TaskSQL`) - not a `TaskList`'s. */
 const TASK_MODEL = /^Task(Mongo|SQL)$/;
@@ -132,6 +134,7 @@ function TasksContent() {
         setLoading(true);
         setError(null);
         return listAllPages((page) => listTasks(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
+            .then(async (result) => ({ ...result, items: await openSealedRecords(result.items) }))
             .then((result) => {
                 if (run === loadRun.current) {
                     setTasks(result.items);
@@ -167,7 +170,7 @@ function TasksContent() {
                 remove();
                 return;
             }
-            void getTask(change.uid, client).then(
+            void getTask(change.uid, client).then(openSealedRecord).then(
                 (fresh) => {
                     if (fresh.folderUid !== folderUid) {
                         remove();
@@ -240,7 +243,7 @@ function TasksContent() {
                 setCreateError("That mailbox has no Tasks folder.");
                 return;
             }
-            const created = await createTask(
+            const created = await openSealedRecord(await createTask(
                 {
                     mailboxUid: target,
                     folderUid: targetFolderUid,
@@ -250,7 +253,7 @@ function TasksContent() {
                     priority,
                 },
                 client,
-            );
+            ));
             if (target === mailboxUid) {
                 setAddedElsewhere(null);
                 setTasks((prev) => [...prev, created]);
@@ -289,7 +292,7 @@ function TasksContent() {
         const nextCompleted = !task.completed;
         setTasks((prev) => prev.map((t) => (t.uid === task.uid ? { ...t, completed: nextCompleted } : t)));
         try {
-            const updated = await setTaskCompleted(task, nextCompleted, client);
+            const updated = await openSealedRecord(await setTaskCompleted(task, nextCompleted, client));
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? updated : t)));
         } catch (err) {
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? task : t)));
@@ -660,6 +663,7 @@ function TaskGroup({ label, tasks, checkedUids, onToggleChecked, onToggle, toggl
                         <CompletionToggle task={task} onToggle={onToggle} pending={toggling.has(task.uid)} />
                         <span className={["flex-1 text-sm", task.completed ? "line-through text-text-muted" : ""].join(" ")}>
                             {task.title}
+                            <ProtectedMark record={task} />
                         </span>
                         {task.priority !== "normal" && (
                             <span className={["text-xs font-medium", PRIORITY_CLASS[task.priority]].join(" ")}>
@@ -742,7 +746,9 @@ function TaskTable({ tasks, checkedUids, onToggleChecked, onToggle, toggling, on
                             <td className="px-3 py-2">
                                 <CompletionToggle task={task} onToggle={onToggle} pending={toggling.has(task.uid)} />
                             </td>
-                            <td className={["px-3 py-2", task.completed ? "line-through text-text-muted" : ""].join(" ")}>{task.title}</td>
+                            <td className={["px-3 py-2", task.completed ? "line-through text-text-muted" : ""].join(" ")}>{task.title}
+                                <ProtectedMark record={task} />
+                            </td>
                             <td className="px-3 py-2 text-text-muted">{task.dueDate ? parseDueDate(task.dueDate).toLocaleDateString() : ""}</td>
                             <td className={["px-3 py-2", PRIORITY_CLASS[task.priority]].join(" ")}>{PRIORITY_LABEL[task.priority]}</td>
                             <td className="px-3 py-2">

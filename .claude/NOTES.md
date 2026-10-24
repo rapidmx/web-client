@@ -3913,3 +3913,16 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - **Contacts:** `ContactDetailPane`'s `PreferredFormatControl` appears when the contact has an OpenPGP key and the reader can write. It offers Automatic, S/MIME or OpenPGP.
   - It writes `updateContact({ preferredFormat })` (`null` for Automatic).
   - The Automatic option's label explains itself: what they asked for, what they used last, or S/MIME.
+
+### 2026-10-24: Zero-access "What to protect" (per-type settings, Phase 1)
+- `ZeroAccessTypes.tsx` lists one switch per type, saving a partial `zeroAccessTypes` with a single retry on 409.
+  - Each switch says what it encrypts.
+  - A type that one of the owner's devices (`syncClients`) syncs gets a plain warning naming the device: an alert "Breaks: ..." when included, or "Left off because ..." when not. Mail stops warning once `zeroAccessKeysExportedAt` is set.
+  - A "What's encrypted, and what isn't" table follows, including why contact email addresses stay readable.
+- `ZeroAccessSetting` mounts it while zero-access is on and unlocked.
+- `ZERO_ACCESS_SUPPORTED_TYPES` is `["mail"]` until calendar, contacts and tasks are actually sealed. Add each type in the phase that ships it, never before.
+- (Phases 2-3) `apps/shared/zeroAccess/sealedRecords.ts` handles opening protected records.
+  - `openSealedRecords(records)` opens each `sealedFields[name]` (CMS of the field's JSON value) with the mailbox's unlocked zero-access keys and overlays the value. It caches by ciphertext, is cleared at sign-out, and leaves the placeholders while locked.
+  - `ProtectedMark` is the lock beside a protected item.
+  - The client never seals: it sends plaintext and the server seals.
+  - Tasks: `apps/www/tasks/index.tsx` opens sealed tasks on list, live-update refetch, create and toggle. `ZERO_ACCESS_SUPPORTED_TYPES` now includes `"tasks"`.

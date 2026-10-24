@@ -9,6 +9,10 @@ import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import PolicyLockedNotice from "./PolicyLockedNotice.js";
+import ZeroAccessTypes from "./ZeroAccessTypes.js";
+
+/** The data types this client can protect with zero-access encryption - each joins as its protection is implemented end to end. */
+export const ZERO_ACCESS_SUPPORTED_TYPES = ["mail", "tasks"] as const;
 
 /** Why zero-access encryption can't be changed here, when it can't - mirrors restapi's `ZeroAccessStatus` reasons that the user can't fix
  * by ticking the box. */
@@ -97,6 +101,7 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
                     </span>
                 </span>
             </label>
+            {!locked && enabled && <ZeroAccessTypes mailbox={mailbox} types={ZERO_ACCESS_SUPPORTED_TYPES} canManage={canManage} />}
             {blocker === "disabled_by_admin" && (
                 <PolicyLockedNotice>
                     Your administrator has turned off zero-access encryption for this server, so new mail is stored without it. Mail

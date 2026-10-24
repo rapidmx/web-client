@@ -31,6 +31,9 @@ export interface Task {
     myDay?: boolean;
     /** The uid of the user this task is assigned to, if any. */
     assignedTo?: string;
+    /** The title and notes sealed to the mailbox's zero-access key while it protects tasks (`title` is then a placeholder) - opened with
+     * `openSealedRecords()`. Server-written. */
+    sealedFields?: Record<string, string> | null;
 }
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
