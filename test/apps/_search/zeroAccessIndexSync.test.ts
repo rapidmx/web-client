@@ -25,12 +25,15 @@ vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
 const {
     CLIENT_UPLOAD_ATTEMPTS,
+    COMPACTION_DELAY_MS,
+    MOBILE_COMPACTION_MAX_BYTES,
     clientDocument,
     clientDocumentEntity,
     documentEntity,
     forgetZeroAccessSync,
     importClientSegments,
     isoWeekId,
+    shouldCompact,
     syncZeroAccessIndex,
     TAIL_OVERLAP_MS,
     uploadClientDocuments,
@@ -242,6 +245,27 @@ describe("syncZeroAccessIndex", () => {
         expect(api.putSearchIndexSegment.mock.calls.map(([, week]) => week)).toEqual(["2026-W42"]);
     });
 
+    it("waits out this platform's delay after the week became compactable", async () => {
+        const now = Date.now();
+        api.getSearchIndexManifest.mockResolvedValue({
+            mailboxUid: "mb",
+            segments: [],
+            weeks: [
+                // Compactable an hour ago: a computer's browser waits six.
+                { weekId: "2026-W41", pendingEntries: 1, latestEntryAt: "", compactable: true, compactableAt: new Date(now - 3_600_000).toISOString(), pendingBytes: 10 },
+                { weekId: "2026-W42", pendingEntries: 1, latestEntryAt: "", compactable: true, compactableAt: new Date(now - 7 * 3_600_000).toISOString(), pendingBytes: 10 },
+            ],
+        });
+        api.listSearchIndexEntries.mockImplementation(async (_mb: string, filter: any) => ({
+            entries: filter.week ? [await sealEntry(`e-${filter.week}`, filter.week, doc(filter.week), key.certDer)] : [],
+        }));
+        api.putSearchIndexSegment.mockResolvedValue(segment("2026-W42", 1, "e42"));
+
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+
+        expect(api.putSearchIndexSegment.mock.calls.map(([, week]) => week)).toEqual(["2026-W42"]);
+    });
+
     it("rejects with any other upload failure", async () => {
         api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [], weeks: [{ weekId: "2026-W42", pendingEntries: 1, latestEntryAt: "", compactable: true }] });
         api.listSearchIndexEntries.mockImplementation(async (_mb: string, filter: any) => ({
@@ -427,5 +451,48 @@ describe("client segments (Source C)", () => {
         expect(isoWeekId(new Date("2026-12-31T23:00:00Z"))).toBe("2026-W53");
         expect(isoWeekId(new Date("2027-01-03T12:00:00Z"))).toBe("2026-W53");
         expect(isoWeekId(new Date("2027-01-04T00:00:00Z"))).toBe("2027-W01");
+    });
+});
+
+describe("shouldCompact", () => {
+    const NOW = Date.UTC(2026, 9, 24, 12);
+    const week = (fields: Record<string, unknown> = {}) => ({
+        weekId: "2026-W42",
+        pendingEntries: 3,
+        latestEntryAt: "",
+        compactable: true,
+        compactableAt: new Date(NOW - 2 * 86_400_000).toISOString(),
+        pendingBytes: 1000,
+        ...fields,
+    });
+    const at = (hoursAfter: number) => ({ compactableAt: new Date(NOW - hoursAfter * 3_600_000).toISOString() });
+
+    it("lets a desktop take a week at once, a browser after six hours and a phone after a day", () => {
+        expect(COMPACTION_DELAY_MS).toEqual({ desktop: 0, web: 6 * 3_600_000, mobile: 24 * 3_600_000 });
+        expect(shouldCompact(week(at(0)), 0, "desktop", NOW, false)).toBe(true);
+        expect(shouldCompact(week(at(5)), 0, "web", NOW, false)).toBe(false);
+        expect(shouldCompact(week(at(6)), 0, "web", NOW, false)).toBe(true);
+        expect(shouldCompact(week(at(23)), 0, "mobile", NOW, false)).toBe(false);
+        expect(shouldCompact(week(at(24)), 0, "mobile", NOW, false)).toBe(true);
+    });
+
+    it("never takes a week that isn't compactable or has nothing pending", () => {
+        expect(shouldCompact(week({ compactable: false }), 0, "desktop", NOW, false)).toBe(false);
+        expect(shouldCompact(week({ pendingEntries: 0 }), 0, "desktop", NOW, false)).toBe(false);
+    });
+
+    it("has a phone decline a large week, a cellular or data-saver connection, and a week of unknown size or start", () => {
+        expect(shouldCompact(week({ pendingBytes: MOBILE_COMPACTION_MAX_BYTES - 100 }), 100, "mobile", NOW, false)).toBe(true);
+        expect(shouldCompact(week({ pendingBytes: MOBILE_COMPACTION_MAX_BYTES - 100 }), 101, "mobile", NOW, false)).toBe(false);
+        expect(shouldCompact(week(), 0, "mobile", NOW, true)).toBe(false);
+        expect(shouldCompact(week({ pendingBytes: undefined }), 0, "mobile", NOW, false)).toBe(false);
+        expect(shouldCompact(week({ compactableAt: undefined }), 0, "mobile", NOW, false)).toBe(false);
+        // Size and connection don't matter to a computer.
+        expect(shouldCompact(week({ pendingBytes: 10 * MOBILE_COMPACTION_MAX_BYTES }), 0, "web", NOW, true)).toBe(true);
+    });
+
+    it("compacts as before on a server that doesn't say when a week became compactable", () => {
+        expect(shouldCompact(week({ compactableAt: undefined, pendingBytes: undefined }), 0, "web", NOW, false)).toBe(true);
+        expect(shouldCompact(week({ compactableAt: undefined }), 0, "desktop", NOW, false)).toBe(true);
     });
 });

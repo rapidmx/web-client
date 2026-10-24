@@ -3893,3 +3893,13 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - A signature nobody's key can check sets `signerKeyUnknown`. It is never reported as failed.
 - **Contacts:** OpenPGP keys are pinned per slot (use plus format). `keyPinnedSince` and the conflict matching compare `keyFormat` too. `ContactDetailPane` lets the user paste a contact's key (`trustSigner` with `type: "openpgp"`).
 - **Test mocks:** tests that mock `pinnedSigners.js` must export `getPinnedSigners`. When it was missing, 92 MessageDetailPane tests failed.
+
+### 2026-10-24: Platform-staggered compaction (JP: keep compaction off phones)
+- `lib/util/clientPlatform.ts`'s `clientPlatform()` returns one of three platforms:
+  - `"desktop"` when a native host installed `window.rapidmx`, or `"mobile"` when that host sets `formFactor: "mobile"`. tauri-client sets it from the web view's user agent.
+  - Otherwise `"mobile"` for a phone browser (client hints `userAgentData.mobile`, then the UA), else `"web"`.
+- `isConstrainedConnection()` means cellular or data saver (Network Information API); unconstrained when the browser doesn't say.
+- `zeroAccessIndexSync.shouldCompact()` gates each week:
+  - Delays from `compactableAt` are `COMPACTION_DELAY_MS` (desktop 0, web 6 h, mobile 24 h).
+  - Mobile also needs a known `pendingBytes` plus the current segment's `bytes` ≤ `MOBILE_COMPACTION_MAX_BYTES` (5 MB) and an unconstrained connection.
+  - A server without `compactableAt` gets the old behaviour on desktop and web; mobile declines.

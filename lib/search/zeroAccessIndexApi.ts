@@ -30,6 +30,10 @@ export interface IndexWeekEntries {
     latestEntryAt: string;
     /** The week has closed and its grace period has passed: a client may compact it. */
     compactable: boolean;
+    /** When the week becomes (or became) compactable - where the platform stagger starts. Absent from a server before it. */
+    compactableAt?: string;
+    /** Size of the week's pending sealed entries (bytes of base64). Absent from a server before it. */
+    pendingBytes?: number;
 }
 
 export interface SegmentManifest {

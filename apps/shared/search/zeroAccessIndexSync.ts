@@ -29,6 +29,7 @@ import {
     getSearchIndexManifest,
     getSearchIndexSegment,
     type IndexSegment,
+    type IndexWeekEntries,
     listSearchIndexEntries,
     type SegmentManifest,
     putSearchIndexSegment,
@@ -36,6 +37,7 @@ import {
     type ZeroAccessIndexDocument,
 } from "../../../lib/search/zeroAccessIndexApi.js";
 import { ApiRequestError, type ApiClient } from "../../../lib/util/api.js";
+import { clientPlatform, isConstrainedConnection, type ClientPlatform } from "../../../lib/util/clientPlatform.js";
 import { getLocalCoverage, indexLocalEntities } from "./localIndexRpcClient.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 
@@ -47,6 +49,39 @@ export const TAIL_OVERLAP_MS = 10 * 60 * 1000;
 
 /** At most this many weeks are compacted per pass, so a large backlog is worked through over several passes. */
 export const MAX_COMPACTIONS_PER_PASS = 4;
+
+/** How long after a week's `compactableAt` each platform takes it (restapi `specs/search.md` §8 *Who compacts*): a computer first,
+ * a phone only when nothing else has for a day. */
+export const COMPACTION_DELAY_MS: Record<ClientPlatform, number> = { desktop: 0, web: 6 * 3_600_000, mobile: 24 * 3_600_000 };
+
+/** A mobile client declines a week whose pending entries and current segment together are larger than this. */
+export const MOBILE_COMPACTION_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Whether this client should compact `week` now: it is compactable, has pending entries, and this platform's delay after its
+ * `compactableAt` has passed. A mobile client also declines on a cellular or data-saver connection, and a week larger than
+ * `MOBILE_COMPACTION_MAX_BYTES` with `segmentBytes` (its current segment's size) - or of unknown size, or from a server that
+ * doesn't say when it became compactable.
+ */
+export function shouldCompact(
+    week: IndexWeekEntries,
+    segmentBytes: number,
+    platform: ClientPlatform = clientPlatform(),
+    now: number = Date.now(),
+    constrained: boolean = isConstrainedConnection(),
+): boolean {
+    if (!week.compactable || week.pendingEntries === 0) {
+        return false;
+    }
+    const since = week.compactableAt ? Date.parse(week.compactableAt) : NaN;
+    if (platform === "mobile") {
+        if (constrained || Number.isNaN(since) || week.pendingBytes === undefined || week.pendingBytes + segmentBytes > MOBILE_COMPACTION_MAX_BYTES) {
+            return false;
+        }
+    }
+    // A server that doesn't say when the week became compactable: compactable is all there is to go on.
+    return Number.isNaN(since) || since + COMPACTION_DELAY_MS[platform] <= now;
+}
 
 /** Entities handed to the worker per call. */
 const IMPORT_BATCH = 200;
@@ -443,8 +478,9 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
 
     // Compaction of closed weeks.
     const active = keys[0];
-    for (const week of manifest.weeks.filter((w) => w.compactable && w.pendingEntries > 0).slice(0, MAX_COMPACTIONS_PER_PASS)) {
-        const current: IndexSegment | undefined = zeroAccessSegments.find((segment) => segment.weekId === week.weekId);
+    const segmentOf = (weekId: string): IndexSegment | undefined => zeroAccessSegments.find((segment) => segment.weekId === weekId);
+    for (const week of manifest.weeks.filter((w) => shouldCompact(w, segmentOf(w.weekId)?.bytes ?? 0)).slice(0, MAX_COMPACTIONS_PER_PASS)) {
+        const current: IndexSegment | undefined = segmentOf(week.weekId);
         const previous: ZeroAccessIndexDocument[] | undefined = current ? await readSegment(mailboxUid, current, keys, client) : [];
         if (!previous) {
             // A generation this device can't read can't be folded into: leave the week to a device that can.
