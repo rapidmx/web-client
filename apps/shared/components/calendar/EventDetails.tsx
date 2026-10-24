@@ -18,6 +18,7 @@ import {
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { AttendeeResponseInput, guestPermissionsOf, respondToEvent, visibilityOf } from "../../../../lib/calendar/calendarApi.js";
+import { invitationContentOf } from "../../../../lib/calendar/protectedEvents.js";
 import { htmlToPlainText } from "../../../../lib/calendar/eventDescription.js";
 import { deleteEventOccurrence, deleteEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { CalendarOccurrence, describeRecurrence } from "../../../../lib/calendar/recurrence.js";
@@ -146,7 +147,7 @@ export default function EventDetails({
         setError(null);
         setBusy(true);
         try {
-            await respondToEvent(occurrence.uid, responseStatus, client);
+            await respondToEvent(occurrence.uid, responseStatus, client, occurrence);
             // A decline soft-deletes the mailbox's own copy server-side - treat it the same as a
             // delete rather than a save so the calendar view drops it immediately.
             if (responseStatus === "declined") {
@@ -356,6 +357,7 @@ export default function EventDetails({
                             description: occurrence.description,
                             descriptionHtml: occurrence.descriptionHtml,
                             guestAddresses: occurrence.attendees.map((a) => a.address),
+                            invitationContent: invitationContentOf(occurrence),
                         }}
                         canChange={canChange}
                         canInvite={canInvite}

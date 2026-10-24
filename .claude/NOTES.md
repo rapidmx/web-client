@@ -3926,3 +3926,27 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - `ProtectedMark` is the lock beside a protected item.
   - The client never seals: it sends plaintext and the server seals.
   - Tasks: `apps/www/tasks/index.tsx` opens sealed tasks on list, live-update refetch, create and toggle. `ZERO_ACCESS_SUPPORTED_TYPES` now includes `"tasks"`.
+- (Phase 4) Contacts:
+  - `lib/zeroAccess/sealedRecords.ts` moved here from apps. Its cache is cleared when a key session locks (it subscribes lazily, on the first protected record). It gained `only` (open selected fields) and `openSealedBytes` (sealed blobs).
+  - **Opening is partial for cost**, since each field is one ECDH decryption:
+    - lists open `CONTACT_LIST_FIELDS` (displayName, phones, categories);
+    - duplicate checks open `CONTACT_MATCH_FIELDS`;
+    - `ContactDetailPane`/`ContactForm` open everything via `useOpenedRecord` (the form waits, showing "Opening this contact…");
+    - export and "Add to contacts" open the whole contact first;
+    - the pinned-signer contacts cache opens nothing (it needs only emails and keys).
+  - Update replies (favourite, form save, photo, preferred format) are opened again before going back to the page; otherwise the list would show the placeholder.
+  - Photos: `photoSealed` contacts are always fetched (even without a client, through `withClientBlob`) and opened with `openSealedBytes`. While locked they fall back to initials.
+  - Autocomplete: `protectedContactSuggestions.ts` (the new `RecipientInput` default) matches protected contacts' opened names on the device, from a 60 s cache that is dropped whenever a search finds the mailbox locked (no key-session subscription), and puts them first. It is kept separate from `pinnedSigners` because tests mock that module wholesale.
+  - The detail pane shows `ProtectedMark` and says plainly that email addresses aren't protected. `ZERO_ACCESS_SUPPORTED_TYPES` now includes `"contacts"`.
+
+### 2026-10-24: Zero-access calendar (Phase 5)
+- `lib/calendar/calendarApi.ts` opens `sealedFields` on everything it returns (list/get/create/update/respond) via `openSealedRecords`. The legacy `sealedContent` events are still opened by `apps/shared/calendar/sealedEvents.ts`.
+- `sealedRecords` marks a fully opened record with a symbol (`isOpenedRecord`); the symbol survives spread copies such as occurrences and is never serialized.
+- Writes go through `lib/calendar/protectedEvents.ts`:
+  - `protectedEventWrite(current, input)` drops content fields equal to what `current` shows. A placeholder counts as unchanged, so a locked device never overwrites sealed content.
+  - It adds `invitationContent` (the full title/location/description) when `current` was opened.
+  - `updateCalendarEvent(input, client, current?)`, `respondToEvent(..., current?)` and `requestEventChange(..., invitationContent?)` take that context. `ChangeSubject.invitationContent` comes from `invitationContentOf(occurrence)` in EventDetails and from the invite's own summary in InviteCard.
+  - Every caller passes the event it shows: calendarMutations, EventEditor, EventDetails.
+- Reminders: restapi flags a sealed event's reminder `protected: true`, and `openedReminder()` reads the event by uid for its real title and location (placeholder on failure).
+- A protected event's video meeting is titled "Meeting", because meet-plugin stores the title readable.
+- `ZERO_ACCESS_SUPPORTED_TYPES` now includes calendar. The device copy says phones don't notify attendees of their changes and Outlook doesn't send invitations.

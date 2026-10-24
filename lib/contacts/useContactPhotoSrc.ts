@@ -4,7 +4,27 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { useEffect, useState } from "react";
 import type { ApiClient } from "../util/api.js";
+import { openSealedBytes } from "../zeroAccess/sealedRecords.js";
 import { type Contact, contactPhotoUrl, fetchContactPhoto } from "./contactsApi.js";
+
+/** What a photo is fetched by: the contact's identity, and whether (and for which mailbox) it is sealed. */
+type PhotoContact = Pick<Contact, "uid" | "version" | "photoBlobKey"> & Partial<Pick<Contact, "mailboxUid" | "photoSealed">>;
+
+/** The cache identity of the global (cookie) client, for a sealed photo fetched without an explicit client. */
+const GLOBAL_CLIENT = {} as ApiClient;
+
+/** A contact's photo: the bytes as stored, or - sealed to the mailbox's zero-access key - opened (rejects when it can't be: initials show). */
+async function loadPhoto(contact: PhotoContact, client: ApiClient | undefined): Promise<Blob> {
+    const blob = await fetchContactPhoto(contact.uid, contact.version, client);
+    if (!contact.photoSealed) {
+        return blob;
+    }
+    const opened = await openSealedBytes(contact.mailboxUid ?? "", new Uint8Array(await blob.arrayBuffer()));
+    if (!opened) {
+        throw new Error("The contact's picture is protected and can't be opened here.");
+    }
+    return new Blob([opened as BlobPart]);
+}
 
 /** How many pictures stay loaded (as `blob:` URLs) after nothing shows them any more, so a list scrolled back over does not fetch them all again. */
 const CACHE_LIMIT = 50;
@@ -126,7 +146,7 @@ export function clearContactPhotoCache(): void {
  * token-authenticated client (the desktop and mobile apps) cannot do that - an `<img>` sends no `Authorization` header - so the picture is fetched through the client
  * and shown as a `blob:` URL, cached per client, contact and version with a small LRU and revoked once it falls out of it and nothing shows it.
  */
-export function useContactPhotoSrc(contact: Pick<Contact, "uid" | "version" | "photoBlobKey"> | undefined, client?: ApiClient): string | undefined {
+export function useContactPhotoSrc(contact: PhotoContact | undefined, client?: ApiClient): string | undefined {
     return useContactPhoto(contact, client).src;
 }
 
@@ -135,23 +155,25 @@ export function useContactPhotoSrc(contact: Pick<Contact, "uid" | "version" | "p
  * that is not on screen yet has no reason to fetch its picture.
  */
 export function useContactPhoto(
-    contact: Pick<Contact, "uid" | "version" | "photoBlobKey"> | undefined,
+    contact: PhotoContact | undefined,
     client?: ApiClient,
     active = true,
 ): { src: string | undefined; failed: boolean } {
     const [loaded, setLoaded] = useState<{ key: string; url: string } | undefined>();
     const [failedKey, setFailedKey] = useState<string | undefined>();
-    const key = active && client && contact?.photoBlobKey ? keyOf(client, contact.uid, contact.version) : undefined;
+    // A sealed photo is always fetched (and opened) here: a URL would show the browser ciphertext.
+    const fetched = !!client || !!contact?.photoSealed;
+    const key = active && fetched && contact?.photoBlobKey ? keyOf(client ?? GLOBAL_CLIENT, contact.uid, contact.version) : undefined;
     const uid = contact?.uid;
     const version = contact?.version;
 
     useEffect(() => {
-        if (!key || !client) {
+        if (!key) {
             return;
         }
         let cancelled = false;
         let held = false;
-        acquire(key, () => fetchContactPhoto(uid!, version!, client)).then(
+        acquire(key, () => loadPhoto(contact!, client)).then(
             (url) => {
                 if (cancelled) {
                     release(key);
@@ -170,7 +192,7 @@ export function useContactPhoto(
         };
     }, [key]);
 
-    if (client) {
+    if (fetched) {
         return { src: key !== undefined && loaded?.key === key ? loaded.url : undefined, failed: key !== undefined && failedKey === key };
     }
     return { src: contact && contactPhotoUrl(contact), failed: false };

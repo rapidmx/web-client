@@ -9,6 +9,8 @@
 
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
+import { type InvitationContent, invitationContentOf, protectedEventWrite } from "./protectedEvents.js";
 
 export type AttendeeRole = "required" | "optional" | "resource";
 export type AttendeeResponseStatus = "needsAction" | "accepted" | "declined" | "tentative";
@@ -138,6 +140,10 @@ export interface CalendarEvent {
     /** Response-only. An event made from an invitation that reached a zero-access mailbox: its title, location and description are only
      * sealed to the mailbox's zero-access key (`title` is `[...]`). `apps/shared/calendar/sealedEvents.ts` opens them. */
     sealedContent?: { keyFingerprint: string; sealed: string };
+    /** Response-only. An event of a calendar zero-access encryption protects: its title, location and description, each sealed to the
+     * mailbox's zero-access key (the readable `title` is "Protected event"). Every function here returns events with them opened when the
+     * mailbox is unlocked (`lib/zeroAccess/sealedRecords.ts`); writes go through `protectedEvents.ts`. */
+    sealedFields?: Record<string, string> | null;
     /** Who may see the event's details - absent (or `null`, on a row stored before this existed) reads as `"default"`; see `visibilityOf()`. */
     visibility?: EventVisibility | null;
     /** Whether the guests may ask for the event to change (default `false`). Absent or `null` reads as the default; see `guestPermissionsOf()`. */
@@ -185,11 +191,14 @@ export async function listCalendarEvents(folderUid: string, client?: ApiClient):
             break;
         }
     }
-    return events;
+    return openSealedRecords(events);
 }
 
-export function getCalendarEvent(uid: string, client?: ApiClient): Promise<CalendarEvent> {
-    return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}`);
+/** An event the server returned, opened. */
+const opened = (event: CalendarEvent): Promise<CalendarEvent> => openSealedRecord(event);
+
+export async function getCalendarEvent(uid: string, client?: ApiClient): Promise<CalendarEvent> {
+    return opened(await withClient<CalendarEvent>(client, `/mail/calendar-events/${encodeURIComponent(uid)}`));
 }
 
 export interface CalendarEventInput {
@@ -223,8 +232,8 @@ export interface CalendarEventInput {
     guestsCanSeeGuestList?: boolean;
 }
 
-export function createCalendarEvent(input: CalendarEventInput, client?: ApiClient): Promise<CalendarEvent> {
-    return withClient(client, "/mail/calendar-events", {
+export async function createCalendarEvent(input: CalendarEventInput, client?: ApiClient): Promise<CalendarEvent> {
+    const created = await withClient<CalendarEvent>(client, "/mail/calendar-events", {
         method: "POST",
         body: JSON.stringify({
             allDay: false,
@@ -236,6 +245,7 @@ export function createCalendarEvent(input: CalendarEventInput, client?: ApiClien
             ...input,
         }),
     });
+    return opened(created);
 }
 
 export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
@@ -243,11 +253,14 @@ export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
     version: number;
 }
 
-export function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient): Promise<CalendarEvent> {
-    return withClient(client, `/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
+/** Saves `input`. `current` is the event as this device shows it: for an event of a protected calendar, the write then sends only the
+ * content that changed, and the content the server invites with (`protectedEventWrite()`). */
+export async function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient, current?: CalendarEvent): Promise<CalendarEvent> {
+    const updated = await withClient<CalendarEvent>(client, `/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
-        body: JSON.stringify(input),
+        body: JSON.stringify(protectedEventWrite(current, input)),
     });
+    return opened(updated);
 }
 
 export function deleteCalendarEvent(uid: string, version: number, client?: ApiClient): Promise<void> {
@@ -265,17 +278,21 @@ export type AttendeeResponseInput = Exclude<AttendeeResponseStatus, "needsAction
  * `"accepted"`/`"tentative"` the whole updated `CalendarEvent` comes back, with only the calling
  * attendee's own `responseStatus` changed. On `"declined"`, the backend instead soft-deletes the
  * mailbox's own copy of the event and returns only `{ uid }` — the caller should treat a decline the
- * same as a delete rather than expecting an updated event back.
+ * same as a delete rather than expecting an updated event back. `current` (the event as this device shows it) names a protected event's
+ * reply by its real title (`invitationContentOf()`).
  */
-export function respondToEvent(
+export async function respondToEvent(
     uid: string,
     responseStatus: AttendeeResponseInput,
     client?: ApiClient,
+    current?: CalendarEvent,
 ): Promise<CalendarEvent | { uid: string }> {
-    return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}/respond`, {
+    const invitationContent = invitationContentOf(current);
+    const result = await withClient<CalendarEvent | { uid: string }>(client, `/mail/calendar-events/${encodeURIComponent(uid)}/respond`, {
         method: "POST",
-        body: JSON.stringify({ responseStatus }),
+        body: JSON.stringify(invitationContent ? { responseStatus, invitationContent } : { responseStatus }),
     });
+    return "mailboxUid" in result ? opened(result) : result;
 }
 
 /** A change a guest asks the organizer for (`requestEventChange()`): only what is to differ. */
@@ -304,11 +321,17 @@ export interface EventChangeRequestResult {
  * Asks the organizer to change an event, as a guest (not the organizer) whose copy allows it: the title, location, description or time need
  * `guestsCanModify`, added guests need `guestsCanInviteOthers` (403 otherwise; 400 when nothing differs from what the event has, or a value is invalid).
  * Nothing changes on this mailbox's own copy - the request is mailed to the organizer, and when the change is allowed it is applied there and
- * arrives back later as an ordinary update of the invitation.
+ * arrives back later as an ordinary update of the invitation. `invitationContent` (the event's real content, `invitationContentOf()`)
+ * names a protected event in the request by its real title.
  */
-export function requestEventChange(uid: string, request: EventChangeRequest, client?: ApiClient): Promise<EventChangeRequestResult> {
+export function requestEventChange(
+    uid: string,
+    request: EventChangeRequest,
+    client?: ApiClient,
+    invitationContent?: InvitationContent,
+): Promise<EventChangeRequestResult> {
     return withClient(client, `/mail/calendar-events/${encodeURIComponent(uid)}/request-change`, {
         method: "POST",
-        body: JSON.stringify(request),
+        body: JSON.stringify(invitationContent ? { ...request, invitationContent } : request),
     });
 }

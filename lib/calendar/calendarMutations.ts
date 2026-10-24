@@ -49,6 +49,7 @@ function addException(event: CalendarEvent, occurrenceStart: string, client?: Ap
             recurrenceRule: { ...rule, exceptions: [...rule.exceptions, occurrenceStart] },
         },
         client,
+        event,
     );
 }
 
@@ -84,7 +85,7 @@ export async function saveEventSeries(
     // master's existing (unchanged) instant onto a different wall clock, exactly as the doc comment above
     // promises - so all three fields, not just startDate, gate entry into the shift path below.
     if (fields.startDate === undefined && fields.timezone === undefined && fields.allDay === undefined) {
-        return updateCalendarEvent(update, client);
+        return updateCalendarEvent(update, client, occurrence);
     }
     const master = await getCalendarEvent(occurrence.uid, client);
     const newTimezone = fields.timezone ?? master.timezone;
@@ -93,7 +94,7 @@ export async function saveEventSeries(
     const newStartInstant = Date.parse(fields.startDate ?? master.startDate);
     const deltaWallMs = toEventWallClock(newStartInstant, newTimezone, newAllDay) - oldStartWall;
     if (deltaWallMs === 0 && newTimezone === master.timezone && newAllDay === master.allDay) {
-        return updateCalendarEvent(update, client);
+        return updateCalendarEvent(update, client, occurrence);
     }
     // An occurrence is identified by its nominal wall-clock start (the rule's date + the master's time of day),
     // not by the instant's own wall time: one that fell in a DST gap was pushed forward (02:30 -> 03:30 EDT),
@@ -112,7 +113,7 @@ export async function saveEventSeries(
     if (rule) {
         update.recurrenceRule = { ...rule, exceptions: rule.exceptions.map(shift) };
     }
-    const saved = await updateCalendarEvent(update, client);
+    const saved = await updateCalendarEvent(update, client, occurrence);
 
     let detachedOccurrenceSyncFailed = false;
     try {
@@ -126,6 +127,7 @@ export async function saveEventSeries(
                 await updateCalendarEvent(
                     { uid: event.uid, version: event.version, recurrenceId: shift(event.recurrenceId!) } as UpdateCalendarEventInput,
                     client,
+                    event,
                 );
             } catch {
                 detachedOccurrenceSyncFailed = true;
@@ -218,7 +220,7 @@ export function moveOccurrence(occurrence: CalendarOccurrence, deltaMs: number, 
     };
     return occurrence.isRecurringOccurrence
         ? detachOccurrence(occurrence, fields, client)
-        : updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...fields }, client);
+        : updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...fields }, client, occurrence);
 }
 
 /**
@@ -232,5 +234,5 @@ export function resizeOccurrenceEnd(occurrence: CalendarOccurrence, newEndDate: 
     const endDate = (newEndDate.getTime() > minEnd.getTime() ? newEndDate : minEnd).toISOString();
     return occurrence.isRecurringOccurrence
         ? detachOccurrence(occurrence, { endDate }, client)
-        : updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, endDate }, client);
+        : updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, endDate }, client, occurrence);
 }

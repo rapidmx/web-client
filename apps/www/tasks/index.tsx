@@ -37,7 +37,7 @@ import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import ProtectedMark from "../../shared/zeroAccess/ProtectedMark.js";
-import { openSealedRecord, openSealedRecords } from "../../shared/zeroAccess/sealedRecords.js";
+import { openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
 
 /** The published model class name of a task on either database (`TaskMongo`, `TaskSQL`) - not a `TaskList`'s. */
 const TASK_MODEL = /^Task(Mongo|SQL)$/;

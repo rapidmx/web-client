@@ -13,6 +13,9 @@ import { mockIntersectionObserver } from "../testUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 
+const { openSealedBytes } = vi.hoisted(() => ({ openSealedBytes: vi.fn() }));
+vi.mock("../../../lib/zeroAccess/sealedRecords.js", () => ({ openSealedBytes }));
+
 let counter = 0;
 let fetchBlob: ReturnType<typeof vi.fn>;
 let client: ApiClient;
@@ -43,6 +46,31 @@ describe("useContactPhotoSrc without an explicit client", () => {
         expect(renderHook(() => useContactPhotoSrc({ uid: "c1", version: 3 })).result.current).toBeUndefined();
         expect(renderHook(() => useContactPhotoSrc(undefined)).result.current).toBeUndefined();
         expect(fetchBlob).not.toHaveBeenCalled();
+    });
+});
+
+describe("useContactPhotoSrc for a sealed picture", () => {
+    const sealed = (uid: string) => ({ ...photoOf(uid), mailboxUid: "mb1", photoSealed: true });
+
+    it("fetches and opens it even without an explicit client - a URL would show the browser ciphertext", async () => {
+        const fetchMock = vi.fn(async () => new Response(new Uint8Array([9, 9])));
+        vi.stubGlobal("fetch", fetchMock);
+        openSealedBytes.mockResolvedValue(new Uint8Array([1, 2]));
+        const { result } = renderHook(() => useContactPhotoSrc(sealed("c1")));
+
+        await waitFor(() => expect(result.current).toBe("blob:photo-1"));
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/contacts/c1/photo?v=1");
+        expect(Array.from(openSealedBytes.mock.calls[0][1])).toEqual([9, 9]);
+        expect(openSealedBytes.mock.calls[0][0]).toBe("mb1");
+        vi.unstubAllGlobals();
+    });
+
+    it("shows initials when it can't be opened here (the mailbox is locked), through the client too", async () => {
+        openSealedBytes.mockResolvedValue(undefined);
+        const { result } = renderHook(() => useContactPhoto({ ...sealed("c2"), mailboxUid: undefined }, client));
+        await waitFor(() => expect(result.current.failed).toBe(true));
+        expect(result.current.src).toBeUndefined();
+        expect(openSealedBytes.mock.calls[0][0]).toBe("");
     });
 });
 

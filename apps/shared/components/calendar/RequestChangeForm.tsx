@@ -5,6 +5,7 @@
 import React, { FormEvent, useState } from "react";
 import { HiOutlineXMark } from "react-icons/hi2";
 import { Attendee, EventChangeRequest, requestEventChange } from "../../../../lib/calendar/calendarApi.js";
+import type { InvitationContent } from "../../../../lib/calendar/protectedEvents.js";
 import { htmlToPlainText, sanitizeEventDescriptionHtml } from "../../../../lib/calendar/eventDescription.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
@@ -34,6 +35,8 @@ export interface ChangeSubject {
     descriptionHtml?: string | null;
     /** Everyone already invited, whatever the case, so a guest is not added twice. */
     guestAddresses: string[];
+    /** The event's real title, location and description, for the server to name it by when its stored copy is protected (`invitationContentOf()`). */
+    invitationContent?: InvitationContent;
 }
 
 export interface RequestChangeFormProps {
@@ -147,7 +150,7 @@ export default function RequestChangeForm({ subject, canChange, canInvite, onSen
 
         setSending(true);
         try {
-            await requestEventChange(subject.uid, request, client);
+            await requestEventChange(subject.uid, request, client, subject.invitationContent);
             notify({
                 kind: "success",
                 title: "Your change was sent to the organizer",

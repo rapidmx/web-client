@@ -11,7 +11,7 @@ import { addDays } from "date-fns";
 import { CalendarEvent, listCalendarEvents } from "../../../../lib/calendar/calendarApi.js";
 import { openSealedEvents } from "../../calendar/sealedEvents.js";
 import { type CalendarOccurrence, expandAllOccurrences } from "../../../../lib/calendar/recurrence.js";
-import { type Contact, createContact, listContactsInFolders } from "../../../../lib/contacts/contactsApi.js";
+import { type Contact, CONTACT_MATCH_FIELDS, createContact, listContactsInFolders } from "../../../../lib/contacts/contactsApi.js";
 import { type ParsedVCardContact, parseVCards } from "../../../../lib/contacts/vcard.js";
 import {
     type Attachment,
@@ -37,6 +37,7 @@ import {
     ownContactCard,
     withoutDuplicates,
 } from "./participantDetails.js";
+import { openSealedRecord, openSealedRecords } from "../../../../lib/zeroAccess/sealedRecords.js";
 
 /** What the card is opened for besides who: the message the participant was met in, and that message's attachments when the caller already has them. */
 export interface ContactCardContext {
@@ -69,7 +70,9 @@ export async function loadFolders(mailboxes: readonly Mailbox[], client?: ApiCli
 /** The contact the address belongs to in `folders`' contacts folders, if any. */
 export async function findContact(folders: readonly Folder[], address: string, client?: ApiClient): Promise<Contact | undefined> {
     const uids = folders.filter((folder) => folder.type === "contacts").map((folder) => folder.uid);
-    return findContactByAddress(await listContactsInFolders(uids, client), address);
+    const found = findContactByAddress(await listContactsInFolders(uids, client), address);
+    // The card shows the one contact in full.
+    return found && (await openSealedRecord(found));
 }
 
 /** The last `CARD_LIST_SIZE` messages to or from `address` in `mailboxes`, newest first. */
@@ -199,7 +202,7 @@ export async function addCardsToAddressBook(
     scope: { mailboxUid: string; folderUid: string },
     client?: ApiClient,
 ): Promise<AddCardsResult> {
-    const { fresh, skipped } = withoutDuplicates(cards, await listContactsInFolders([scope.folderUid], client));
+    const { fresh, skipped } = withoutDuplicates(cards, await openSealedRecords(await listContactsInFolders([scope.folderUid], client), CONTACT_MATCH_FIELDS));
     let added = 0;
     for (const card of fresh) {
         try {

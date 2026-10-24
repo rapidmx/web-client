@@ -24,6 +24,7 @@ import {
     updateVideoMeeting,
 } from "../../../../lib/videoconf/videoMeetingsApi.js";
 import { detachOccurrence, saveEventSeries } from "../../../../lib/calendar/calendarMutations.js";
+import { isProtectedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
 import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
 import { deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
 import { Mailbox } from "../../../../lib/mail/mailApi.js";
@@ -456,7 +457,8 @@ export default function EventEditor({
                     const result = await createVideoMeeting(
                         {
                             mailboxUid: saved.mailboxUid,
-                            title: saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
+                            // The meeting's title is stored readable: a protected event's real title never goes there.
+                            title: isProtectedRecord(saved) ? "Meeting" : saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
                             visibility: "private",
                             calendarEventUid: saved.uid,
                             startTime: saved.startDate,
@@ -476,6 +478,7 @@ export default function EventEditor({
                         videoMeetingUid: meeting.uid,
                     },
                     client,
+                    saved,
                 );
                 mintedMeeting.current = null;
                 setVideoMeetingUid(meeting.uid);
@@ -488,7 +491,7 @@ export default function EventEditor({
             // A stored event clears a field with an explicit `null` (see `EventFields`) - an omitted one would
             // leave the placeholder (and the link to the now-cancelled meeting) in place.
             const patch: EventFields = { location: restoredLocation || null, videoMeetingUid: null };
-            const patched = await updateCalendarEvent({ uid: saved.uid, version: saved.version, ...(patch as Partial<CalendarEventInput>) }, client);
+            const patched = await updateCalendarEvent({ uid: saved.uid, version: saved.version, ...(patch as Partial<CalendarEventInput>) }, client, saved);
             setVideoMeetingUid(undefined);
             setOrganizerJoinUrl(undefined);
             update({ location: restoredLocation });
@@ -601,7 +604,11 @@ export default function EventEditor({
                     delete retryFields.timezone;
                     delete retryFields.allDay;
                 }
-                saved = await updateCalendarEvent({ uid: savedEvent.uid, version: savedEvent.version, ...(retryFields as Partial<CalendarEventInput>) }, client);
+                saved = await updateCalendarEvent(
+                    { uid: savedEvent.uid, version: savedEvent.version, ...(retryFields as Partial<CalendarEventInput>) },
+                    client,
+                    savedEvent,
+                );
             } else if (!occurrence) {
                 // The organizer is only ever set on create - an edit keeps the event's own organizer.
                 saved = await createCalendarEvent(
@@ -625,7 +632,7 @@ export default function EventEditor({
                 savedAsSeries.current = true;
                 detachedSyncFailed = !!series.detachedOccurrenceSyncFailed;
             } else {
-                saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) }, client);
+                saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) }, client, occurrence);
             }
             const video = await applyVideoConferencing(saved, merged.attendees);
             if (video.failed) {

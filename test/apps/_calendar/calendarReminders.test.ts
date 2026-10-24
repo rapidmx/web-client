@@ -1,18 +1,36 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PushEvent } from "../../../lib/mail/pushClient.js";
+
+const { getCalendarEvent } = vi.hoisted(() => ({ getCalendarEvent: vi.fn() }));
+vi.mock("../../../lib/calendar/calendarApi.js", () => ({ getCalendarEvent }));
+
 import {
     calendarEventHref,
     calendarReminderOf,
     joinMeetingUrl,
     locationActionLabel,
+    openedReminder,
     reminderMessage,
     reminderNotificationId,
 } from "../../../apps/shared/calendar/calendarReminders.js";
 
 const NOTICE = { eventUid: "evt1", title: "Team sync", startDate: "2026-09-22T15:00:00.000Z" };
+
+describe("openedReminder", () => {
+    it("shows a protected event's real title and location, read from the event, and the placeholder when it can't be", async () => {
+        const notice = { ...NOTICE, title: "Protected event", protected: true };
+        getCalendarEvent.mockResolvedValueOnce({ title: "Board meeting", location: "Room 4" });
+        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4" });
+        expect(getCalendarEvent).toHaveBeenCalledWith("evt1");
+        getCalendarEvent.mockRejectedValueOnce(new Error("offline"));
+        expect(await openedReminder(notice)).toBe(notice);
+        expect(await openedReminder(NOTICE)).toBe(NOTICE);
+        expect(getCalendarEvent).toHaveBeenCalledTimes(2);
+    });
+});
 
 describe("calendarReminderOf", () => {
     it("reads a CalendarEvent reminder push event", () => {

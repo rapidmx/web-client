@@ -21,7 +21,8 @@ export const ZERO_ACCESS_TYPE_INFO: Record<ZeroAccessDataType, { label: string; 
         label: "Calendar",
         encrypted: "Event titles, locations and descriptions",
         readable: "Times, repeats, time zone, attendees, responses and busy status - for free/busy, invitations and reminders",
-        onDevices: "shows protected events only as busy blocks named “Protected event”",
+        onDevices:
+            "shows protected events only as busy blocks named “Protected event”, and attendees aren't told when it changes a meeting (a phone) or sends one (Outlook) - send those from RapidMX",
     },
     contacts: {
         label: "Contacts",

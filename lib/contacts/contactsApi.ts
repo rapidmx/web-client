@@ -5,7 +5,7 @@
 /** Typed wrappers over `@rapidmx/restapi`'s `/mail/contacts` REST surface — see `mailApi.ts`'s own header
  * comment for the shared ACL/authorization model every wrapper file here follows. */
 
-import { ApiClient, apiUrl, withClient, withClientRaw } from "../util/api.js";
+import { ApiClient, apiUrl, withClient, withClientBlob, withClientRaw } from "../util/api.js";
 import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
 import { type EncryptionPreference, type EndToEndFormat, type KeyConflict, type PreviousKey, type PublicKey, type RejectedKey, signingKeyFingerprints, isOpenPgpKey, isTrustedForVerification } from "../crypto/keyvaultApi.js";
 
@@ -61,6 +61,11 @@ export interface Contact {
      * via `crypto/keyvaultApi.ts`'s `lookupKeys()` at compose time, never fetched on message receipt
      * (that would leak read timing to the sender's server). */
     encryptPreference?: EncryptionPreference;
+    /** The protected details sealed to the mailbox's zero-access key while it protects contacts (`displayName` then shows the first email
+     * address, the other protected fields are empty) - opened with `openSealedRecords()`. Server-written. */
+    sealedFields?: Record<string, string> | null;
+    /** The photo (`photoBlobKey`) is sealed to the mailbox's zero-access key: it is fetched and opened, never shown by URL. Server-written. */
+    photoSealed?: boolean | null;
     /** The end-to-end format the user chose for this contact ("Preferred format"); absent or null for automatic. */
     preferredFormat?: EndToEndFormat | null;
     /** The format this address was last seen using, from authenticated mail it sent (server-written). */
@@ -86,6 +91,13 @@ const CONTACT_SORT = JSON.stringify({ displayName: "ASC", uid: "ASC" });
 
 /** Lists a folder's contacts, alphabetically by display name. Never includes soft-deleted contacts — see
  * `listDeletedContacts()` for those. */
+/** The protected contact fields a list of contacts shows - all a list opens (`openSealedRecords(contacts, CONTACT_LIST_FIELDS)`); a view of
+ * one contact opens the rest. */
+export const CONTACT_LIST_FIELDS: readonly string[] = ["displayName", "phones", "categories"];
+
+/** The protected fields a duplicate check compares (an address-less card is matched by name and phone). */
+export const CONTACT_MATCH_FIELDS: readonly string[] = ["displayName", "phones"];
+
 export function listContacts(folderUid: string, params: ListParams = {}, client?: ApiClient): Promise<Contact[]> {
     return withClient(client, `/mail/contacts?${buildQuery(params, { folderUid, sort: CONTACT_SORT })}`);
 }
@@ -300,8 +312,8 @@ export function uploadContactPhoto(uid: string, version: number, file: Blob, cli
 }
 
 /** The bytes of a contact's own picture through an explicit `client` - for one that authenticates with a token, whose `<img>` cannot (see `contactPhotoUrl()`). */
-export function fetchContactPhoto(uid: string, version: number, client: ApiClient): Promise<Blob> {
-    return client.fetchBlob(`/mail/contacts/${encodeURIComponent(uid)}/photo?v=${version}`);
+export function fetchContactPhoto(uid: string, version: number, client?: ApiClient): Promise<Blob> {
+    return withClientBlob(client, `/mail/contacts/${encodeURIComponent(uid)}/photo?v=${version}`, "Could not load the contact's picture.");
 }
 
 /** Removes a contact's own picture and returns the updated contact. */

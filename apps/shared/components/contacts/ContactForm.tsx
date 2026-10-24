@@ -27,6 +27,8 @@ import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { useContactPhotoSrc } from "../../../../lib/contacts/useContactPhotoSrc.js";
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
+import { useOpenedRecord } from "../../zeroAccess/useOpenedRecord.js";
+import { openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -52,7 +54,18 @@ const ADDRESS_KINDS: ContactAddressKind[] = ["home", "work", "other"];
  * mobile detail route's own edit mode (`apps/www/contacts/[uid].tsx`) — creation itself stays
  * desktop-and-mobile-inline (see that route's own doc comment on why "new" never gets a dedicated route).
  */
-export default function ContactForm({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel }: ContactFormProps) {
+/** The form for `props.contact` opened in full - its fields are read once, when it mounts, so it waits for a protected contact to open. */
+export default function ContactForm(props: ContactFormProps) {
+    const { record, ready } = useOpenedRecord(props.contact);
+    if (!ready) {
+        return <p className="text-sm text-text-muted">Opening this contact&hellip;</p>;
+    }
+    // The server answers a save with the protected details sealed: what goes back is opened again.
+    const onSaved = (saved: Contact) => void openSealedRecord(saved).then(props.onSaved);
+    return <ContactFormView {...props} contact={record} onSaved={onSaved} />;
+}
+
+function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel }: ContactFormProps) {
     const client = useApiClient();
     const currentPhotoUrl = useContactPhotoSrc(contact, client);
     const [targetMailboxUid, setTargetMailboxUid] = useState(mailboxUid);

@@ -5,6 +5,7 @@
 import React, { ChangeEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HiOutlineXMark } from "react-icons/hi2";
+import { fetchSuggestionsWithProtectedContacts } from "./protectedContactSuggestions.js";
 import {
     fetchRecipientSuggestions,
     RECIPIENT_SUGGESTION_MIN_QUERY_LENGTH,
@@ -111,7 +112,7 @@ export default function RecipientInput({
     onBlur,
     onCommit,
     mailboxUid,
-    fetchSuggestions = fetchRecipientSuggestions,
+    fetchSuggestions = fetchSuggestionsWithProtectedContacts,
     debounceMs = RECIPIENT_SUGGESTION_DEBOUNCE_MS,
     disabled,
     autoFocus,

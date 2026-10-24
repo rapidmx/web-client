@@ -17,6 +17,9 @@ import { KEY_CHANGE_STALE_MESSAGE, formatDate, keyPinnedSince, revocationLabel }
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import { type EndToEndFormat, isOpenPgpKey, keyFormat, OPENPGP_KEY_TYPE, type PublicKey, trustSigner } from "../../../../lib/crypto/keyvaultApi.js";
 import { ApiRequestError } from "../../../../lib/util/api.js";
+import ProtectedMark from "../../zeroAccess/ProtectedMark.js";
+import { useOpenedRecord } from "../../zeroAccess/useOpenedRecord.js";
+import { isProtectedRecord, openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
 
 /** Groups a hex fingerprint into 4-character blocks (`ab12 cd34 ...`) for out-of-band verification -
  * the spec's own use case ("compare this over the phone") is materially easier with a grouped string
@@ -58,7 +61,16 @@ export interface ContactDetailPaneProps {
  * always visible alongside the contact list) and the mobile detail route
  * (`apps/www/contacts/[uid].tsx`, a full page on its own reached by tapping a contact row).
  */
-export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite = true, backHref, onKeysChanged, onChanged, canResolveKeys }: ContactDetailPaneProps) {
+/** The pane for `props.contact` with all its protected details opened (a list hands over a contact with only what it shows opened). */
+export default function ContactDetailPane(props: ContactDetailPaneProps) {
+    const { record } = useOpenedRecord(props.contact);
+    const { onChanged } = props;
+    // The server answers a change with the protected details sealed: what goes back to the list is opened again.
+    const openedOnChanged = onChanged && ((changed: Contact) => void openSealedRecord(changed).then(onChanged));
+    return <ContactDetailPaneView {...props} contact={record!} onChanged={openedOnChanged} />;
+}
+
+function ContactDetailPaneView({ contact, onEdit, onDelete, canWrite = true, backHref, onKeysChanged, onChanged, canResolveKeys }: ContactDetailPaneProps) {
     const client = useApiClient();
     // The outcome of the last key decision, kept per contact so selecting another contact doesn't carry it over.
     const [keyNotice, setKeyNotice] = useState<{ contactUid: string; text: string } | null>(null);
@@ -113,6 +125,7 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                     <div>
                         <h1 className="text-xl font-bold tracking-tight">
                             {contact.displayName}
+                            <ProtectedMark record={contact} />
                             <FavoriteStarButton favorite={!!contact.favorite} disabled={photoBusy} onToggle={() => void handleToggleFavorite()} className="ml-1 align-middle" />
                         </h1>
                         {contact.jobTitle && contact.company && (
@@ -198,6 +211,12 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                 previousKeys.length > 0 ? (
                     <div>
                         <div className="text-text-muted text-xs font-bold uppercase tracking-wide mb-1">Encryption</div>
+                        {isProtectedRecord(contact) && (
+                            <p className="mb-2 text-xs text-text-muted">
+                                This contact&rsquo;s details are protected by zero-access encryption. Its email addresses aren&rsquo;t - the server needs
+                                them to deliver mail and to find this contact&rsquo;s encryption keys.
+                            </p>
+                        )}
                         {notice && (
                             <p role="status" className="mb-2 py-2 px-3 rounded-sm bg-surface-alt text-text">
                                 {notice}

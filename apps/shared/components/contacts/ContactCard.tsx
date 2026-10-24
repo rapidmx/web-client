@@ -37,6 +37,7 @@ import {
     scopeMailboxes,
 } from "./contactCardData.js";
 import { type Participant, contactInputFor, isExternalAddress, ownDomains, participantName } from "./participantDetails.js";
+import { openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
 
 type Section<T> = { status: "loading" } | { status: "error" } | { status: "ready"; data: T };
 
@@ -225,7 +226,7 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
 
     async function handleToggleFavorite(current: Contact) {
         try {
-            const next = await setContactFavorite(current, !current.favorite, client);
+            const next = await openSealedRecord(await setContactFavorite(current, !current.favorite, client));
             if (mounted.current) {
                 setChanged(next);
             }

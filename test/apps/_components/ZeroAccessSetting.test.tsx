@@ -79,7 +79,9 @@ describe("ZeroAccessSetting", () => {
 
         expect(await screen.findByText("What to protect")).toBeInTheDocument();
         expect(screen.getByRole("checkbox", { name: /^Mail/ })).toBeChecked();
-        expect(screen.queryByRole("checkbox", { name: /^Calendar/ })).not.toBeInTheDocument();
+        for (const type of [/^Calendar/, /^Contacts/, /^Tasks/]) {
+            expect(screen.getByRole("checkbox", { name: type })).not.toBeChecked();
+        }
     });
 
     it("is disabled, unchecked and explained when the administrator turned it off for the server", async () => {

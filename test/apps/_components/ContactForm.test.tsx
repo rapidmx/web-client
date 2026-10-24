@@ -21,6 +21,14 @@ vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
 // Most of ContactForm's behavior is exercised through the Contacts page tests (test/apps/contacts); this
 // file covers the round-3 fixes: every address is kept, and cleared fields are sent as null on update.
 
+// A protected contact opens to its real details here; `sealedRecords.test.ts` covers the decryption itself.
+const { openSealedRecord } = vi.hoisted(() => ({ openSealedRecord: vi.fn() }));
+vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>();
+    openSealedRecord.mockImplementation(actual.openSealedRecord);
+    return { ...actual, openSealedRecord };
+});
+
 function contact(overrides: Partial<Contact> = {}): Contact {
     return {
         uid: "c1",
@@ -55,6 +63,17 @@ afterEach(() => {
 });
 
 describe("ContactForm", () => {
+    it("waits for a protected contact to open, then edits its real details", async () => {
+        let finish!: (value: Contact) => void;
+        openSealedRecord.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+        const sealed = contact({ displayName: "jane@example.com", sealedFields: { displayName: "x" } });
+        render(<ContactForm contact={sealed} onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+        expect(screen.getByText(/Opening this contact/)).toBeInTheDocument();
+        finish({ ...sealed, displayName: "Jane Doe" });
+        expect(await screen.findByDisplayValue("Jane Doe")).toBeInTheDocument();
+    });
+
     it("shows and saves every stored address, and edits/removes a non-first one", async () => {
         const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
         const onSaved = vi.fn();

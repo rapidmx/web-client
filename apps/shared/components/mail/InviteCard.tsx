@@ -387,6 +387,15 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             description: invite.description,
                             descriptionHtml: invite.descriptionHtml,
                             guestAddresses: invite.attendees.map((attendee) => attendee.address),
+                            // The invitation's own content: what a protected copy of the event is named by.
+                            invitationContent: invite.summary
+                                ? {
+                                      title: invite.summary,
+                                      location: invite.location ?? undefined,
+                                      description: invite.description ?? undefined,
+                                      descriptionHtml: invite.descriptionHtml ?? undefined,
+                                  }
+                                : undefined,
                         }}
                         canChange={!!invite.canRequestChange}
                         canInvite={!!invite.canRequestInvite}

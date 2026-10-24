@@ -160,7 +160,7 @@ describe("InviteCard: Request a change", () => {
         await waitFor(() => expect(screen.queryByRole("form", { name: "Request a change" })).not.toBeInTheDocument());
         const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
         expect(post[0]).toBe("/api/mail/calendar-events/ev1/request-change");
-        expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({ title: "Q3 planning" });
+        expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({ title: "Q3 planning", invitationContent: { title: "Quarterly planning", location: "Room 4" } });
         expect(screen.getByText("Your change was sent to the organizer.")).toBeInTheDocument();
         expect(getNotificationsSnapshot().visible).toEqual([expect.objectContaining({ kind: "success", title: "Your change was sent to the organizer" })]);
         // The invitation itself is what it was.

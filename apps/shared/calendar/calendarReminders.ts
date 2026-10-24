@@ -5,6 +5,7 @@
 /** Pure helpers behind `useCalendarReminders.ts` - kept apart from the hook so the push-payload parsing, the snooze
  * arithmetic and the pop-up's wording are each testable without a React tree or a socket. */
 
+import { getCalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import type { PushEvent } from "../../../lib/mail/pushClient.js";
 
 /** How long "Snooze" waits before the alarm comes back. */
@@ -19,6 +20,22 @@ export interface CalendarReminderNotice {
     /** The event's own `location`, verbatim - `undefined`/`null` when the event has none. Not necessarily a URL;
      * see `joinMeetingUrl()` for when it's shown as a join link. */
     location?: string | null;
+    /** The event is of a calendar zero-access encryption protects: `title` and `location` are placeholders (`openedReminder()`). */
+    protected?: boolean;
+}
+
+/** `notice` with a protected event's real title and location, read from the event itself (opened with the mailbox's keys); `notice` as it
+ * came when the event can't be read or opened - the alarm still goes off, with the placeholder. Never rejects. */
+export async function openedReminder(notice: CalendarReminderNotice): Promise<CalendarReminderNotice> {
+    if (!notice.protected) {
+        return notice;
+    }
+    try {
+        const event = await getCalendarEvent(notice.eventUid);
+        return { ...notice, title: event.title, location: event.location ?? null };
+    } catch {
+        return notice;
+    }
 }
 
 function isReminderNotice(data: unknown): data is CalendarReminderNotice {

@@ -12,7 +12,7 @@ import PolicyLockedNotice from "./PolicyLockedNotice.js";
 import ZeroAccessTypes from "./ZeroAccessTypes.js";
 
 /** The data types this client can protect with zero-access encryption - each joins as its protection is implemented end to end. */
-export const ZERO_ACCESS_SUPPORTED_TYPES = ["mail", "tasks"] as const;
+export const ZERO_ACCESS_SUPPORTED_TYPES = ["mail", "calendar", "contacts", "tasks"] as const;
 
 /** Why zero-access encryption can't be changed here, when it can't - mirrors restapi's `ZeroAccessStatus` reasons that the user can't fix
  * by ticking the box. */

@@ -7,7 +7,7 @@ import { getPushClient } from "../../../lib/mail/pushClient.js";
 import { getNotificationsEnabled } from "../notifications/preferences.js";
 import { playNotificationSound } from "../notifications/sounds.js";
 import { notify } from "../notifications/store.js";
-import { CalendarReminderNotice, SNOOZE_MS, calendarReminderOf, reminderMessage, reminderNotificationId } from "./calendarReminders.js";
+import { CalendarReminderNotice, SNOOZE_MS, calendarReminderOf, openedReminder, reminderMessage, reminderNotificationId } from "./calendarReminders.js";
 
 export interface UseCalendarRemindersOptions {
     /** Nothing is shown without a signed-in user. */
@@ -67,7 +67,7 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
         const offEvent = getPushClient().onEvent((event) => {
             const notice = calendarReminderOf(event);
             if (notice) {
-                present(notice);
+                void openedReminder(notice).then(present);
             }
         });
         const pending = timers.current;

@@ -169,6 +169,15 @@ describe("deleteCalendarEvent", () => {
     });
 });
 
+describe("updateCalendarEvent of a protected event", () => {
+    it("leaves out the placeholders the event shows, so they never overwrite its sealed content", async () => {
+        const protectedEvent = { ...event, title: "Protected event", sealedFields: { title: "c2VhbGVk" } };
+        const fetchMock = mockFetch(() => jsonResponse(200, protectedEvent));
+        await updateCalendarEvent({ uid: "e1", version: 0, title: "Protected event", startDate: "2026-01-06T09:00:00.000Z" }, undefined, protectedEvent);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ uid: "e1", version: 0, startDate: "2026-01-06T09:00:00.000Z" });
+    });
+});
+
 describe("respondToEvent", () => {
     it("POSTs the encoded uid's respond route with the response status", async () => {
         const updated = { ...event, attendees: [{ address: "me@example.com", role: "required" as const, responseStatus: "accepted" as const, isOrganizer: false }] };

@@ -108,6 +108,15 @@ const bob = {
     addresses: [],
 };
 
+// Pass-through unless a test says otherwise; `sealedRecords.test.ts` covers the decryption itself.
+const { openSealedRecords, openSealedRecord } = vi.hoisted(() => ({ openSealedRecords: vi.fn(), openSealedRecord: vi.fn() }));
+vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>();
+    openSealedRecords.mockImplementation(actual.openSealedRecords);
+    openSealedRecord.mockImplementation(actual.openSealedRecord);
+    return { ...actual, openSealedRecords, openSealedRecord };
+});
+
 function mockShellAndContacts(
     contacts: unknown[],
     extra?: (url: string, init?: RequestInit) => Response | undefined,
@@ -1292,6 +1301,35 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
 
         expect(await screen.findByText("cannot categorize")).toBeInTheDocument();
         promptSpy.mockRestore();
+    });
+
+    it("opens only what the list shows of protected contacts, and the whole contact to export it", async () => {
+        const sealedJane = { ...jane, displayName: "jane@example.com", sealedFields: { displayName: "x", phones: "y" } };
+        const opened = (record: any, only?: readonly string[]) =>
+            record.sealedFields ? { ...record, displayName: "Jane Doe", ...(only ? {} : { notes: "Opened in full" }) } : record;
+        openSealedRecords.mockImplementation(async (records: any[], only?: readonly string[]) => records.map((record) => opened(record, only)));
+        mockShellAndContactsWithLists([sealedJane, bob]);
+        const user = userEvent.setup();
+        vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:fake"), revokeObjectURL: vi.fn() });
+        const blobs: string[] = [];
+        const RealBlob = Blob;
+        vi.stubGlobal("Blob", class extends RealBlob {
+            constructor(parts: BlobPart[], options?: BlobPropertyBag) {
+                super(parts, options);
+                blobs.push(parts.join(""));
+            }
+        });
+        const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        expect(openSealedRecords.mock.calls[0][1]).toEqual(["displayName", "phones", "categories"]);
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Export"));
+
+        await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+        expect(blobs.some((text) => text.includes("Opened in full"))).toBe(true);
+        clickSpy.mockRestore();
     });
 
     it("toolbar Export downloads a single contact's vCard, named after them.", async () => {

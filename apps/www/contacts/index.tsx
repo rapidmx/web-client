@@ -11,6 +11,8 @@ import {
     createContact,
     deleteContact,
     getContact,
+    CONTACT_LIST_FIELDS,
+    CONTACT_MATCH_FIELDS,
     listContacts,
     ensureSuggestedContacts,
     listContactsInFolders,
@@ -44,6 +46,7 @@ import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { notify } from "../../shared/notifications/store.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
+import { openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
 
 /** The published model class name of a contact on either database (`ContactMongo`, `ContactSQL`) - not a `ContactList`'s. */
 const CONTACT_MODEL = /^Contact(Mongo|SQL)$/;
@@ -142,6 +145,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             void loadSuggested(suggestedFolderUid);
         }
         return listAllPages((page) => listContacts(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
+            .then(async (result) => ({ ...result, items: await openSealedRecords(result.items, CONTACT_LIST_FIELDS) }))
             .then((result) => {
                 setContacts(result.items);
                 setTruncated(result.truncated);
@@ -157,7 +161,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     /** Reads the Suggested Contacts folder's contacts. A failure leaves the list as it was. */
     function loadSuggested(suggestedUid: string): Promise<void> {
         return listAllPages((page) => listContacts(suggestedUid, { limit: LIST_PAGE_SIZE, page }, client))
-            .then((result) => setSuggestedContacts(result.items))
+            .then(async (result) => setSuggestedContacts(await openSealedRecords(result.items, CONTACT_LIST_FIELDS)))
             .catch(() => undefined);
     }
 
@@ -195,7 +199,9 @@ function ContactsContent({ userUid }: { userUid?: string }) {
                 remove(change.uid);
                 return;
             }
-            void getContact(change.uid, client).then(
+            void getContact(change.uid, client)
+                .then((fresh) => openSealedRecord(fresh, CONTACT_LIST_FIELDS))
+                .then(
                 (fresh) => {
                     if (fresh.deleted === true) {
                         remove(fresh.uid);
@@ -256,6 +262,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         setDeletedLoading(true);
         setDeletedError(null);
         listAllPages((page) => listDeletedContacts(folderUid, { limit: LIST_PAGE_SIZE, page }, client))
+            .then(async (result) => ({ ...result, items: await openSealedRecords(result.items, CONTACT_LIST_FIELDS) }))
             .then((result) => {
                 // A server that dropped the `deleted` filter (no delete+update right on this folder) answers with live
                 // contacts, which must never be listed as deleted.
@@ -484,8 +491,10 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     // A suggested contact becomes one of the mailbox's own: a copy in its contacts folder, and the suggestion removed (the person is not suggested again).
     const handleAddToContacts = singleFlight(async () => {
         // In the All contacts view the selection can hold contacts that already are the mailbox's own: only the suggested ones are added.
-        for (const contact of checkedContacts.filter((checked) => checked.folderUid === suggestedFolderUid)) {
+        for (const listed of checkedContacts.filter((checked) => checked.folderUid === suggestedFolderUid)) {
             try {
+                // Copied in full: the list opened only what it shows.
+                const contact = await openSealedRecord(listed);
                 await createContact(
                     {
                         mailboxUid: contact.mailboxUid,
@@ -512,10 +521,12 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         await reload();
     });
 
-    function handleExportVCard() {
+    async function handleExportVCard() {
+        // Exported in full: the list opened only what it shows.
+        const contacts = await openSealedRecords(checkedContacts);
         downloadTextFile(
-            checkedContacts.length === 1 ? `${checkedContacts[0].displayName}.vcf` : "contacts.vcf",
-            checkedContacts.length === 1 ? contactToVCard(checkedContacts[0]) : contactsToVCardFile(checkedContacts),
+            contacts.length === 1 ? `${contacts[0].displayName}.vcf` : "contacts.vcf",
+            contacts.length === 1 ? contactToVCard(contacts[0]) : contactsToVCardFile(contacts),
         );
     }
 
@@ -543,7 +554,7 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         // earlier card's in the file - is left alone. The folder is read in full for that, not just the page of it the list holds.
         let fresh: ParsedVCardContact[];
         try {
-            fresh = withoutDuplicates(parsed, await listContactsInFolders([folderUid], client)).fresh;
+            fresh = withoutDuplicates(parsed, await openSealedRecords(await listContactsInFolders([folderUid], client), CONTACT_MATCH_FIELDS)).fresh;
         } catch (err) {
             notifyApiError(err, "Couldn't check the file against your contacts");
             return;

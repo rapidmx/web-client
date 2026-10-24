@@ -31,8 +31,8 @@ vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
 });
 
 // A protected task opens to its real title here; `sealedRecords.test.ts` covers the decryption itself.
-vi.mock("../../../apps/shared/zeroAccess/sealedRecords.js", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../../../apps/shared/zeroAccess/sealedRecords.js")>();
+vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>();
     const open = (record: any) => (record.sealedFields ? { ...record, title: `Opened ${record.uid}` } : record);
     return { ...actual, openSealedRecords: async (records: any[]) => records.map(open), openSealedRecord: async (record: any) => open(record) };
 });

@@ -410,6 +410,27 @@ describe("ContactDetailPane: OpenPGP keys", () => {
     });
 });
 
+describe("ContactDetailPane: zero-access protection", () => {
+    it("marks a protected contact and says plainly that its email addresses aren't protected", () => {
+        const contact = contactFixture({
+            displayName: "jane@example.com",
+            emails: [{ address: "jane@example.com", type: "other" }],
+            keys: [key("encrypt", "eeee2222")],
+            sealedFields: { displayName: "c2VhbGVk" },
+        });
+        render(<ContactDetailPane contact={contact} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+        expect(screen.getByRole("img", { name: "Protected by zero-access encryption" })).toBeInTheDocument();
+        expect(screen.getByText(/Its email addresses aren.t - the server needs them to deliver mail and to find this contact.s encryption keys/)).toBeInTheDocument();
+    });
+
+    it("says nothing about protection for a contact that isn't protected", () => {
+        render(<ContactDetailPane contact={contactFixture({ keys: [key("encrypt", "eeee2222")] })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        expect(screen.queryByRole("img", { name: "Protected by zero-access encryption" })).not.toBeInTheDocument();
+        expect(screen.queryByText(/email addresses aren.t/)).not.toBeInTheDocument();
+    });
+});
+
 describe("ContactDetailPane: preferred format", () => {
     const openPgp = key("encrypt", "aaaa1111", { type: "openpgp" });
     const both = (overrides: Partial<Contact> = {}) =>

@@ -11,11 +11,10 @@ import { encryptForRecipients } from "../../../lib/crypto/smime.js";
 
 x509.cryptoProvider.set(crypto);
 
-const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
-vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
+const { getUnlockedKeys, keySessionListeners } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), keySessionListeners: [] as ((event: any) => void)[] }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: (listener: (event: any) => void) => keySessionListeners.push(listener) }));
 
-const { clearSealedRecords, isProtectedRecord, openSealedRecord, openSealedRecords } = await import("../../../apps/shared/zeroAccess/sealedRecords.js");
-const { markSigningOut, clearSigningOut } = await import("../../../apps/shared/components/mail/compose/composeFlushRegistry.js");
+const { clearSealedRecords, isOpenedRecord, isProtectedRecord, openSealedBytes, openSealedRecord, openSealedRecords } = await import("../../../lib/zeroAccess/sealedRecords.js");
 
 async function zeroAccessKey() {
     const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -61,13 +60,23 @@ describe("sealedRecords", () => {
         const [opened] = await openSealedRecords([record]);
 
         expect(opened).toMatchObject({ displayName: "Jane Doe", phones: [{ phoneNumber: "1" }], favorite: true });
+        const nameOnly = await openSealedRecord({ ...record, phones: [] }, ["displayName"]);
+        expect(nameOnly).toMatchObject({ displayName: "Jane Doe", phones: [] });
         expect(isProtectedRecord(opened)).toBe(true);
+        // Fully opened - and still so for a copy - but not when only some fields were.
+        expect(isOpenedRecord(opened)).toBe(true);
+        expect(isOpenedRecord({ ...opened })).toBe(true);
+        expect(JSON.stringify(opened)).not.toContain("openedSealedRecord");
+        expect(isOpenedRecord(nameOnly)).toBe(false);
+        expect(isOpenedRecord(record)).toBe(false);
         getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [] });
         // Locked again: the placeholders show, even for values opened before.
-        expect((await openSealedRecord(record)).displayName).toBe("jane@example.com");
+        const locked = await openSealedRecord(record);
+        expect(locked.displayName).toBe("jane@example.com");
+        expect(isOpenedRecord(locked)).toBe(false);
     });
 
-    it("keeps the placeholders while the mailbox is locked, or when a field won't open, and forgets everything at sign-out", async () => {
+    it("keeps the placeholders while the mailbox is locked, or when a field won't open, and forgets everything when keys lock", async () => {
         const key = await zeroAccessKey();
         const other = await zeroAccessKey();
         const record = { mailboxUid: "mb", title: "[...]", sealedFields: { title: await seal("Secret", key.certDer) } };
@@ -79,9 +88,23 @@ describe("sealedRecords", () => {
 
         getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });
         expect((await openSealedRecord(record)).title).toBe("Secret");
-        markSigningOut();
-        clearSigningOut();
+        keySessionListeners.forEach((listener) => listener({ mailboxUid: "mb", state: "unlocked" }));
+        expect((await openSealedRecord(record)).title).toBe("Secret");
+        keySessionListeners.forEach((listener) => listener({ mailboxUid: "mb", state: "locked" }));
         getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [other] });
         expect((await openSealedRecord(record)).title).toBe("[...]");
+    });
+
+    it("opens a sealed blob with the mailbox's keys, and gives nothing while locked or for another key", async () => {
+        const key = await zeroAccessKey();
+        const other = await zeroAccessKey();
+        const der = await encryptForRecipients(new Uint8Array([1, 2, 3]), [key.certDer]);
+
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });
+        expect(Array.from((await openSealedBytes("mb", der))!)).toEqual([1, 2, 3]);
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [other] });
+        expect(await openSealedBytes("mb", der)).toBeUndefined();
+        getUnlockedKeys.mockReturnValue(undefined);
+        expect(await openSealedBytes("mb", der)).toBeUndefined();
     });
 });
