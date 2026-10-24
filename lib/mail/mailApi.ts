@@ -289,6 +289,8 @@ export interface UpdateMailboxInput {
     autoSendReceiptsExternal?: boolean;
     /** Owner-only server-side (anybody else's value is dropped) - see `Mailbox.zeroAccessEnabled`. */
     zeroAccessEnabled?: boolean;
+    /** The mailbox's own encryption preference, replaced whole - see `Mailbox.encryptPreference`. */
+    encryptPreference?: EncryptionPreference;
     /** Trusted-caller-only server-side. `null` (or `""`) unassigns the mailbox's escrow scope; the
      * referenced `EscrowScope` must exist otherwise. See `Mailbox.escrowScopeId`. */
     escrowScopeId?: string | null;

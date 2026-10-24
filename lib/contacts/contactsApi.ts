@@ -7,7 +7,7 @@
 
 import { ApiClient, apiUrl, withClient, withClientRaw } from "../util/api.js";
 import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
-import { type EncryptionPreference, type KeyConflict, type PreviousKey, type PublicKey, type RejectedKey, signingKeyFingerprints, isOpenPgpKey, isTrustedForVerification } from "../crypto/keyvaultApi.js";
+import { type EncryptionPreference, type EndToEndFormat, type KeyConflict, type PreviousKey, type PublicKey, type RejectedKey, signingKeyFingerprints, isOpenPgpKey, isTrustedForVerification } from "../crypto/keyvaultApi.js";
 
 export type ContactAddressKind = "home" | "work" | "other";
 
@@ -61,6 +61,10 @@ export interface Contact {
      * via `crypto/keyvaultApi.ts`'s `lookupKeys()` at compose time, never fetched on message receipt
      * (that would leak read timing to the sender's server). */
     encryptPreference?: EncryptionPreference;
+    /** The end-to-end format the user chose for this contact ("Preferred format"); absent or null for automatic. */
+    preferredFormat?: EndToEndFormat | null;
+    /** The format this address was last seen using, from authenticated mail it sent (server-written). */
+    observedFormat?: { format: EndToEndFormat; at: number } | null;
     /** This contact's pinned public keys. Trust is TOFU (trust-on-first-use) — see `keyConflicts` for what
      * happens when a newly observed key differs from one of these. */
     keys?: PublicKey[];

@@ -78,9 +78,13 @@ export function resolveRecipientEncryption(
     recipientAddress: string,
     lookup: KeyLookupResult | undefined,
 ): RecipientEncryptionStatus {
-    const encryptCert = lookup ? findActivePublicKey(lookup.keys, "encrypt") : undefined;
-    // S/MIME whenever the recipient has a certificate; OpenPGP only for one who has nothing else, and only where the server allows it.
-    const openPgpKey = !encryptCert && lookup && policy.allowOpenPgp === true ? findActivePublicKey(lookup.keys, "encrypt", "openpgp") : undefined;
+    const smimeCert = lookup ? findActivePublicKey(lookup.keys, "encrypt") : undefined;
+    const usableOpenPgpKey = lookup && policy.allowOpenPgp === true ? findActivePublicKey(lookup.keys, "encrypt", "openpgp") : undefined;
+    // S/MIME, unless the recipient has no certificate or prefers OpenPGP (restapi *Choosing the format*: the user's choice for the
+    // contact, what the address advertises, what it was last seen using) - and OpenPGP only where the server allows it.
+    const useOpenPgp = !!usableOpenPgpKey && (!smimeCert || lookup?.preferredFormat === "openpgp");
+    const encryptCert = useOpenPgp ? undefined : smimeCert;
+    const openPgpKey = useOpenPgp ? usableOpenPgpKey : undefined;
     const tier = classifyRecipientTier(ownAddress, recipientAddress, !!lookup && lookup.keys.length > 0);
     const policyState = policyStateForTier(policy, tier);
 

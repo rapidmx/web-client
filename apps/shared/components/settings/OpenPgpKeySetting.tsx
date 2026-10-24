@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { findActivePublicKey } from "../../../../lib/crypto/keyvaultApi.js";
+import { type EncryptionPreference, type EndToEndFormat, findActivePublicKey } from "../../../../lib/crypto/keyvaultApi.js";
 import { MIN_EXPORT_PASSPHRASE_LENGTH } from "../../../../lib/crypto/keyExport.js";
 import { exportOpenPgpSecretKey } from "../../../../lib/crypto/openPgpKey.js";
-import type { Mailbox } from "../../../../lib/mail/mailApi.js";
+import { getMailbox, type Mailbox, updateMailbox } from "../../../../lib/mail/mailApi.js";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
@@ -34,6 +34,12 @@ function saveText(text: string, filename: string): void {
     URL.revokeObjectURL(url);
 }
 
+/** `preference` advertising `format` - S/MIME is the default, so it is advertised by saying nothing. */
+function withPreferredFormat(preference: EncryptionPreference | undefined, format: EndToEndFormat): EncryptionPreference {
+    const { preferFormat: _previous, ...rest } = preference ?? { preferEncrypt: "nopreference" as const };
+    return format === "openpgp" ? { ...rest, preferFormat: "openpgp" } : rest;
+}
+
 /** A fingerprint in groups of four, for reading aloud. */
 function groupFingerprint(fingerprint: string): string {
     return fingerprint.toUpperCase().replace(/(.{4})/g, "$1 ").trim();
@@ -52,6 +58,8 @@ export default function OpenPgpKeySetting({ mailbox, canManage }: OpenPgpKeySett
     const [confirmPassphrase, setConfirmPassphrase] = useState("");
     const [exporting, setExporting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [format, setFormat] = useState<EndToEndFormat>(mailbox.encryptPreference?.preferFormat === "openpgp" ? "openpgp" : "smime");
+    const [savingFormat, setSavingFormat] = useState(false);
     const key = findActivePublicKey(mailbox.keys ?? [], "encrypt", "openpgp");
     if (!key) {
         return null;
@@ -64,6 +72,32 @@ export default function OpenPgpKeySetting({ mailbox, canManage }: OpenPgpKeySett
         setPassphrase("");
         setConfirmPassphrase("");
         setError(null);
+    }
+
+    /** Advertises `next` as the format this mailbox would rather receive (restapi *Choosing the format*), to RapidMX servers through
+     * key discovery and the `RapidMX-Key` header. */
+    async function saveFormat(next: EndToEndFormat) {
+        const previous = format;
+        setFormat(next);
+        setSavingFormat(true);
+        try {
+            const write = (current: Pick<Mailbox, "version" | "encryptPreference">) =>
+                updateMailbox({ uid: mailbox.uid, version: current.version, encryptPreference: withPreferredFormat(current.encryptPreference, next) }, client);
+            try {
+                await write(mailbox);
+            } catch (err) {
+                // Enrolling a key moves the mailbox's version on: read it again and retry once.
+                if (!(err instanceof ApiRequestError && err.status === 409)) {
+                    throw err;
+                }
+                await write(await getMailbox(mailbox.uid, {}, client));
+            }
+        } catch (err) {
+            setFormat(previous);
+            notifyApiError(err, "Couldn't save your preferred encryption format");
+        } finally {
+            setSavingFormat(false);
+        }
     }
 
     async function downloadPublicKey() {
@@ -112,6 +146,24 @@ export default function OpenPgpKeySetting({ mailbox, canManage }: OpenPgpKeySett
             <p className="text-sm mb-2">
                 Fingerprint: <code className="text-xs break-all">{groupFingerprint(key.fingerprint)}</code>
             </p>
+            <fieldset className="mb-3" disabled={!canManage || savingFormat}>
+                <legend className="text-sm font-semibold mb-1">Preferred format</legend>
+                <p className="text-xs text-text-muted mb-1">
+                    What other RapidMX servers use to encrypt to you when they could use either. Choose OpenPGP if you mostly read this
+                    mailbox in an OpenPGP app.
+                </p>
+                {(
+                    [
+                        ["smime", "S/MIME (recommended)"],
+                        ["openpgp", "OpenPGP"],
+                    ] as const
+                ).map(([value, label]) => (
+                    <label key={value} className="flex items-center gap-2 text-sm">
+                        <input type="radio" name={`preferred-format-${mailbox.uid}`} checked={format === value} onChange={() => void saveFormat(value)} />
+                        {label}
+                    </label>
+                ))}
+            </fieldset>
             <div className="flex flex-wrap gap-2 mb-2">
                 <Button type="button" variant="secondary" className="!w-auto" onClick={() => void downloadPublicKey()}>
                     Download public key

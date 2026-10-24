@@ -54,6 +54,19 @@ describe("resolveRecipientEncryption - OpenPGP", () => {
         expect(status.encryptCert).toBeUndefined();
     });
 
+    it("uses OpenPGP for a recipient with both who prefers it, and S/MIME for one who prefers that or says nothing", () => {
+        const both = { keys: [activeKey("encrypt"), openPgpKey], ...mutual };
+        expect(resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@thunderbird.example", { ...both, preferredFormat: "openpgp" })).toMatchObject({
+            format: "openpgp",
+            openPgpKey,
+            canEncrypt: true,
+        });
+        expect(resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@x.com", { ...both, preferredFormat: "smime" })).toMatchObject({ format: "smime" });
+        expect(resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@x.com", both)).toMatchObject({ format: "smime" });
+        // A preference for OpenPGP the server doesn't allow falls back to the certificate.
+        expect(resolveRecipientEncryption("a@x.com", true, ALL_AUTOMATIC, "b@x.com", { ...both, preferredFormat: "openpgp" })).toMatchObject({ format: "smime" });
+    });
+
     it.each([
         ["doesn't allow OpenPGP", { ...ALL_AUTOMATIC, allowOpenPgp: false }],
         ["predates OpenPGP", ALL_AUTOMATIC],

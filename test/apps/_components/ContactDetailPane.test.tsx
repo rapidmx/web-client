@@ -32,6 +32,15 @@ vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
     trustSigner,
 }));
 vi.mock("../../../apps/shared/components/mail/pinnedSigners.js", () => ({ clearPinnedSignerCache }));
+const { updateContact, notifyApiError } = vi.hoisted(() => ({ updateContact: vi.fn(), notifyApiError: vi.fn() }));
+vi.mock("../../../lib/contacts/contactsApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/contacts/contactsApi.js")>()),
+    updateContact,
+}));
+vi.mock("../../../apps/shared/notifications/apiErrors.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../apps/shared/notifications/apiErrors.js")>()),
+    notifyApiError,
+}));
 
 afterEach(() => {
     resolveKeyConflict.mockReset();
@@ -398,6 +407,64 @@ describe("ContactDetailPane: OpenPGP keys", () => {
         second.unmount();
         render(<ContactDetailPane contact={jane()} onEdit={vi.fn()} onDelete={vi.fn()} canWrite={false} />);
         expect(screen.queryByRole("button", { name: /Add OpenPGP key/ })).not.toBeInTheDocument();
+    });
+});
+
+describe("ContactDetailPane: preferred format", () => {
+    const openPgp = key("encrypt", "aaaa1111", { type: "openpgp" });
+    const both = (overrides: Partial<Contact> = {}) =>
+        contactFixture({ emails: [{ address: "jane@example.com", type: "work" }], keys: [key("encrypt", "eeee2222"), openPgp], ...overrides });
+
+    afterEach(() => {
+        updateContact.mockReset();
+        notifyApiError.mockReset();
+    });
+
+    it("is offered only for a contact with an OpenPGP key, to someone who can change the contact", () => {
+        const { unmount } = render(<ContactDetailPane contact={both({ keys: [key("encrypt", "eeee2222")] })} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        expect(screen.queryByLabelText(/Preferred format/)).not.toBeInTheDocument();
+        unmount();
+        render(<ContactDetailPane contact={both()} onEdit={vi.fn()} onDelete={vi.fn()} canWrite={false} />);
+        expect(screen.queryByLabelText(/Preferred format/)).not.toBeInTheDocument();
+    });
+
+    it.each([
+        [{}, "Automatic (S/MIME when they have a certificate)"],
+        [{ observedFormat: { format: "openpgp" as const, at: 1 } }, "Automatic (OpenPGP, which they used last)"],
+        [
+            { encryptPreference: { preferEncrypt: "mutual" as const, preferFormat: "smime" as const }, observedFormat: { format: "openpgp" as const, at: 1 } },
+            "Automatic (S/MIME, which they asked for)",
+        ],
+    ])("says what Automatic picks (%o)", (overrides, label) => {
+        render(<ContactDetailPane contact={both(overrides)} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
+        expect(screen.getByLabelText(/Preferred format/)).toHaveValue("auto");
+    });
+
+    it("saves the choice on the contact, and Automatic as none", async () => {
+        const onChanged = vi.fn();
+        updateContact.mockImplementation(async (patch: any) => ({ ...both(), ...patch, version: 1 }));
+        const user = userEvent.setup();
+        const { rerender } = render(<ContactDetailPane contact={both()} onEdit={vi.fn()} onDelete={vi.fn()} onChanged={onChanged} />);
+
+        await user.selectOptions(screen.getByLabelText(/Preferred format/), "openpgp");
+        await waitFor(() => expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ preferredFormat: "openpgp" })));
+        expect(updateContact).toHaveBeenCalledWith({ uid: "c1", version: 0, preferredFormat: "openpgp" }, undefined);
+
+        rerender(<ContactDetailPane contact={both({ preferredFormat: "openpgp", version: 1 })} onEdit={vi.fn()} onDelete={vi.fn()} onChanged={onChanged} />);
+        expect(screen.getByLabelText(/Preferred format/)).toHaveValue("openpgp");
+        await user.selectOptions(screen.getByLabelText(/Preferred format/), "auto");
+        await waitFor(() => expect(updateContact).toHaveBeenCalledTimes(2));
+        expect(updateContact.mock.calls[1][0]).toEqual({ uid: "c1", version: 1, preferredFormat: null });
+    });
+
+    it("says so when the choice can't be saved", async () => {
+        updateContact.mockRejectedValue(new ApiRequestError("conflict", 409));
+        const user = userEvent.setup();
+        render(<ContactDetailPane contact={both()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+        await user.selectOptions(screen.getByLabelText(/Preferred format/), "smime");
+        await waitFor(() => expect(notifyApiError).toHaveBeenCalledWith(expect.any(ApiRequestError), "Couldn't update this contact"));
+        expect(screen.getByLabelText(/Preferred format/)).not.toBeDisabled();
     });
 });
 

@@ -11,7 +11,9 @@ import OpenPgpKeySetting from "../../../apps/shared/components/settings/OpenPgpK
 import type { Mailbox } from "../../../lib/mail/mailApi.js";
 import { ApiRequestError } from "../../../lib/util/api.js";
 
-const { notifyApiError, exportOpenPgpSecretKey, readPublicKey, armorPublicKey } = vi.hoisted(() => ({
+const { notifyApiError, exportOpenPgpSecretKey, readPublicKey, armorPublicKey, updateMailbox, getMailbox } = vi.hoisted(() => ({
+    updateMailbox: vi.fn(),
+    getMailbox: vi.fn(),
     notifyApiError: vi.fn(),
     exportOpenPgpSecretKey: vi.fn(),
     readPublicKey: vi.fn(),
@@ -20,6 +22,11 @@ const { notifyApiError, exportOpenPgpSecretKey, readPublicKey, armorPublicKey } 
 vi.mock("../../../apps/shared/notifications/apiErrors.js", () => ({ notifyApiError }));
 vi.mock("../../../lib/crypto/openPgpKey.js", () => ({ exportOpenPgpSecretKey }));
 vi.mock("../../../lib/crypto/openpgp.js", () => ({ readPublicKey, armorPublicKey }));
+vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
+    updateMailbox,
+    getMailbox,
+}));
 
 const FINGERPRINT = "0123456789abcdef".repeat(4);
 const OPENPGP_KEY = { publicKey: "cGdw", type: "openpgp", useType: "encrypt", fingerprint: FINGERPRINT, notBefore: 1, notAfter: 8.64e15 };
@@ -131,6 +138,45 @@ describe("OpenPgpKeySetting", () => {
         await user.click(screen.getByRole("button", { name: "Export" }));
         await waitFor(() => expect(notifyApiError).toHaveBeenCalledWith(expect.any(ApiRequestError), "Couldn't export your OpenPGP key"));
         expect(click).not.toHaveBeenCalled();
+    });
+
+    it("advertises OpenPGP as the preferred format, keeping the rest of the preference, and S/MIME by saying nothing", async () => {
+        const user = userEvent.setup();
+        updateMailbox.mockResolvedValue({});
+        const withPreference = { ...MAILBOX, encryptPreference: { preferEncrypt: "mutual", lastSeen: 4 } } as unknown as Mailbox;
+        render(<OpenPgpKeySetting mailbox={withPreference} canManage />);
+        expect(screen.getByRole("radio", { name: "S/MIME (recommended)" })).toBeChecked();
+
+        await user.click(screen.getByRole("radio", { name: "OpenPGP" }));
+        await waitFor(() => expect(updateMailbox).toHaveBeenCalledTimes(1));
+        expect(updateMailbox.mock.calls[0][0]).toEqual({ uid: "mb1", version: 4, encryptPreference: { preferEncrypt: "mutual", lastSeen: 4, preferFormat: "openpgp" } });
+        expect(screen.getByRole("radio", { name: "OpenPGP" })).toBeChecked();
+
+        await user.click(screen.getByRole("radio", { name: "S/MIME (recommended)" }));
+        await waitFor(() => expect(updateMailbox).toHaveBeenCalledTimes(2));
+        expect(updateMailbox.mock.calls[1][0].encryptPreference).toEqual({ preferEncrypt: "mutual", lastSeen: 4 });
+    });
+
+    it("retries once against a newer mailbox version, and goes back to the saved choice when saving fails", async () => {
+        const user = userEvent.setup();
+        updateMailbox.mockRejectedValueOnce(new ApiRequestError("stale", 409)).mockResolvedValueOnce({});
+        getMailbox.mockResolvedValue({ ...MAILBOX, version: 9, encryptPreference: { preferEncrypt: "mutual", preferFormat: "openpgp" } });
+        render(<OpenPgpKeySetting mailbox={mailbox([SMIME_KEY, OPENPGP_KEY])} canManage />);
+
+        await user.click(screen.getByRole("radio", { name: "OpenPGP" }));
+        await waitFor(() => expect(updateMailbox).toHaveBeenCalledTimes(2));
+        expect(updateMailbox.mock.calls[1][0]).toEqual({ uid: "mb1", version: 9, encryptPreference: { preferEncrypt: "mutual", preferFormat: "openpgp" } });
+
+        updateMailbox.mockRejectedValueOnce(new ApiRequestError("down", 503));
+        await user.click(screen.getByRole("radio", { name: "S/MIME (recommended)" }));
+        await waitFor(() => expect(notifyApiError).toHaveBeenCalledWith(expect.any(ApiRequestError), "Couldn't save your preferred encryption format"));
+        expect(screen.getByRole("radio", { name: "OpenPGP" })).toBeChecked();
+    });
+
+    it("shows the preferred format read-only to anyone but the owner", () => {
+        render(<OpenPgpKeySetting mailbox={{ ...MAILBOX, encryptPreference: { preferEncrypt: "nopreference", preferFormat: "openpgp" } } as unknown as Mailbox} canManage={false} />);
+        expect(screen.getByRole("radio", { name: "OpenPGP" })).toBeChecked();
+        expect(screen.getByRole("radio", { name: "OpenPGP" })).toBeDisabled();
     });
 
     it("cancels and clears the form", async () => {

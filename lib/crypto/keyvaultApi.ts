@@ -101,7 +101,13 @@ export interface MasterKeyWrap {
 export interface EncryptionPreference {
     lastSeen?: number;
     preferEncrypt: "mutual" | "nopreference";
+    /** Which end-to-end format the address would rather receive when a sender can use either (restapi
+     * `specs/end-to-end_encryption.md` *Choosing the format*). Absent: no preference. */
+    preferFormat?: EndToEndFormat;
 }
+
+/** The two end-to-end encryption formats. */
+export type EndToEndFormat = "smime" | "openpgp";
 
 /** A newly observed key that differs from a contact's pinned key of the same `useType` - restapi records it instead of
  * silently replacing the pin (the spec's Key Conflict Handling) until the user resolves it with `resolveKeyConflict()`.
@@ -677,6 +683,11 @@ export interface KeyLookupResult {
     keyConflicts?: KeyConflict[];
     /** Keys that were pinned before, newest first - see `PreviousKey`. */
     previousKeys?: PreviousKey[];
+    /** The format to use for a recipient reachable in both (restapi *Choosing the format*): the user's choice for the contact, else what
+     * the address advertises, else what it was last seen using. Absent when nothing says - S/MIME then. */
+    preferredFormat?: EndToEndFormat;
+    /** Where `preferredFormat` came from. */
+    preferredFormatSource?: "contact" | "advertised" | "observed";
 }
 
 /** Server-side Discovery: the server itself performs the `_rapidmx` DNS lookup and remote key-endpoint

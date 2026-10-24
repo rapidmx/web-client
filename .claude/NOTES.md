@@ -3903,3 +3903,13 @@ Not committed. Every new `client` is an optional trailing parameter; without one
   - Delays from `compactableAt` are `COMPACTION_DELAY_MS` (desktop 0, web 6 h, mobile 24 h).
   - Mobile also needs a known `pendingBytes` plus the current segment's `bytes` ≤ `MOBILE_COMPACTION_MAX_BYTES` (5 MB) and an unconstrained connection.
   - A server without `compactableAt` gets the old behaviour on desktop and web; mobile declines.
+
+### 2026-10-24: Choosing the format (hint + inference + override, JP)
+- `resolveRecipientEncryption` uses OpenPGP when the recipient has a usable OpenPGP key and either no S/MIME certificate or `lookup.preferredFormat === "openpgp"`. Otherwise it uses S/MIME, the fallback when nothing says.
+  - restapi resolves `preferredFormat` (contact override, then advertised hint, then observed) and returns `preferredFormatSource`.
+- **Own mailbox:** `OpenPgpKeySetting` has a "Preferred format" radio, S/MIME (recommended) or OpenPGP.
+  - It writes the whole `encryptPreference` through `updateMailbox`, adding `preferFormat: "openpgp"` or dropping the key for S/MIME. It retries once on 409 with a re-read mailbox.
+  - It is disabled for a non-owner.
+- **Contacts:** `ContactDetailPane`'s `PreferredFormatControl` appears when the contact has an OpenPGP key and the reader can write. It offers Automatic, S/MIME or OpenPGP.
+  - It writes `updateContact({ preferredFormat })` (`null` for Automatic).
+  - The Automatic option's label explains itself: what they asked for, what they used last, or S/MIME.

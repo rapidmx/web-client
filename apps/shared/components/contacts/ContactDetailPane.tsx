@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
-import { Contact, setContactFavorite } from "../../../../lib/contacts/contactsApi.js";
+import { Contact, setContactFavorite, updateContact } from "../../../../lib/contacts/contactsApi.js";
 import CopyIconButton from "../../../../lib/components/buttons/CopyIconButton.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
@@ -15,7 +15,7 @@ import ContactPhotoEditor from "./ContactPhotoEditor.js";
 import KeyChangeReview from "./KeyChangeReview.js";
 import { KEY_CHANGE_STALE_MESSAGE, formatDate, keyPinnedSince, revocationLabel } from "./contactKeys.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
-import { isOpenPgpKey, keyFormat, OPENPGP_KEY_TYPE, type PublicKey, trustSigner } from "../../../../lib/crypto/keyvaultApi.js";
+import { type EndToEndFormat, isOpenPgpKey, keyFormat, OPENPGP_KEY_TYPE, type PublicKey, trustSigner } from "../../../../lib/crypto/keyvaultApi.js";
 import { ApiRequestError } from "../../../../lib/util/api.js";
 
 /** Groups a hex fingerprint into 4-character blocks (`ab12 cd34 ...`) for out-of-band verification -
@@ -251,6 +251,9 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                                     : "This contact has not indicated a mutual encryption preference."}
                             </div>
                         )}
+                        {canWrite && contact.keys?.some((key) => isOpenPgpKey(key)) && (
+                            <PreferredFormatControl contact={contact} onChanged={onChanged} />
+                        )}
                         {contact.keys?.map((key) => (
                             <div key={key.fingerprint} className="font-mono text-xs py-0.5">
                                 {keyLabel(key)} key: {formatFingerprint(key.fingerprint)}
@@ -285,6 +288,58 @@ export default function ContactDetailPane({ contact, onEdit, onDelete, canWrite 
                 )}
             </div>
         </div>
+    );
+}
+
+const FORMAT_NAMES: Record<EndToEndFormat, string> = { smime: "S/MIME", openpgp: "OpenPGP" };
+
+/** What "Automatic" picks for `contact` and why (restapi *Choosing the format*, after the user's own choice): what the address
+ * advertises, else what it was last seen using, else S/MIME. */
+function automaticFormat(contact: Contact): string {
+    const advertised = contact.encryptPreference?.preferFormat;
+    if (advertised) {
+        return `${FORMAT_NAMES[advertised]}, which they asked for`;
+    }
+    const observed = contact.observedFormat?.format;
+    return observed ? `${FORMAT_NAMES[observed]}, which they used last` : "S/MIME when they have a certificate";
+}
+
+/**
+ * "Preferred format" for a contact who has an OpenPGP key: which format mail to them is encrypted in when they can receive both.
+ * Automatic follows what they advertise or last used; S/MIME or OpenPGP overrides that - e.g. for someone who reads OpenPGP mail
+ * but still has an S/MIME certificate from a former employer.
+ */
+function PreferredFormatControl({ contact, onChanged }: { contact: Contact; onChanged?: (contact: Contact) => void }) {
+    const client = useApiClient();
+    const [saving, setSaving] = useState(false);
+    async function save(value: string) {
+        setSaving(true);
+        try {
+            const changed = await updateContact(
+                { uid: contact.uid, version: contact.version, preferredFormat: value === "smime" || value === "openpgp" ? value : null },
+                client,
+            );
+            onChanged?.(changed);
+        } catch (err) {
+            notifyApiError(err, "Couldn't update this contact");
+        } finally {
+            setSaving(false);
+        }
+    }
+    return (
+        <label className="flex flex-wrap items-center gap-2 text-sm my-1">
+            <span>Preferred format</span>
+            <select
+                className="border border-border rounded-sm py-1 px-2 bg-surface text-sm"
+                value={contact.preferredFormat ?? "auto"}
+                disabled={saving}
+                onChange={(e) => void save(e.target.value)}
+            >
+                <option value="auto">Automatic ({automaticFormat(contact)})</option>
+                <option value="smime">S/MIME</option>
+                <option value="openpgp">OpenPGP</option>
+            </select>
+        </label>
     );
 }
 
