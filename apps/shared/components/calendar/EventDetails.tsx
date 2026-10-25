@@ -24,6 +24,7 @@ import { htmlToPlainText } from "../../../../lib/calendar/eventDescription.js";
 import { deleteEventOccurrence, deleteEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { CalendarOccurrence, describeRecurrence } from "../../../../lib/calendar/recurrence.js";
 import { getVideoMeeting } from "../../../../lib/videoconf/videoMeetingsApi.js";
+import { useKeysLocked } from "../../zeroAccess/useKeysLocked.js";
 import { describeTimeZone, deviceTimeZone } from "../../../../lib/util/timeZone.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
@@ -122,6 +123,13 @@ export default function EventDetails({
             cancelled = true;
         };
     }, [videoMeetingUid, client]);
+    // A protected meeting's link carries its key after `#`, opened with the mailbox's keys: it goes when they lock, whether or not the
+    // event itself is protected (a meeting is keyed whenever the mailbox has zero-access, its calendar protected or not).
+    useKeysLocked((locked) => {
+        if (locked === occurrence.mailboxUid) {
+            setOrganizerJoinUrl((url) => (url?.includes("#") ? null : url));
+        }
+    });
     // The same scheme allow-list a reminder's own location gets: a hostile or malformed join link never reaches `window.open()`.
     const joinUrl = joinMeetingUrl(organizerJoinUrl);
 

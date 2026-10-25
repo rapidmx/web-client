@@ -72,6 +72,12 @@ export type LocalIndexResponse =
     | { id: number; ok: true; result: unknown }
     | { id: number; ok: false; error: string };
 
+/** Posted unprompted when a corrupted index was discarded (`resetCorruptedConnection()`), so the main thread forgets what it remembered of it. */
+export interface LocalIndexResetNotice {
+    type: "reset";
+    mailboxUid: string;
+}
+
 /**
  * Carried by every call a build pass makes (`init`, `setWindow`, `setBuilding`, `indexEntities`,
  * `pruneEntities`). Generations come from one monotonic counter on the main thread
@@ -523,6 +529,7 @@ async function withCurrentConnection<T>(params: GenerationParams & { mailboxUid:
 async function resetCorruptedConnection(mailboxUid: string, connection: OpenConnection): Promise<void> {
     console.warn(`localIndexWorker: local search index for mailbox ${mailboxUid} is corrupted; discarding and rebuilding.`);
     connections.delete(mailboxUid);
+    self.postMessage({ type: "reset", mailboxUid } satisfies LocalIndexResetNotice);
     await closeRawConnection(connection).catch(() => undefined);
     try {
         await removeLocalIndexDirectory(mailboxUid);

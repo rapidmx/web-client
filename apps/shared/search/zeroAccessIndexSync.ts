@@ -365,9 +365,21 @@ export function isoWeekId(date: Date): string {
     return `${day.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-/** The sync state, started over when the local index is empty (nothing remembered in it is there any more). */
+/**
+ * The sync state, started over when the local index is empty (nothing remembered in it is there any more). What was stored is dropped then
+ * too: it describes an index that is gone (pruned, or discarded as corrupted, behind this module's back), and a later pass that found this
+ * index filled by the build's end-to-end mail would take it up and skip the segments it never got.
+ */
 async function currentState(mailboxUid: string): Promise<SyncState> {
-    return (await getLocalCoverage(mailboxUid)).indexedCount === 0 ? { segments: {} } : loadState(mailboxUid);
+    if ((await getLocalCoverage(mailboxUid)).indexedCount > 0) {
+        return loadState(mailboxUid);
+    }
+    try {
+        localStorage.removeItem(zeroAccessSyncStateKey(mailboxUid));
+    } catch {
+        // Nothing stored to drop.
+    }
+    return { segments: {} };
 }
 
 /**
@@ -386,8 +398,9 @@ export async function importClientSegments(
         return 0;
     }
     const epoch: string = zeroAccessSyncEpoch(mailboxUid);
-    const segments: IndexSegment[] = (manifest ?? (await getSearchIndexManifest(mailboxUid, client))).segments.filter((segment) => segment.origin === "client");
+    // Read first, while a new index is still empty: its stale state is dropped even when the manifest can't be read.
     const state: SyncState = await currentState(mailboxUid);
+    const segments: IndexSegment[] = (manifest ?? (await getSearchIndexManifest(mailboxUid, client))).segments.filter((segment) => segment.origin === "client");
     let imported = 0;
     for (const segment of segments.sort((a, b) => b.weekId.localeCompare(a.weekId))) {
         const key = `${segment.weekId}:${segment.origin}`;

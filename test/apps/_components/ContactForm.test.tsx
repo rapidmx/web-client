@@ -117,6 +117,55 @@ describe("ContactForm", () => {
         }
     });
 
+    it("saves against the version it was filled from when a live update brings a newer one, so the other change is refused, not overwritten", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(409, { message: "This contact was changed by someone else." }));
+        const user = userEvent.setup();
+        const { rerender } = render(<ContactForm contact={contact()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        await user.type(await screen.findByLabelText("Notes"), " again");
+        expect(screen.queryByText(/changed elsewhere/)).toBeNull();
+
+        // Another device changed the job title: the open form is handed the new version, and keeps what was typed.
+        rerender(<ContactForm contact={contact({ version: 4, jobTitle: "CTO" })} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        expect(screen.getByDisplayValue("Met at conf again")).toBeInTheDocument();
+        expect(screen.getByText(/changed elsewhere while you were editing it/)).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText("This contact was changed by someone else.")).toBeInTheDocument();
+        expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toMatchObject({ version: 3, jobTitle: "CEO" });
+
+        // Reload fills the form from the changed contact.
+        await user.click(screen.getByRole("button", { name: "Reload" }));
+        expect(screen.getByLabelText("Job title")).toHaveValue("CTO");
+        expect(screen.getByLabelText("Notes")).toHaveValue("Met at conf");
+        expect(screen.queryByText(/changed elsewhere/)).toBeNull();
+    });
+
+    it("sends a protected contact's changes against what it was filled from, leaving out a detail changed elsewhere", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(409, { message: "Conflict." }));
+        openSealedRecord.mockImplementation(async (record: Contact) => opened({ ...record }));
+        const sealed = (overrides: Partial<Contact> = {}) => contact({ sealedFields: { jobTitle: "d", notes: "e" }, ...overrides });
+        const user = userEvent.setup();
+        const { rerender } = render(<ContactForm contact={sealed()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        await user.type(await screen.findByLabelText("Notes"), " again");
+
+        rerender(<ContactForm contact={sealed({ version: 4, jobTitle: "CTO" })} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        expect(await screen.findByText(/changed elsewhere/)).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(body).toMatchObject({ version: 3, notes: "Met at conf again" });
+        expect("jobTitle" in body).toBe(false);
+    });
+
+    it("fills the form again for another contact", async () => {
+        const { rerender } = render(<ContactForm contact={contact()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        expect(await screen.findByLabelText("Job title")).toHaveValue("CEO");
+        rerender(<ContactForm contact={contact({ uid: "c2", version: 1, jobTitle: "CFO" })} onSaved={vi.fn()} onCancel={vi.fn()} />);
+        expect(screen.getByLabelText("Job title")).toHaveValue("CFO");
+        expect(screen.queryByText(/changed elsewhere/)).toBeNull();
+    });
+
     it("shows and saves every stored address, and edits/removes a non-first one", async () => {
         const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
         const onSaved = vi.fn();

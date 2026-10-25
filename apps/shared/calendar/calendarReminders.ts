@@ -27,6 +27,8 @@ export interface CalendarReminderNotice {
     /** Set by `openedReminder()` on a protected notice it opened: the placeholder title the push carried, for anything recorded beyond
      * this tab's memory (the notification history is kept in `sessionStorage` and outlives a mailbox lock). */
     sealedTitle?: string;
+    /** Set with `sealedTitle`: the placeholder location the push carried, which `sealedReminder()` puts back. */
+    sealedLocation?: string | null;
 }
 
 /** `notice` with a protected event's real title and location, read from the event itself (opened with the mailbox's keys); `notice` as it
@@ -38,10 +40,20 @@ export async function openedReminder(notice: CalendarReminderNotice): Promise<Ca
     try {
         // `getCalendarEvent()` opens sealed fields; an event made from a zero-access invitation keeps its content in `sealedContent`.
         const event = await openSealedEvent(await getCalendarEvent(notice.eventUid));
-        return { ...notice, title: event.title, location: event.location ?? null, sealedTitle: notice.title };
+        return { ...notice, title: event.title, location: event.location ?? null, sealedTitle: notice.title, sealedLocation: notice.location ?? null };
     } catch {
         return notice;
     }
+}
+
+/** `notice` as the push carried it, when `openedReminder()` opened it - for an alarm still shown, or snoozed, when the mailbox locks: its real
+ * title and location go with the keys that opened them. `openedReminder()` opens it again (it is still `protected`). */
+export function sealedReminder(notice: CalendarReminderNotice): CalendarReminderNotice {
+    if (notice.sealedTitle === undefined) {
+        return notice;
+    }
+    const { sealedTitle, sealedLocation, ...rest } = notice;
+    return { ...rest, title: sealedTitle, location: sealedLocation ?? null };
 }
 
 function isReminderNotice(data: unknown): data is CalendarReminderNotice {

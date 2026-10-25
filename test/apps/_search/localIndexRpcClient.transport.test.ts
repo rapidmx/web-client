@@ -145,7 +145,7 @@ describe("localIndexRpcClient's swappable transport", () => {
         expect(calls.destroyAll).toEqual([rpc.DESTROY_ALL_TIMEOUT_MS]);
 
         await expect(rpc.pruneInaccessibleLocalIndexes(["mb1"])).resolves.toBeUndefined();
-        expect(calls.pruneInaccessible).toEqual([["mb1"]]);
+        expect(calls.pruneInaccessible).toEqual([new Set(["mb1"])]);
 
         await expect(rpc.retryPendingLocalIndexDeletions()).resolves.toBeUndefined();
         expect(calls.retryPendingDeletions).toEqual([]);

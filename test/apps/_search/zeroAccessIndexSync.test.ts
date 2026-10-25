@@ -484,6 +484,32 @@ describe("client segments (Source C)", () => {
         expect(indexedUids()).toEqual([]);
     });
 
+    it("drops the stored state of an index that is gone when a build starts on an empty one, even when the manifest can't be read", async () => {
+        // A sync pass of the index that was pruned (or discarded as corrupted) remembered its segments.
+        storage.set("rapidmx:za-index-sync:mb", JSON.stringify({ segments: { "2026-W43:zero-access": "z43" } }));
+        rpc.getLocalCoverage.mockResolvedValue({ indexedCount: 0 });
+        api.getSearchIndexManifest.mockRejectedValueOnce(new Error("offline"));
+
+        await expect(importClientSegments("mb", unlocked())).rejects.toThrow("offline");
+        expect(storage.has("rapidmx:za-index-sync:mb")).toBe(false);
+
+        // The build then fills the index with end-to-end mail: the next pass imports the zero-access segment it never got.
+        rpc.getLocalCoverage.mockResolvedValue({ indexedCount: 3 });
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [segment("2026-W43", 1, "z43")], weeks: [] });
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([doc("m1")], key.certDer));
+        expect((await syncZeroAccessIndex("mb", unlocked())).segmentsImported).toBe(1);
+    });
+
+    it("starts over on an empty index where storage can't be written", async () => {
+        rpc.getLocalCoverage.mockResolvedValue({ indexedCount: 0 });
+        const removeItem = vi.spyOn(memoryStorage, "removeItem").mockImplementation(() => {
+            throw new Error("blocked");
+        });
+        expect(await importClientSegments("mb", unlocked())).toBe(0);
+        expect(removeItem).toHaveBeenCalled();
+        removeItem.mockRestore();
+    });
+
     it("imports client segments in a sync pass too, from the manifest it already read", async () => {
         api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [clientSegment("2026-W43", 1, "c43")], weeks: [] });
         api.getSearchIndexSegment.mockResolvedValue(await sealSegment([clientDocument(entity("m1"))], key.certDer));

@@ -30,7 +30,7 @@ import { isSealedRecord } from "../../../lib/zeroAccess/sealedMoves.js";
 import { useKeysLocked } from "../../shared/zeroAccess/useKeysLocked.js";
 import { openSealedEvent, openSealedEvents } from "../../shared/calendar/sealedEvents.js";
 import { useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
-import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
+import { SealedOccurrenceError, moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
 import { resolveDragAction } from "../../../lib/calendar/calendarDragIds.js";
 import { createFolder } from "../../../lib/mail/mailApi.js";
 import { CalendarOccurrence, expandAllOccurrences, expandOccurrences } from "../../../lib/calendar/recurrence.js";
@@ -719,8 +719,8 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             reload();
         } catch (err) {
             const context = action.type === "move" ? "Couldn't move the event" : "Couldn't resize the event";
-            if (err instanceof KeysLockedError) {
-                // A protected occurrence while the mailbox is locked: nothing was written.
+            if (err instanceof KeysLockedError || err instanceof SealedOccurrenceError) {
+                // A protected occurrence while the mailbox is locked, or one of a zero-access invitation: nothing was written.
                 notify({ kind: "warning", title: context, message: err.message });
             } else {
                 notifyApiError(err, context);

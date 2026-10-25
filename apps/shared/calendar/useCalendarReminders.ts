@@ -7,7 +7,8 @@ import { getPushClient } from "../../../lib/mail/pushClient.js";
 import { getNotificationsEnabled } from "../notifications/preferences.js";
 import { playNotificationSound } from "../notifications/sounds.js";
 import { notify } from "../notifications/store.js";
-import { CalendarReminderNotice, SNOOZE_MS, calendarReminderOf, openedReminder, reminderMessage, reminderNotificationId } from "./calendarReminders.js";
+import { useKeysLocked } from "../zeroAccess/useKeysLocked.js";
+import { CalendarReminderNotice, SNOOZE_MS, calendarReminderOf, openedReminder, reminderMessage, reminderNotificationId, sealedReminder } from "./calendarReminders.js";
 
 export interface UseCalendarRemindersOptions {
     /** Nothing is shown without a signed-in user. */
@@ -48,7 +49,8 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
     // The queue as of the last render, for the callbacks below to read (a state updater must not start a timer: React may run it twice).
     const queueRef = useRef(queue);
     queueRef.current = queue;
-    const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+    // Each snoozed alarm by its timer: what it shows when it comes back (a lock meanwhile puts back its placeholders).
+    const timers = useRef(new Map<ReturnType<typeof setTimeout>, CalendarReminderNotice>());
 
     const present = useCallback((notice: CalendarReminderNotice) => {
         if (!getNotificationsEnabled()) {
@@ -79,7 +81,7 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
         const pending = timers.current;
         return () => {
             offEvent();
-            for (const timer of pending) {
+            for (const timer of pending.keys()) {
                 clearTimeout(timer);
             }
             pending.clear();
@@ -87,15 +89,26 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
         };
     }, [enabled, userUid, present]);
 
+    // A protected event's alarm shows its title and location opened with the mailbox's keys: on a lock - a notice doesn't say which mailbox,
+    // so any - the alarms shown or snoozed go back to the placeholders the push carried.
+    useKeysLocked(() => {
+        setQueue((current) => current.map(sealedReminder));
+        for (const [timer, notice] of timers.current) {
+            timers.current.set(timer, sealedReminder(notice));
+        }
+    });
+
     const dismiss = useCallback(() => setQueue((current) => current.slice(1)), []);
     const snooze = useCallback(() => {
         const first = queueRef.current[0];
         if (first) {
             const timer = setTimeout(() => {
+                const notice = timers.current.get(timer)!;
                 timers.current.delete(timer);
-                present(first);
+                // Put back to its placeholders by a lock: opened again if the mailbox is unlocked now.
+                void (notice.protected && notice.sealedTitle === undefined ? openedReminder(notice) : Promise.resolve(notice)).then(present);
             }, SNOOZE_MS);
-            timers.current.add(timer);
+            timers.current.set(timer, first);
         }
         setQueue((current) => current.slice(1));
     }, [present]);

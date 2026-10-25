@@ -160,10 +160,15 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     }, [folderUid]);
 
     // The lists hold protected contacts opened with the mailbox's keys: its lock takes them off screen, read again with their placeholders (the
-    // contacts, the suggested ones and the Deleted view). An open contact's pane and form drop what they opened themselves (`useOpenedRecord`).
+    // contacts, the suggested ones and the Deleted view). They leave the lists first, so a reload that fails can't leave them shown. An open
+    // contact's pane and form drop what they opened themselves (`useOpenedRecord`).
     const [lockCount, setLockCount] = useState(0);
     useKeysLocked((locked) => {
         if (locked === mailboxUid) {
+            const readable = (list: Contact[]) => list.filter((contact) => !isProtectedRecord(contact));
+            setContacts(readable);
+            setSuggestedContacts(readable);
+            setDeletedContacts(readable);
             void reload();
             setLockCount((count) => count + 1);
         }

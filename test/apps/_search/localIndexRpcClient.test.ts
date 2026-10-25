@@ -219,6 +219,15 @@ describe("localIndexRpcClient", () => {
         await expect(rpc.getLocalCoverage("mb1")).resolves.toBeUndefined();
     });
 
+    it("forgets what zero-access sync remembered of an index the Worker discarded as corrupted", async () => {
+        storage.set("rapidmx:za-index-sync:mb1", "{}");
+        storage.set("rapidmx:za-index-sync:mb2", "{}");
+        await rpc.getLocalCoverage("mb1");
+        FakeWorker.latest!.emit({ type: "reset", mailboxUid: "mb1" });
+        expect(storage.has("rapidmx:za-index-sync:mb1")).toBe(false);
+        expect(storage.get("rapidmx:za-index-sync:mb2")).toBe("{}");
+    });
+
     it("wraps a non-Error thrown by postMessage in an Error", async () => {
         const nonError: unknown = "DataCloneError";
         vi.stubGlobal(

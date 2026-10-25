@@ -21,7 +21,7 @@ const POLICY = { encryptSameOrg: "optional", encryptFederated: "optional", encry
 interface Server {
     policy?: object | Response;
     members?: object[] | Response;
-    put?: (body: any) => Response;
+    put?: (body: any) => Response | Promise<Response>;
     get?: Response;
 }
 
@@ -65,6 +65,33 @@ describe("ZeroAccessSetting", () => {
         // The shell keeps what was saved, for when this is mounted again.
         expect(patchMailbox).toHaveBeenCalledWith("mb1", { zeroAccessEnabled: false, version: 5 });
         expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    });
+
+    it("shows what the server decided to protect when it is turned back on, and allows no change before it has", async () => {
+        let answer!: (response: Response) => void;
+        mockServer({ put: () => new Promise<Response>((resolve) => (answer = resolve)) });
+        // The shell, keeping what is patched into the mailbox it hands down.
+        function Shell() {
+            const [mailbox, setMailbox] = React.useState<Mailbox>({ ...MAILBOX, zeroAccessEnabled: false });
+            patchMailbox.mockImplementation((_uid: string, patch: Partial<Mailbox>) => setMailbox((current) => ({ ...current, ...patch })));
+            return <ZeroAccessSetting mailbox={mailbox} canManage />;
+        }
+        const user = userEvent.setup();
+        render(<Shell />);
+        await waitFor(() => expect(checkbox()).toBeEnabled());
+
+        await user.click(checkbox());
+        // Undecided as this page had them, and the server not answered yet: shown, but not to be changed.
+        expect(await screen.findByText("What to protect")).toBeInTheDocument();
+        expect(screen.getByRole("checkbox", { name: /^Mail/ })).toBeDisabled();
+
+        answer(jsonResponse(200, { ...MAILBOX, zeroAccessEnabled: true, version: 5, zeroAccessTypes: { mail: false, calendar: true, contacts: true, tasks: true } }));
+        await waitFor(() => expect(screen.getByRole("checkbox", { name: /^Mail/ })).toBeEnabled());
+        expect(screen.getByRole("checkbox", { name: /^Mail/ })).not.toBeChecked();
+        for (const type of [/^Calendar/, /^Contacts/, /^Tasks/]) {
+            expect(screen.getByRole("checkbox", { name: type })).toBeChecked();
+        }
+        expect(patchMailbox).toHaveBeenCalledWith("mb1", { zeroAccessEnabled: true, zeroAccessTypes: { mail: false, calendar: true, contacts: true, tasks: true }, version: 5 });
     });
 
     it("shows the mailbox's own choice to turn it off, without asking what to protect", async () => {

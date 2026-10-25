@@ -105,6 +105,29 @@ describe("ZeroAccessTypes", () => {
         expect(patchMailbox).toHaveBeenCalledTimes(1);
     });
 
+    it("shows the server's merge of a choice into what it had decided, and what a changed mailbox holds", async () => {
+        const user = userEvent.setup();
+        // Undecided here; the server had decided them all when zero-access was turned on.
+        updateMailbox.mockResolvedValueOnce({ version: 5, zeroAccessTypes: { mail: false, calendar: false, contacts: true, tasks: true } });
+        const { rerender } = render(<ZeroAccessTypes mailbox={mailbox()} types={ALL} canManage />);
+        expect(box("Mail")).toBeChecked();
+
+        await user.click(box("Calendar"));
+        await waitFor(() => expect(patchMailbox).toHaveBeenCalledWith("mb1", { zeroAccessTypes: { mail: false, calendar: false, contacts: true, tasks: true }, version: 5 }));
+        expect(box("Mail")).not.toBeChecked();
+        expect(box("Calendar")).not.toBeChecked();
+        expect(box("Contacts")).toBeChecked();
+
+        rerender(<ZeroAccessTypes mailbox={mailbox({ version: 6, zeroAccessTypes: { mail: true } })} types={ALL} canManage />);
+        expect(box("Mail")).toBeChecked();
+        expect(box("Contacts")).not.toBeChecked();
+    });
+
+    it("can't be changed while it is disabled", () => {
+        render(<ZeroAccessTypes mailbox={mailbox()} types={ALL} canManage disabled />);
+        expect(box("Mail")).toBeDisabled();
+    });
+
     it("is read-only to anyone but the owner", () => {
         render(<ZeroAccessTypes mailbox={mailbox()} types={ALL} canManage={false} />);
         expect(box("Mail")).toBeDisabled();

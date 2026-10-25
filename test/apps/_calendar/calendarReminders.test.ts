@@ -16,6 +16,7 @@ import {
     locationActionLabel,
     openedReminder,
     reminderMessage,
+    sealedReminder,
     reminderNotificationId,
 } from "../../../apps/shared/calendar/calendarReminders.js";
 
@@ -25,7 +26,7 @@ describe("openedReminder", () => {
     it("shows a protected event's real title and location, read from the event, and the placeholder when it can't be", async () => {
         const notice = { ...NOTICE, title: "Protected event", protected: true };
         getCalendarEvent.mockResolvedValueOnce({ title: "Board meeting", location: "Room 4" });
-        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4", sealedTitle: "Protected event" });
+        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4", sealedTitle: "Protected event", sealedLocation: null });
         expect(getCalendarEvent).toHaveBeenCalledWith("evt1");
         getCalendarEvent.mockRejectedValueOnce(new Error("offline"));
         expect(await openedReminder(notice)).toBe(notice);
@@ -38,8 +39,18 @@ describe("openedReminder", () => {
         const sealed = { title: "[...]", location: null, sealedContent: { keyFingerprint: "f", sealed: "c" } };
         getCalendarEvent.mockResolvedValueOnce(sealed);
         openSealedEvent.mockResolvedValueOnce({ ...sealed, title: "Board meeting", location: "Room 4" });
-        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4", sealedTitle: "[...]" });
+        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4", sealedTitle: "[...]", sealedLocation: null });
         expect(openSealedEvent).toHaveBeenCalledWith(sealed);
+    });
+});
+
+describe("sealedReminder", () => {
+    it("puts back the title and location an opened notice's push carried, and leaves any other notice as it is", async () => {
+        const pushed = { ...NOTICE, title: "[...]", location: "Protected location", protected: true };
+        getCalendarEvent.mockResolvedValueOnce({ title: "Board meeting", location: "Room 4" });
+        expect(sealedReminder(await openedReminder(pushed))).toEqual(pushed);
+        expect(sealedReminder({ ...NOTICE, sealedTitle: "[...]" })).toEqual({ ...NOTICE, title: "[...]", location: null });
+        expect(sealedReminder(NOTICE)).toBe(NOTICE);
     });
 });
 

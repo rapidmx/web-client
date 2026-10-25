@@ -59,6 +59,8 @@ const ADDRESS_KINDS: ContactAddressKind[] = ["home", "work", "other"];
  * and saving them would replace - or clear for good - the real details. */
 export default function ContactForm(props: ContactFormProps) {
     const { record, ready } = useOpenedRecord(props.contact);
+    // Bumped by the view's "Reload" to fill it again from the contact as it is now.
+    const [reloads, setReloads] = useState(0);
     if (!ready) {
         return <p className="text-sm text-text-muted">Opening this contact&hellip;</p>;
     }
@@ -76,11 +78,16 @@ export default function ContactForm(props: ContactFormProps) {
     }
     // The server answers a save with the protected details sealed: what goes back is opened again.
     const onSaved = (saved: Contact) => void openSealedRecord(saved).then(props.onSaved);
-    return <ContactFormView {...props} contact={record} onSaved={onSaved} />;
+    // Another contact is another form: its fields are filled from it.
+    return <ContactFormView key={`${record?.uid ?? ""}:${reloads}`} {...props} contact={record} onSaved={onSaved} onReload={() => setReloads((n) => n + 1)} />;
 }
 
-function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel }: ContactFormProps) {
+function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, onCancel, onReload }: ContactFormProps & { onReload: () => void }) {
     const client = useApiClient();
+    // The contact as the form was filled from. A live update hands the open form the contact as changed elsewhere (`contact`), but the fields
+    // still hold this one's values: an update is sent at this version, and compared with it, so that change is refused (409) - never
+    // overwritten with what the form still shows.
+    const [seeded] = useState(contact);
     const currentPhotoUrl = useContactPhotoSrc(contact, client);
     const [targetMailboxUid, setTargetMailboxUid] = useState(mailboxUid);
     const [displayName, setDisplayName] = useState(contact?.displayName ?? "");
@@ -143,7 +150,7 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
                 .filter(Boolean);
             // An update merges only the fields in its body, so a field the user cleared is sent as an
             // explicit `null` (an omitted/undefined one would keep its stored value); a create just omits it.
-            const existing = stored?.contact ?? contact;
+            const existing = stored?.contact ?? seeded;
             const cleared = existing ? null : undefined;
             const input = {
                 displayName: displayName.trim(),
@@ -167,12 +174,12 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
             } else if (existing) {
                 // A protected contact's details go only when they changed from what the form was shown (or last saved): the server stores
                 // them sealed and can't tell an unchanged value from a new one.
-                const shown = contact && (stored?.input ? { ...contact, ...stored.input } : contact);
+                const shown = seeded && (stored?.input ? { ...seeded, ...stored.input } : seeded);
                 saved = await updateContact(
                     {
                         uid: existing.uid,
                         version: existing.version,
-                        ...protectedRecordWrite(shown, input as Omit<ContactPatch, "uid" | "version">, isOpenedRecord(contact)),
+                        ...protectedRecordWrite(shown, input as Omit<ContactPatch, "uid" | "version">, isOpenedRecord(seeded)),
                     },
                     client,
                 );
@@ -227,6 +234,10 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
         }
     }
 
+    // Changed elsewhere since the form was filled (or last saved): a save would be refused.
+    const baseline = stored?.contact ?? seeded;
+    const changedElsewhere = !!contact && !!baseline && contact.version > baseline.version;
+
     function finish(saved: Contact) {
         // A message opened later in this page load must see the changed contact's signing keys.
         clearPinnedSignerCache();
@@ -242,6 +253,14 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
             <h1 className="text-xl font-bold uppercase tracking-wide mb-3">{contact ? "Edit contact" : "New contact"}</h1>
 
             {error && <Alert>{error}</Alert>}
+            {changedElsewhere && (
+                <div role="status" className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+                    <span>This contact was changed elsewhere while you were editing it, so saving would be refused. Reload it to edit the changed contact - what you typed here is lost.</span>
+                    <Button type="button" variant="secondary" className="!w-auto" disabled={saving} onClick={onReload}>
+                        Reload
+                    </Button>
+                </div>
+            )}
 
             {!contact && mailboxes && mailboxes.length > 1 && (
                 <FormField label="Mailbox" htmlFor="contact-mailbox">

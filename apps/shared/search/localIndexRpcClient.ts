@@ -48,6 +48,7 @@ import type {
     IndexedVersionsParams,
     InitParams,
     LocalIndexRequest,
+    LocalIndexResetNotice,
     LocalIndexResponse,
     LocalSearchPage,
     MoveEntityParams,
@@ -60,7 +61,7 @@ import type {
 } from "./localIndexWorker.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import { removeLocalIndexDirectories, removeLocalIndexDirectory } from "./localIndexStorage.js";
-import { forgetAllZeroAccessSync, forgetZeroAccessSync } from "./zeroAccessSyncState.js";
+import { forgetAllZeroAccessSync, forgetZeroAccessSync, forgetZeroAccessSyncExcept } from "./zeroAccessSyncState.js";
 import type { LocalIndexTransport, PruneLocalEntitiesOptions, SetLocalIndexBuildingCompletion } from "./localIndexTransport.js";
 
 let worker: Worker | undefined;
@@ -95,7 +96,12 @@ function getWorker(): Worker {
         // listener's own comment for why that guard matters.
         const created = new Worker(new URL("./localIndexWorker.js", import.meta.url), { type: "module" });
         worker = created;
-        created.addEventListener("message", (event: MessageEvent<LocalIndexResponse>) => {
+        created.addEventListener("message", (event: MessageEvent<LocalIndexResponse | LocalIndexResetNotice>) => {
+            if ("type" in event.data) {
+                // The Worker discarded a corrupted index: what sync passes remembered of it goes too, or a rebuilt one would skip it.
+                forgetZeroAccessSync(event.data.mailboxUid);
+                return;
+            }
             const entry = pending.get(event.data.id);
             if (!entry) {
                 return;
@@ -478,7 +484,10 @@ export function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS): Prom
 /** Removes local indexes for mailboxes outside `accessibleMailboxUids` - e.g. left behind by a different
  * user who signed in on this device without signing out. Never rejects. */
 export function pruneInaccessibleLocalIndexes(accessibleMailboxUids: Iterable<string>): Promise<void> {
-    return currentTransport.pruneInaccessible(accessibleMailboxUids);
+    const accessible = new Set(accessibleMailboxUids);
+    // What zero-access sync passes remembered of a pruned index goes with it, whatever the transport, as on a destroy.
+    forgetZeroAccessSyncExcept(accessible);
+    return currentTransport.pruneInaccessible(accessible);
 }
 
 /** Retries every deletion an earlier session couldn't finish. Never rejects. */

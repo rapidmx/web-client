@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { act } from "react";
-import { render, renderHook, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ContactPhotoAvatar from "../../../lib/components/avatar/ContactPhotoAvatar.js";
 import { clearContactPhotoCache, useContactPhoto, useContactPhotoSrc } from "../../../lib/contacts/useContactPhotoSrc.js";
@@ -12,6 +12,7 @@ import { GRAVATAR_PREFERENCE_KEY } from "../../../lib/contacts/gravatar.js";
 import { mockIntersectionObserver } from "../testUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 const { openSealedBytes } = vi.hoisted(() => ({ openSealedBytes: vi.fn() }));
 vi.mock("../../../lib/zeroAccess/sealedRecords.js", () => ({ openSealedBytes }));
@@ -51,6 +52,17 @@ describe("useContactPhotoSrc without an explicit client", () => {
 
 describe("useContactPhotoSrc for a sealed picture", () => {
     const sealed = (uid: string) => ({ ...photoOf(uid), mailboxUid: "mb1", photoSealed: true });
+    const unlock = () => act(() => installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1")));
+
+    beforeEach(() => {
+        unlock();
+    });
+    afterEach(() => {
+        // Unmounted first: a lock reloads what a mounted avatar shows.
+        cleanup();
+        destroyUnlockedKeys();
+        openSealedBytes.mockReset();
+    });
 
     it("fetches and opens it even without an explicit client - a URL would show the browser ciphertext", async () => {
         const fetchMock = vi.fn(async () => new Response(new Uint8Array([9, 9])));
@@ -71,6 +83,53 @@ describe("useContactPhotoSrc for a sealed picture", () => {
         await waitFor(() => expect(result.current.failed).toBe(true));
         expect(result.current.src).toBeUndefined();
         expect(openSealedBytes.mock.calls[0][0]).toBe("");
+    });
+
+    it("drops a shown picture when its mailbox locks, revoking it, and keeps none for an avatar shown while it is locked", async () => {
+        openSealedBytes.mockResolvedValue(new Uint8Array([1, 2]));
+        const shown = renderHook(() => useContactPhoto(sealed("c1"), client));
+        await waitFor(() => expect(shown.result.current.src).toBe("blob:photo-1"));
+
+        act(() => destroyUnlockedKeys("mb1"));
+
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:photo-1");
+        // Fetched again, and opened just as the lock is checked: not kept, not shown.
+        await waitFor(() => expect(shown.result.current.failed).toBe(true));
+        expect(shown.result.current.src).toBeUndefined();
+        const later = renderHook(() => useContactPhoto(sealed("c1"), client));
+        await waitFor(() => expect(later.result.current.failed).toBe(true));
+        expect(later.result.current.src).toBeUndefined();
+        expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows a picture that couldn't be opened once its mailbox unlocks, and ignores other mailboxes", async () => {
+        openSealedBytes.mockResolvedValue(new Uint8Array([1, 2]));
+        act(() => destroyUnlockedKeys("mb1"));
+        const view = renderHook(() => useContactPhoto(sealed("c1"), client));
+        await waitFor(() => expect(view.result.current.failed).toBe(true));
+
+        act(() => installSharedSession("mb2", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb2")));
+        expect(view.result.current.failed).toBe(true);
+        unlock();
+        await waitFor(() => expect(view.result.current.src).toBe("blob:photo-1"));
+        // Unlocked again (a re-unlock) while it is shown: nothing to do.
+        unlock();
+        expect(view.result.current.src).toBe("blob:photo-1");
+        expect(fetchBlob).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a picture that isn't sealed across a lock", async () => {
+        openSealedBytes.mockResolvedValue(new Uint8Array([1, 2]));
+        const plain = renderHook(() => useContactPhoto({ ...photoOf("c2"), mailboxUid: "mb1" }, client));
+        const protectedOne = renderHook(() => useContactPhoto(sealed("c1"), client));
+        await waitFor(() => expect(plain.result.current.src).toBe("blob:photo-1"));
+        await waitFor(() => expect(protectedOne.result.current.src).toBe("blob:photo-2"));
+
+        act(() => destroyUnlockedKeys("mb1"));
+
+        expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:photo-2");
+        expect(plain.result.current.src).toBe("blob:photo-1");
     });
 });
 

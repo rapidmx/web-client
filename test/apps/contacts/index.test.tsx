@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch, mockMatchMedia } from "../testUtils.js";
@@ -1963,6 +1963,35 @@ describe("ContactsPage suggested contacts", () => {
         await user.click(nav);
         expect(await screen.findByText("Sam Suggested")).toBeInTheDocument();
         expect(screen.queryByText("Jane Doe")).not.toBeInTheDocument();
+    });
+
+    it("takes opened protected contacts off its lists on a lock even when reading them again fails", async () => {
+        openSealedRecords.mockImplementation(async (records: any[]) => records.map((record) => (record.sealedFields ? { ...record, displayName: `Opened ${record.uid}` } : record)));
+        let offline = false;
+        mockShellAndContacts([{ ...jane, sealedFields: { displayName: "x" } }, bob], (url, init) => {
+            if (url.startsWith("/api/mail/directory/suggested-contacts") && init?.method === "POST") {
+                return jsonResponse(200, { folderUid: "f-suggested", created: 1, remaining: 0 });
+            }
+            if (url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET") {
+                if (offline) return jsonResponse(503, { message: "Unavailable." });
+                if (url.includes("folderUid=f-suggested")) return jsonResponse(200, [{ ...SUGGESTED, sealedFields: { displayName: "x" } }]);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+        expect(await screen.findByText("Opened c1")).toBeInTheDocument();
+        await user.click(await screen.findByRole("button", { name: /All contacts/ }));
+        expect(await screen.findByText("Opened s1")).toBeInTheDocument();
+
+        offline = true;
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        act(() => destroyUnlockedKeys("mb1"));
+
+        expect(await screen.findByText("Unavailable.")).toBeInTheDocument();
+        expect(screen.queryByText("Opened c1")).not.toBeInTheDocument();
+        expect(screen.queryByText("Opened s1")).not.toBeInTheDocument();
+        expect(screen.getByText("Bob Smith")).toBeInTheDocument();
     });
 
     it("adds a suggested contact to the mailbox's contacts: a copy in its contacts folder, and the suggestion removed", async () => {

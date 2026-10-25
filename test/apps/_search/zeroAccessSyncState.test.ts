@@ -8,6 +8,7 @@ import type { LocalIndexTransport } from "../../../apps/shared/search/localIndex
 import {
     forgetAllZeroAccessSync,
     forgetZeroAccessSync,
+    forgetZeroAccessSyncExcept,
     zeroAccessSyncEpoch,
     zeroAccessSyncStateKey,
 } from "../../../apps/shared/search/zeroAccessSyncState.js";
@@ -44,6 +45,21 @@ describe("zeroAccessSyncState", () => {
         expect(zeroAccessSyncEpoch("mb3")).not.toBe(epoch);
     });
 
+    it("forgets every mailbox's state but those kept, changing their epochs", () => {
+        localStorage.setItem(zeroAccessSyncStateKey("mine"), "{}");
+        localStorage.setItem(zeroAccessSyncStateKey("previous-user"), "{}");
+        localStorage.setItem("unrelated", "kept");
+        const [mine, previous] = [zeroAccessSyncEpoch("mine"), zeroAccessSyncEpoch("previous-user")];
+
+        forgetZeroAccessSyncExcept(new Set(["mine"]));
+
+        expect(localStorage.getItem(zeroAccessSyncStateKey("mine"))).toBe("{}");
+        expect(localStorage.getItem(zeroAccessSyncStateKey("previous-user"))).toBeNull();
+        expect(localStorage.getItem("unrelated")).toBe("kept");
+        expect(zeroAccessSyncEpoch("mine")).toBe(mine);
+        expect(zeroAccessSyncEpoch("previous-user")).not.toBe(previous);
+    });
+
     it("works on without storage", () => {
         vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
             throw new Error("blocked");
@@ -55,6 +71,7 @@ describe("zeroAccessSyncState", () => {
         const epoch = zeroAccessSyncEpoch("mb1");
         expect(() => forgetZeroAccessSync("mb1")).not.toThrow();
         expect(() => forgetAllZeroAccessSync()).not.toThrow();
+        expect(() => forgetZeroAccessSyncExcept(new Set())).not.toThrow();
         expect(zeroAccessSyncEpoch("mb1")).not.toBe(epoch);
     });
 
@@ -70,6 +87,14 @@ describe("zeroAccessSyncState", () => {
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBe("{}");
             await rpc.destroyAllLocalIndexes();
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBeNull();
+            // A pruned index's goes too.
+            transport.pruneInaccessible = vi.fn(async () => undefined);
+            localStorage.setItem(zeroAccessSyncStateKey("mine"), "{}");
+            localStorage.setItem(zeroAccessSyncStateKey("previous-user"), "{}");
+            await rpc.pruneInaccessibleLocalIndexes(["mine"]);
+            expect(localStorage.getItem(zeroAccessSyncStateKey("mine"))).toBe("{}");
+            expect(localStorage.getItem(zeroAccessSyncStateKey("previous-user"))).toBeNull();
+            expect(transport.pruneInaccessible).toHaveBeenCalledWith(new Set(["mine"]));
         } finally {
             rpc.setLocalIndexTransport(rpc.workerLocalIndexTransport);
         }

@@ -12,6 +12,8 @@ import {
     moveOccurrence,
     resizeOccurrenceEnd,
     saveEventSeries,
+    SEALED_OCCURRENCE_MESSAGE,
+    SealedOccurrenceError,
 } from "../../../lib/calendar/calendarMutations.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
@@ -229,9 +231,19 @@ describe("detachOccurrence", () => {
         await expect(detachOccurrence(occurrence({ title: "[...]", sealedContent: { keyFingerprint: "fp", sealed: "x" } }), {})).rejects.toThrow(/Unlock it to change one occurrence/);
         expect(fetchMock).not.toHaveBeenCalled();
 
-        // Opened, it detaches as any other.
-        await detachOccurrence(occurrence({ title: "Board", sealedContent: { keyFingerprint: "fp", sealed: "x" } }), {});
+        // Opened field by field, it detaches as any other.
+        await detachOccurrence(occurrence({ title: "Board" }), {});
         expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it("refuses, writing nothing, to detach an opened occurrence of an event made from a zero-access invitation", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, occurrence()));
+        const opened = occurrence({ title: "Acquisition talks", location: "Room 4", description: "Project X", sealedContent: { keyFingerprint: "fp", sealed: "x" } });
+        // The create would store the opened title, location and description readable: never sent, whichever way the occurrence is changed.
+        await expect(detachOccurrence(opened, { title: "Acquisition talks (moved)" })).rejects.toThrow(SealedOccurrenceError);
+        await expect(moveOccurrence(opened, 60 * 60_000)).rejects.toThrow(SEALED_OCCURRENCE_MESSAGE);
+        await expect(resizeOccurrenceEnd(opened, new Date("2026-06-03T16:00:00.000Z"))).rejects.toMatchObject({ status: 409, code: "sealed-occurrence" });
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it("adds an exception to the master and creates a standalone event with the edited fields", async () => {

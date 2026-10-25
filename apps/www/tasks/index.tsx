@@ -38,7 +38,7 @@ import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import ProtectedMark from "../../shared/zeroAccess/ProtectedMark.js";
 import { useKeysLocked } from "../../shared/zeroAccess/useKeysLocked.js";
-import { openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
+import { isProtectedRecord, openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
 
 /** The published model class name of a task on either database (`TaskMongo`, `TaskSQL`) - not a `TaskList`'s. */
 const TASK_MODEL = /^Task(Mongo|SQL)$/;
@@ -158,9 +158,11 @@ function TasksContent() {
         void reload();
     }, [folderUid]);
 
-    // The list holds protected tasks opened with the mailbox's keys: its lock takes them off screen, read again with their placeholders.
+    // The list holds protected tasks opened with the mailbox's keys: its lock takes them off screen, read again with their placeholders. They
+    // leave the list first, so a reload that fails can't leave them shown.
     useKeysLocked((locked) => {
         if (locked === mailboxUid) {
+            setTasks((list) => list.filter((task) => !isProtectedRecord(task)));
             void reload();
         }
     });

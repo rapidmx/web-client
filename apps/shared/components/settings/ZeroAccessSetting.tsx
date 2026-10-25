@@ -74,7 +74,9 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
                 }
                 saved = await write((await getMailbox(mailbox.uid, {}, client)).version);
             }
-            patchMailbox?.(mailbox.uid, { zeroAccessEnabled: next, version: saved.version });
+            // The server's answer: turning it on decides every type the owner left undecided (restapi `settleZeroAccessTypes()`), which
+            // "What to protect" then shows.
+            patchMailbox?.(mailbox.uid, { zeroAccessEnabled: next, zeroAccessTypes: saved.zeroAccessTypes ?? mailbox.zeroAccessTypes, version: saved.version });
         } catch (err) {
             setEnabled(previous);
             notifyApiError(err, "Couldn't save the zero-access encryption setting");
@@ -105,7 +107,7 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
                     </span>
                 </span>
             </label>
-            {!locked && enabled && <ZeroAccessTypes mailbox={mailbox} types={ZERO_ACCESS_SUPPORTED_TYPES} canManage={canManage} />}
+            {!locked && enabled && <ZeroAccessTypes mailbox={mailbox} types={ZERO_ACCESS_SUPPORTED_TYPES} canManage={canManage} disabled={saving} />}
             {blocker === "disabled_by_admin" && (
                 <PolicyLockedNotice>
                     Your administrator has turned off zero-access encryption for this server, so new mail is stored without it. Mail

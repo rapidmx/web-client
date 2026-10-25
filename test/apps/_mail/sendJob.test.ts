@@ -612,6 +612,31 @@ describe("startSend - OpenPGP recipients", () => {
         expect(toasts().some((toast) => toast.title === "This message is already on its way")).toBe(true);
     });
 
+    it("still says only some recipients got it, offering no Open draft, when the Retry of the copy that didn't go fails again", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend
+            .mockResolvedValueOnce({ queued: true, message: draft })
+            .mockRejectedValueOnce(new ApiRequestError("Unavailable", 503))
+            .mockRejectedValueOnce(new ApiRequestError("Still unavailable", 503))
+            .mockRejectedValueOnce(new ApiRequestError("Unavailable again", 503));
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: uid === "m1" ? "outbox" : "drafts" }));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
+
+        // The OpenPGP copy fails again, first of what this attempt hands over - and again on the Retry after that.
+        for (const [call, reason] of [[3, "Still unavailable"], [4, "Unavailable again"]] as const) {
+            toasts()[0].actions[0].onClick!();
+            await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(call));
+            await settle();
+            expect(mocks.queueMessageSend.mock.calls[call - 1][0]).toBe("m2");
+            expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
+            expect(toasts()[0].message).toContain(reason);
+            expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+        }
+    });
+
     it("counts a copy whose request never answered but which landed as gone, and keeps both copies for a retry when the first didn't go", async () => {
         mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
         mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));

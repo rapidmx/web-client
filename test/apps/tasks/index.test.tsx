@@ -162,6 +162,24 @@ describe("TasksPage", () => {
         await waitFor(() => expect(reads()).toBe(before + 1));
     });
 
+    it("takes opened protected tasks off screen on a lock even when reading them again fails", async () => {
+        const sealed = task({ uid: "t-sealed", title: "Protected task", sealedFields: { title: "c2VhbGVk" } });
+        let offline = false;
+        mockShellAndTasks([sealed, noDueDateTask], (url, init) =>
+            offline && url.startsWith("/api/mail/tasks") && (init?.method ?? "GET") === "GET" ? jsonResponse(503, { message: "Unavailable." }) : undefined,
+        );
+        render(<TasksPage userUid="u1" />);
+        expect(await screen.findByText("Opened t-sealed")).toBeInTheDocument();
+
+        offline = true;
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        act(() => destroyUnlockedKeys("mb1"));
+
+        expect(await screen.findByText("Unavailable.")).toBeInTheDocument();
+        expect(screen.queryByText("Opened t-sealed")).not.toBeInTheDocument();
+        expect(screen.getByText(noDueDateTask.title)).toBeInTheDocument();
+    });
+
     it("passes the server's plugin nav through to the app rail", async () => {
         mockShellAndTasks([]);
         render(<TasksPage userUid="u1" pluginNav={{ appRail: [{ id: "notes", href: "/notes", label: "Notes" }] }} />);

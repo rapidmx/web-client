@@ -27,7 +27,7 @@ import {
     updateCalendarEvent,
 } from "./calendarApi.js";
 import { CalendarOccurrence, fromEventWallClock, seriesEndDate, toEventWallClock } from "./recurrence.js";
-import { ApiClient } from "../util/api.js";
+import { ApiClient, ApiRequestError } from "../util/api.js";
 import { KeysLockedError } from "../crypto/masterKey.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../zeroAccess/sealedRecords.js";
 import { followMeetingKeyExpiry } from "../videoconf/protectedMeetings.js";
@@ -41,6 +41,23 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** The title restapi gives an event whose content is sealed (`sealedContent`) until it is opened. */
 const PROTECTED_TITLE = "[...]";
+
+/** What `SealedOccurrenceError` says. */
+export const SEALED_OCCURRENCE_MESSAGE =
+    "This event came from an invitation to a zero-access mailbox, so one occurrence of it can't be changed on its own. Change the entire series, or ask the organizer to.";
+
+/**
+ * One occurrence of an event made from an invitation that reached a zero-access mailbox (`sealedContent`), refused by `detachOccurrence()`
+ * before anything is sent: its content is sealed to the mailbox's key, and a detached copy is a new event, which restapi stores readable
+ * unless the mailbox protects its calendar - it would keep the invitation's real title, location and description in the clear. An
+ * `ApiRequestError` (409), as `SealedMoveError` is, so the event dialog and the drag handler show its message.
+ */
+export class SealedOccurrenceError extends ApiRequestError {
+    constructor() {
+        super(SEALED_OCCURRENCE_MESSAGE, 409, "sealed-occurrence");
+        this.name = "SealedOccurrenceError";
+    }
+}
 
 function positiveModulo(value: number, modulus: number): number {
     return ((value % modulus) + modulus) % modulus;
@@ -159,7 +176,8 @@ export async function saveEventSeries(
  *
  * A protected occurrence (zero-access) is copied from its opened content: one that can't be opened here - its mailbox is locked - holds
  * only placeholders, which the new event would store as its real title, location and description. It throws `KeysLockedError` instead,
- * before anything is written.
+ * before anything is written. One of an event made from a zero-access invitation (`sealedContent`) throws `SealedOccurrenceError`, opened
+ * or not: the create would store its opened content readable (restapi re-seals that content only on an update of the event that holds it).
  */
 export async function detachOccurrence(
     occurrence: CalendarOccurrence,
@@ -172,6 +190,10 @@ export async function detachOccurrence(
     // An event made from an invitation to a zero-access mailbox (`sealedContent`) still titled `[...]` wasn't opened either.
     if ((isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) || (occurrence.sealedContent && occurrence.title === PROTECTED_TITLE)) {
         throw new KeysLockedError("This event is protected and your mailbox is locked. Unlock it to change one occurrence of the event.");
+    }
+    // Opened, its content would go to the server readable in a new event's create (see `SealedOccurrenceError`).
+    if (occurrence.sealedContent) {
+        throw new SealedOccurrenceError();
     }
     const originalStart = occurrence.recurrenceId!;
     // `icalUid`/`recurrenceId` aren't part of `CalendarEventInput`, but `@rapidmx/restapi`'s

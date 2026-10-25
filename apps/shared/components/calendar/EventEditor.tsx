@@ -31,6 +31,7 @@ import { followMeetingKeyExpiry, meetingKeyExpiry, organizerJoinLink, protectMee
 import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
 import { deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
 import { Mailbox } from "../../../../lib/mail/mailApi.js";
+import { useKeysLocked } from "../../zeroAccess/useKeysLocked.js";
 import { CalendarOccurrence, fromEventWallClock, seriesEndDate, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
 import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant, startWeekdayCode } from "./allDay.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
@@ -331,6 +332,16 @@ export default function EventEditor({
             cancelled = true;
         };
     }, [occurrence?.videoMeetingUid, client]);
+
+    // A protected meeting's links carry its key after `#`, opened (or made) with the organizer's mailbox keys: they go when any mailbox locks
+    // - this dialog can be saving to another mailbox than the event's. A meeting made here but not yet linked keeps its uid, so a retry
+    // doesn't make a second one; it is linked without a link to show.
+    useKeysLocked(() => {
+        setOrganizerJoinUrl((url) => (url?.includes("#") ? null : url));
+        if (mintedMeeting.current?.organizerJoinUrl?.includes("#")) {
+            mintedMeeting.current = { uid: mintedMeeting.current.uid, organizerJoinUrl: null };
+        }
+    });
 
     // "This event only" detaches a standalone, non-repeating copy - the series' rule doesn't apply to it.
     const editingSingleOccurrence = !!occurrence?.isRecurringOccurrence && editScope === "occurrence";

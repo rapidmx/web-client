@@ -457,6 +457,8 @@ describe("localIndexWorker", () => {
 
         await expect(call("search", { mailboxUid: "mb1", parsed: { text: "budget" }, limit: 10 })).rejects.toThrow();
         expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("corrupted"));
+        // The main thread is told, so it forgets what it remembered of the discarded index.
+        expect(postMessage).toHaveBeenCalledWith({ type: "reset", mailboxUid: "mb1" });
         await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 0 });
         await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m2")] });
         await expect(call("coverage", "mb1")).resolves.toMatchObject({ indexedCount: 1 });

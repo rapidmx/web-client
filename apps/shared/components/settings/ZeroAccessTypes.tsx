@@ -57,6 +57,8 @@ export interface ZeroAccessTypesProps {
     types: readonly ZeroAccessDataType[];
     /** The owner, not impersonating: only they change it. */
     canManage: boolean;
+    /** Zero-access is being turned on: the server is still deciding the undecided types, so nothing is changed before it has. */
+    disabled?: boolean;
 }
 
 /**
@@ -64,11 +66,19 @@ export interface ZeroAccessTypesProps {
  * owner's ActiveSync devices or Outlook syncs - plainly what that device will no longer show (restapi `specs/search.md` §3 *What It
  * Covers*). Then the table of what stays readable to the server and why.
  */
-export default function ZeroAccessTypes({ mailbox, types, canManage }: ZeroAccessTypesProps) {
+export default function ZeroAccessTypes({ mailbox, types, canManage, disabled = false }: ZeroAccessTypesProps) {
     const client = useApiClient();
     const { patchMailbox } = useSettingsShell();
     const [chosen, setChosen] = useState<ChosenTypes>(mailbox.zeroAccessTypes ?? {});
     const [saving, setSaving] = useState(false);
+    // What the server saved, once the mailbox has it (turning zero-access on decides the undecided types there): shown instead of what this
+    // was mounted with - set while rendering, so the stale switches are never drawn.
+    const storedTypes = JSON.stringify(mailbox.zeroAccessTypes ?? {});
+    const [shownTypes, setShownTypes] = useState(storedTypes);
+    if (shownTypes !== storedTypes) {
+        setShownTypes(storedTypes);
+        setChosen(JSON.parse(storedTypes) as ChosenTypes);
+    }
 
     async function save(type: ZeroAccessDataType, on: boolean) {
         const previous = chosen;
@@ -87,8 +97,11 @@ export default function ZeroAccessTypes({ mailbox, types, canManage }: ZeroAcces
                 }
                 saved = await write((await getMailbox(mailbox.uid, {}, client)).version);
             }
-            // Kept by the shell, so turning zero-access off and on again (which mounts this anew) shows what was saved.
-            patchMailbox?.(mailbox.uid, { zeroAccessTypes: next, version: saved.version });
+            // Kept by the shell, so turning zero-access off and on again (which mounts this anew) shows what was saved: the server's merge of
+            // this choice into the stored one.
+            const merged = saved.zeroAccessTypes ?? next;
+            setChosen(merged);
+            patchMailbox?.(mailbox.uid, { zeroAccessTypes: merged, version: saved.version });
         } catch (err) {
             setChosen(previous);
             notifyApiError(err, "Couldn't save what zero-access encryption protects");
@@ -113,7 +126,7 @@ export default function ZeroAccessTypes({ mailbox, types, canManage }: ZeroAcces
                                     type="checkbox"
                                     className="mt-1"
                                     checked={on}
-                                    disabled={!canManage || saving}
+                                    disabled={!canManage || saving || disabled}
                                     onChange={(e) => void save(type, e.target.checked)}
                                 />
                                 <span>

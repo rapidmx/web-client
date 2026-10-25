@@ -295,6 +295,26 @@ describe("CalendarPage handleDragEnd", () => {
         expect(fetchMock.mock.calls.some(([, init]) => ["PUT", "POST"].includes((init as RequestInit | undefined)?.method ?? "GET"))).toBe(false);
     });
 
+    it("refuses to move one occurrence of an event made from a zero-access invitation, as a warning, writing nothing", async () => {
+        // As the page holds it once opened: the real title beside the sealed content.
+        const invited = { ...event, title: "Acquisition talks", sealedContent: { keyFingerprint: "fp", sealed: "c2VhbGVk" }, recurrenceRule: { freq: "daily", interval: 1, exceptions: [] } };
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [calendarFolder]);
+            if (url.startsWith("/api/mail/calendar-events") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [invited]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        render(<CalendarPage userUid="u1" />);
+        await screen.findAllByText(/Acquisition talks/);
+
+        await act(async () => {
+            await capturedOnDragEnd!({ active: { id: "e1::2026-06-15T15:00:00.000Z" }, over: { id: dayDropId(new Date("2026-06-16T00:00:00.000Z")) } });
+        });
+
+        expect(await screen.findByText(/one occurrence of it can't be changed on its own/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => ["PUT", "POST"].includes((init as RequestInit | undefined)?.method ?? "GET"))).toBe(false);
+    });
+
     it("shows a generic error message when the mutation fails with a non-API error", async () => {
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);

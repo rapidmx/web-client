@@ -71,6 +71,9 @@ export interface SendRequest {
     /** The copies of this message (`assemble()`: one per encryption format) already built but not handed over yet, after an attempt that
      * failed part-way: a retry hands over just these - never one that already went, and without building them again. */
     pendingCopies?: Message[];
+    /** Some copies already went (`pendingCopies` holds only the rest): every later failure says so, and never offers "Open draft", which
+     * would send those recipients a second copy - kept across any number of retries. */
+    partial?: boolean;
 }
 
 /** How long a background send waits for the mailbox / encryption policy it did not have, before it goes ahead treating them as unknown. Nobody waits for it. */
@@ -324,7 +327,8 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
                 continue;
             }
             const failure = failureOf(err, request.scheduledSendTime ? "Could not schedule this message." : "Could not send this message.");
-            const partial = index > 0;
+            // A copy that went in this attempt, or in an earlier one this retries.
+            const partial = index > 0 || !!request.partial;
             return {
                 kind: "failed",
                 failure: partial
@@ -516,7 +520,11 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
         finishPendingSend(uid);
         if (outcome.kind === "failed") {
             tracker?.revert();
-            notifyFailure(outcome.pendingCopies ? { ...request, pendingCopies: outcome.pendingCopies } : request, outcome.failure, client);
+            notifyFailure(
+                outcome.pendingCopies ? { ...request, pendingCopies: outcome.pendingCopies, partial: outcome.failure.partial } : request,
+                outcome.failure,
+                client,
+            );
             return;
         }
         tracker?.settle();

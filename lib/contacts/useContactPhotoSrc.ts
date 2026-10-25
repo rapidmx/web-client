@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../util/api.js";
+import { getUnlockedKeys, subscribeKeySession } from "../crypto/keySession.js";
 import { openSealedBytes } from "../zeroAccess/sealedRecords.js";
 import { type Contact, contactPhotoUrl, fetchContactPhoto } from "./contactsApi.js";
 
@@ -33,6 +34,8 @@ interface Entry {
     url: string;
     /** How many mounted avatars show this URL; it is never revoked while that is more than none. */
     refs: number;
+    /** A sealed picture's mailbox, whose keys opened it: dropped when that mailbox locks, shown or not, and never handed out while it is locked. */
+    mailboxUid?: string;
 }
 
 /** Least recently used first (a `Map` iterates in insertion order, and a use moves the entry to the end). */
@@ -41,6 +44,32 @@ const entries = new Map<string, Entry>();
 const pending = new Map<string, { request: Promise<string>; waiters: number }>();
 const clientIds = new WeakMap<ApiClient, number>();
 let nextClientId = 0;
+
+let watchingKeys = false;
+
+/** A sealed picture opened with a mailbox's keys goes when that mailbox locks, like every other opened value (`sealedRecords.ts`): its URL
+ * is revoked even while an avatar shows it - each one drops it itself (`useContactPhoto()`). Subscribed with the first sealed picture. */
+function forgetOnLock(): void {
+    if (watchingKeys) {
+        return;
+    }
+    watchingKeys = true;
+    subscribeKeySession(({ mailboxUid, state }) => {
+        if (state === "locked") {
+            forgetSealed(mailboxUid);
+        }
+    });
+}
+
+/** Revokes and forgets `mailboxUid`'s sealed pictures. */
+function forgetSealed(mailboxUid: string): void {
+    for (const [key, entry] of entries) {
+        if (entry.mailboxUid === mailboxUid) {
+            URL.revokeObjectURL(entry.url);
+            entries.delete(key);
+        }
+    }
+}
 
 /** One key per picture of one account: the same uid never collides across the clients of a multi-account app, and a replaced picture (new version) is a new key. */
 function keyOf(client: ApiClient, uid: string, version: number): string {
@@ -95,8 +124,18 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
     });
 }
 
-/** The `blob:` URL for `key`, fetched with `load` unless it is cached, and counted as shown until `release()`. Concurrent callers share one fetch. */
-async function acquire(key: string, load: () => Promise<Blob>): Promise<string> {
+/**
+ * The `blob:` URL for `key`, fetched with `load` unless it is cached, and counted as shown until `release()`. Concurrent callers share one fetch.
+ * `sealedMailboxUid` is a sealed picture's mailbox: opened only while it is unlocked, it is neither handed out from the cache nor stored once
+ * that mailbox is locked.
+ */
+async function acquire(key: string, load: () => Promise<Blob>, sealedMailboxUid?: string): Promise<string> {
+    if (sealedMailboxUid !== undefined) {
+        forgetOnLock();
+        if (!getUnlockedKeys(sealedMailboxUid)) {
+            forgetSealed(sealedMailboxUid);
+        }
+    }
     const entry = entries.get(key);
     if (entry) {
         entry.refs++;
@@ -110,9 +149,13 @@ async function acquire(key: string, load: () => Promise<Blob>): Promise<string> 
             waiters: 0,
             request: limited(load)
                 .then((blob) => {
+                    // Opened just before a lock came: nothing opened is kept past it.
+                    if (sealedMailboxUid !== undefined && !getUnlockedKeys(sealedMailboxUid)) {
+                        throw new Error("The contact's mailbox locked while its picture was opened.");
+                    }
                     const url = URL.createObjectURL(blob);
                     // Claimed by everyone waiting from the start: an entry nobody holds yet could be trimmed before its avatar got to it.
-                    entries.set(key, { url, refs: created.waiters });
+                    entries.set(key, { url, refs: created.waiters, mailboxUid: sealedMailboxUid });
                     return url;
                 })
                 .finally(() => pending.delete(key)),
@@ -161,11 +204,34 @@ export function useContactPhoto(
 ): { src: string | undefined; failed: boolean } {
     const [loaded, setLoaded] = useState<{ key: string; url: string } | undefined>();
     const [failedKey, setFailedKey] = useState<string | undefined>();
+    // Bumped to load a sealed picture again: its mailbox locked (it can't be shown any more) or unlocked (one that failed can be now).
+    const [attempt, setAttempt] = useState(0);
     // A sealed photo is always fetched (and opened) here: a URL would show the browser ciphertext.
     const fetched = !!client || !!contact?.photoSealed;
     const key = active && fetched && contact?.photoBlobKey ? keyOf(client ?? GLOBAL_CLIENT, contact.uid, contact.version) : undefined;
-    const uid = contact?.uid;
-    const version = contact?.version;
+    const sealedMailboxUid = contact?.photoSealed ? (contact.mailboxUid ?? "") : undefined;
+    const failedRef = useRef(failedKey);
+    failedRef.current = failedKey;
+
+    useEffect(() => {
+        if (!key || sealedMailboxUid === undefined) {
+            return;
+        }
+        return subscribeKeySession(({ mailboxUid, state }) => {
+            if (mailboxUid !== sealedMailboxUid) {
+                return;
+            }
+            if (state === "locked") {
+                // What the <img> decoded stays on screen until its src goes: drop it, then try again (it fails while locked: initials).
+                setLoaded(undefined);
+                setFailedKey(undefined);
+                setAttempt((n) => n + 1);
+            } else if (failedRef.current === key) {
+                setFailedKey(undefined);
+                setAttempt((n) => n + 1);
+            }
+        });
+    }, [key, sealedMailboxUid]);
 
     useEffect(() => {
         if (!key) {
@@ -173,7 +239,7 @@ export function useContactPhoto(
         }
         let cancelled = false;
         let held = false;
-        acquire(key, () => loadPhoto(contact!, client)).then(
+        acquire(key, () => loadPhoto(contact!, client), sealedMailboxUid).then(
             (url) => {
                 if (cancelled) {
                     release(key);
@@ -190,7 +256,7 @@ export function useContactPhoto(
                 release(key);
             }
         };
-    }, [key]);
+    }, [key, attempt]);
 
     if (fetched) {
         return { src: key !== undefined && loaded?.key === key ? loaded.url : undefined, failed: key !== undefined && failedKey === key };

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -14,11 +14,16 @@ import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
-const { protectMeeting } = vi.hoisted(() => ({ protectMeeting: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined) }));
-vi.mock("../../../lib/videoconf/protectedMeetings.js", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("../../../lib/videoconf/protectedMeetings.js")>()),
-    protectMeeting,
+const { protectMeeting, organizerJoinLink } = vi.hoisted(() => ({
+    protectMeeting: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
+    organizerJoinLink: vi.fn(),
 }));
+vi.mock("../../../lib/videoconf/protectedMeetings.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../lib/videoconf/protectedMeetings.js")>();
+    // The real one unless a test says otherwise (a protected meeting's key opened here).
+    organizerJoinLink.mockImplementation(actual.organizerJoinLink);
+    return { ...actual, protectMeeting, organizerJoinLink };
+});
 
 /** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
  * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
@@ -663,6 +668,77 @@ describe("EventModal video conferencing with zero-access", () => {
         expect(screen.queryByText(/isn't end-to-end protected/)).toBeNull();
         await user.click(join);
         expect(openSpy).toHaveBeenCalledWith(`${JOIN_URL}#${SECURED.fragment}`, "_blank", "noopener,noreferrer");
+    });
+
+    it("drops the keyed join link of the meeting it made when the mailbox locks", async () => {
+        protectMeeting.mockResolvedValue(SECURED);
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        mockVideoFetch();
+        const user = userEvent.setup();
+        renderModal(occurrence());
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        const join = await screen.findByRole("button", { name: "Join video call" });
+        await waitFor(() => expect(join).toBeEnabled());
+
+        act(() => destroyUnlockedKeys("mb1"));
+
+        expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
+        expect(join).toBeDisabled();
+        expect(document.body.innerHTML).not.toContain(SECURED.fragment);
+    });
+
+    it("links a meeting it made before a lock without its key, and makes no second one", async () => {
+        protectMeeting.mockResolvedValue(SECURED);
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        let puts = 0;
+        const fetchMock = mockVideoFetch({
+            updateEvent: () => {
+                puts += 1;
+                return puts === 2 ? jsonResponse(500, { message: "Could not link the meeting." }) : jsonResponse(200, { ...occurrence(), version: 2 + puts });
+            },
+        });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(occurrence());
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("Could not link the meeting.")).toBeInTheDocument();
+
+        act(() => destroyUnlockedKeys("mb1"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(callsTo(fetchMock, "/api/mail/video-meetings", "POST")).toHaveLength(1);
+        expect(await screen.findByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
+        expect(document.body.innerHTML).not.toContain(SECURED.fragment);
+    });
+
+    it("drops a protected meeting's keyed link from the event's card when its mailbox locks, even on a calendar that isn't protected", async () => {
+        const keyed = `${JOIN_URL}#${SECURED.fragment}`;
+        organizerJoinLink.mockResolvedValueOnce(keyed);
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        installSharedSession("mb2", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb2"));
+        mockVideoFetch({ getMeeting: () => jsonResponse(200, { ...meetingFixture, keyProtected: true, organizerJoinUrl: JOIN_URL }) });
+        renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
+        expect(await screen.findByRole("link", { name: keyed })).toBeInTheDocument();
+
+        // Another mailbox's lock leaves it.
+        act(() => destroyUnlockedKeys("mb2"));
+        expect(screen.getByRole("link", { name: keyed })).toBeInTheDocument();
+
+        act(() => destroyUnlockedKeys("mb1"));
+        expect(screen.queryByRole("link", { name: keyed })).not.toBeInTheDocument();
+        expect(screen.getByText("This meeting’s join link isn’t available.")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Join video call" })).toBeDisabled();
+    });
+
+    it("keeps an unprotected meeting's link on the card across a lock", async () => {
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        mockVideoFetch();
+        renderModal(occurrence({ videoMeetingUid: "vm1" }), {}, true);
+        expect(await screen.findByRole("link", { name: JOIN_URL })).toBeInTheDocument();
+        act(() => destroyUnlockedKeys("mb1"));
+        expect(screen.getByRole("link", { name: JOIN_URL })).toBeInTheDocument();
     });
 
     const MOVED = { ...occurrence({ videoMeetingUid: "vm1" }), startDate: "2026-06-10T15:00:00.000Z", endDate: "2026-06-10T16:00:00.000Z", version: 3 };

@@ -14,6 +14,7 @@ import { getNotificationsSnapshot } from "../../../apps/shared/notifications/sto
 import { setNotificationsEnabled } from "../../../apps/shared/notifications/preferences.js";
 import { resetNotificationSounds } from "../../../apps/shared/notifications/sounds.js";
 import { CalendarAlarms, useCalendarReminders } from "../../../apps/shared/calendar/useCalendarReminders.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 /** A stand-in for the browser's WebSocket, driven by hand - the same shape `useMailLiveUpdates.test.tsx` uses. */
 class FakeWebSocket {
@@ -269,6 +270,54 @@ describe("useCalendarReminders", () => {
         expect(getNotificationsSnapshot().history.some((entry) => entry.title === "[...]")).toBe(true);
         expect(JSON.stringify(getNotificationsSnapshot().history)).not.toContain("acquisition");
         expect(sessionStorage.getItem("rapidmx-notification-history") ?? "").not.toContain("acquisition");
+    });
+
+    describe("a protected event's alarm, when the mailbox locks", () => {
+        const PROTECTED = { ...NOTICE, title: "[...]", location: "Protected location", protected: true };
+        const lock = () =>
+            act(() => {
+                installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+                destroyUnlockedKeys("mb1");
+            });
+
+        async function fireProtected() {
+            await act(async () => {
+                socket().receive({ type: "CalendarEvent", action: "reminder", data: PROTECTED });
+                await vi.advanceTimersByTimeAsync(0);
+            });
+        }
+
+        it("shows the placeholders the push carried instead of the opened title and location", async () => {
+            getCalendarEvent.mockResolvedValueOnce({ title: "Board: acquisition", location: "Room 4" });
+            render(<Harness />);
+            connect();
+            await fireReminder(OTHER);
+            await fireProtected();
+            await act(async () => latest.dismiss());
+            expect(latest.current).toMatchObject({ title: "Board: acquisition", location: "Room 4" });
+
+            lock();
+
+            expect(latest.current).toMatchObject({ title: "[...]", location: "Protected location" });
+        });
+
+        it("brings a snoozed one back with them, opening it again only when the mailbox is unlocked", async () => {
+            getCalendarEvent.mockResolvedValueOnce({ title: "Board: acquisition", location: "Room 4" });
+            render(<Harness />);
+            connect();
+            await fireProtected();
+            await act(async () => latest.snooze());
+            expect(latest.current).toBeUndefined();
+
+            lock();
+            // Read again when it comes back: still locked, the event shows only its placeholders.
+            getCalendarEvent.mockResolvedValueOnce({ title: "[...]", location: "Protected location" });
+            await advance(5 * 60_000);
+
+            expect(getCalendarEvent).toHaveBeenCalledTimes(2);
+            expect(latest.current).toMatchObject({ title: "[...]", location: "Protected location" });
+            expect(JSON.stringify(latest.current)).not.toContain("acquisition");
+        });
     });
 
     it("does nothing without a signed-in user", async () => {
