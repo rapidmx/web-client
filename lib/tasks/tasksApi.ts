@@ -7,6 +7,7 @@
 
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
+import { guardSealedMove } from "../zeroAccess/sealedMoves.js";
 
 export type TaskPriority = "low" | "normal" | "high";
 
@@ -81,13 +82,20 @@ export interface UpdateTaskInput {
     taskListUid?: string;
     myDay?: boolean;
     assignedTo?: string;
+    /** A move to another mailbox, with `folderUid` there - refused for a protected task (`SealedMoveError`). */
+    mailboxUid?: string;
+    folderUid?: string;
 }
 
-export function updateTask(input: UpdateTaskInput, client?: ApiClient): Promise<Task> {
-    return withClient(client, `/mail/tasks/${encodeURIComponent(input.uid)}`, {
-        method: "PUT",
-        body: JSON.stringify(input),
-    });
+/** Saves `input`. One moving the task to another mailbox (`mailboxUid`) is refused with `SealedMoveError` when the task is protected -
+ * before sending anything when `current` (the task as this device has it) says so, else from the server's refusal. */
+export function updateTask(input: UpdateTaskInput, client?: ApiClient, current?: Task): Promise<Task> {
+    return guardSealedMove(current, input.mailboxUid, () =>
+        withClient<Task>(client, `/mail/tasks/${encodeURIComponent(input.uid)}`, {
+            method: "PUT",
+            body: JSON.stringify(input),
+        }),
+    );
 }
 
 /** Toggles a task's `completed` flag in place — same pattern as `mailApi.ts`'s `setMessageRead`. */

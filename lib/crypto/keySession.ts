@@ -336,7 +336,9 @@ export class UnopenableEncryptionKeyError extends Error {
 }
 
 /** Opens one wrapped PKCS#8 private key under `masterKey` and imports it (non-extractable by default, like
- * `importPrivateKeyPkcs8()` itself), zeroing the transient plaintext whether or not the import succeeds. */
+ * `importPrivateKeyPkcs8()` itself), zeroing the transient plaintext whether or not the import succeeds. With `certDer` - the server's
+ * certificate for it, unauthenticated - it rejects a key that certificate isn't the one of (`certificateHoldsKey()`), so a swapped
+ * certificate never pairs with the opened key. */
 async function openPrivateKey(
     masterKey: Uint8Array,
     wrapped: WrappedPrivateKey,
@@ -344,9 +346,13 @@ async function openPrivateKey(
     algorithm: EcKeyImportParams,
     usages: KeyUsage[],
     extractable = false,
+    certDer?: Uint8Array,
 ): Promise<CryptoKey> {
     const raw = await openWithKey(masterKey, wrapped, aad);
     try {
+        if (certDer && !(await certificateHoldsKey(certDer, raw))) {
+            throw new Error("The certificate isn't the key's.");
+        }
         return await importPrivateKeyPkcs8(raw, algorithm, usages, extractable);
     } finally {
         raw.fill(0);
@@ -357,7 +363,7 @@ async function openPrivateKey(
  * Opens the retained encryption keys onto `unlocked.retainedEncryptionKeys`: every published `encrypt` key in
  * `mailboxKeys` other than the active one (`activeFingerprint`), whatever its revocation or expiry, that has a wrapped
  * private key in the vault - de-duplicated by fingerprint, newest `notBefore` first, at most
- * `MAX_RETAINED_ENCRYPTION_KEYS`. A key that won't open or import, or whose certificate won't decode, is skipped and
+ * `MAX_RETAINED_ENCRYPTION_KEYS`. A key that won't open or import, or whose certificate won't decode or isn't the key's, is skipped and
  * added to `unopenableKeys`. Retained keys are imported non-extractable. Each key is attached as it opens, so a failed
  * unlock's `destroyObject()` drops those too.
  */
@@ -388,7 +394,7 @@ async function openRetainedEncryptionKeys(
     for (const { publicKey, wrapped } of candidates) {
         try {
             const certDer = fromBase64(publicKey.publicKey);
-            const privateKey = await openPrivateKey(unlocked.masterKey, wrapped, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
+            const privateKey = await openPrivateKey(unlocked.masterKey, wrapped, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false, certDer);
             (unlocked.retainedEncryptionKeys ??= []).push({ fingerprint: publicKey.fingerprint, certDer, privateKey });
         } catch {
             unopenableKeys.push(publicKey.fingerprint);
@@ -480,8 +486,8 @@ async function openOpenPgpKeys(mailboxUid: string, mailboxKeys: PublicKey[], vau
  * "incorrect password," not a generic error, but this module doesn't presume a specific UI's error copy.
  * Once the master key has opened, the password is known to be right: an active signing key that then
  * won't open is skipped and listed in `UnlockResult.unopenableKeys` (so is a retained encryption key); an active
- * encryption key that won't
- * open still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
+ * encryption key that won't open, or whose certificate isn't its own,
+ * still fails the unlock, with `UnopenableEncryptionKeyError`. Throws `KeysLockedError` when
  * `destroyUnlockedKeys()` locked this mailbox (or all mailboxes) while the unlock was in flight.
  */
 export async function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult> {
@@ -626,13 +632,25 @@ async function openSession(
         const encryptionPublicKey = findActivePublicKey(mailboxKeys, "encrypt");
         const wrappedEncryptionKey = encryptionPublicKey && findWrappedPrivateKey(vault, encryptionPublicKey.fingerprint);
         if (encryptionPublicKey && wrappedEncryptionKey) {
+            let encryptionCertDer: Uint8Array;
             try {
+                // The certificate is the server's: one that isn't this key's - what this device encrypts its own copies to, and what it
+                // hands out as its S/MIME certificate - makes the key unopenable, exactly as a wrap that won't open.
+                encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
                 const aad = buildAad(mailboxUid, ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE);
-                unlocked.encryptionPrivateKey = await openPrivateKey(masterKey, wrappedEncryptionKey, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
+                unlocked.encryptionPrivateKey = await openPrivateKey(
+                    masterKey,
+                    wrappedEncryptionKey,
+                    aad,
+                    { name: "ECDH", namedCurve: "P-256" },
+                    ["deriveBits"],
+                    false,
+                    encryptionCertDer,
+                );
             } catch (err) {
                 throw new UnopenableEncryptionKeyError(encryptionPublicKey.fingerprint, err);
             }
-            unlocked.encryptionCertDer = fromBase64(encryptionPublicKey.publicKey);
+            unlocked.encryptionCertDer = encryptionCertDer;
             unlocked.encryptionFingerprint = encryptionPublicKey.fingerprint;
         }
 

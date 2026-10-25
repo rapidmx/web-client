@@ -20,8 +20,10 @@ const api = vi.hoisted(() => ({
     putSearchIndexSegment: vi.fn(),
 }));
 vi.mock("../../../lib/search/zeroAccessIndexApi.js", () => api);
-const rpc = vi.hoisted(() => ({ getLocalCoverage: vi.fn(), indexLocalEntities: vi.fn(), moveLocalEntity: vi.fn() }));
+const rpc = vi.hoisted(() => ({ getIndexedVersions: vi.fn(), getLocalCoverage: vi.fn(), indexLocalEntities: vi.fn(), moveLocalEntity: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
+const mail = vi.hoisted(() => ({ getMessage: vi.fn() }));
+vi.mock("../../../lib/mail/mailApi.js", () => mail);
 
 const {
     CLIENT_UPLOAD_ATTEMPTS,
@@ -34,6 +36,7 @@ const {
     importClientSegments,
     isoWeekId,
     MAX_REMEMBERED_METADATA,
+    MAX_TAIL_LOOKUPS,
     rememberZeroAccessMetadata,
     shouldCompact,
     syncZeroAccessIndex,
@@ -114,6 +117,9 @@ beforeEach(async () => {
     localStorage.clear();
     rpc.getLocalCoverage.mockResolvedValue({ indexedCount: 5 });
     rpc.indexLocalEntities.mockResolvedValue({ budgetReached: false });
+    rpc.getIndexedVersions.mockResolvedValue({});
+    // No live-tail lookup finds anything unless a test says so.
+    mail.getMessage.mockRejectedValue(new ApiRequestError("gone", 404));
     api.listSearchIndexEntries.mockResolvedValue({ entries: [] });
     api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [], weeks: [] });
 });
@@ -201,6 +207,50 @@ describe("syncZeroAccessIndex", () => {
         localStorage.clear();
         await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
         expect(rpc.moveLocalEntity).not.toHaveBeenCalled();
+    });
+
+    it("gives a live-tail row nothing recorded its folder, version and flags at import, from the message", async () => {
+        const message = (uid: string, fields: object = {}) => ({ uid, mailboxUid: "mb", folderUid: "inbox", version: 2, flags: { read: true, flagged: false, answered: true }, ...fields });
+        rememberZeroAccessMetadata("mb", "m-remembered", { folderUid: "archive", entityVersion: "1:archive", flags: ",," });
+        rpc.getIndexedVersions.mockResolvedValue({ "m-built": "5:inbox" });
+        mail.getMessage.mockImplementation(async (uid: string) => {
+            if (uid === "m-gone") {
+                throw new ApiRequestError("gone", 404);
+            }
+            return uid === "m-elsewhere" ? message(uid, { mailboxUid: "other" }) : message(uid);
+        });
+        api.listSearchIndexEntries.mockResolvedValue({
+            entries: await Promise.all(
+                ["m-new", "m-built", "m-remembered", "m-gone", "m-elsewhere", "m-new"].map((uid, i) => sealEntry(`e${i}`, "2026-W43", doc(uid), key.certDer)),
+            ),
+        });
+
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] }, { baseUrl: "x" } as any);
+
+        expect(rpc.getIndexedVersions).toHaveBeenCalledWith("mb", ["m-new", "m-built", "m-remembered", "m-gone", "m-elsewhere"]);
+        expect(mail.getMessage.mock.calls.map(([uid]) => uid).sort()).toEqual(["m-elsewhere", "m-gone", "m-new"]);
+        expect(mail.getMessage.mock.calls[0][1]).toEqual({ baseUrl: "x" });
+        expect(rpc.moveLocalEntity.mock.calls).toEqual([
+            ["mb", "m-remembered", "archive", "1:archive", ",,"],
+            ["mb", "m-new", "inbox", "2:inbox", ",read,answered,"],
+        ]);
+        // Only after its row was imported.
+        expect(rpc.moveLocalEntity.mock.invocationCallOrder[1]).toBeGreaterThan(rpc.indexLocalEntities.mock.invocationCallOrder[0]);
+    });
+
+    it(`looks up at most ${MAX_TAIL_LOOKUPS} live-tail rows a pass, and none for an empty tail`, async () => {
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+        expect(rpc.getIndexedVersions).not.toHaveBeenCalled();
+
+        api.listSearchIndexEntries.mockResolvedValue({
+            entries: await Promise.all(Array.from({ length: MAX_TAIL_LOOKUPS + 5 }, (_, i) => sealEntry(`e${i}`, "2026-W43", doc(`m${i}`), key.certDer))),
+        });
+        mail.getMessage.mockImplementation(async (uid: string) => ({ uid, mailboxUid: "mb", folderUid: "inbox", version: 1, flags: {} }));
+
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+
+        expect(mail.getMessage).toHaveBeenCalledTimes(MAX_TAIL_LOOKUPS);
+        expect(rpc.moveLocalEntity).toHaveBeenCalledTimes(MAX_TAIL_LOOKUPS);
     });
 
     it("keeps at most so many messages' metadata per mailbox, dropping the oldest", async () => {

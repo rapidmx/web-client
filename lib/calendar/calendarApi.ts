@@ -9,6 +9,7 @@
 
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
+import { guardSealedMove } from "../zeroAccess/sealedMoves.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
 import { type InvitationContent, invitationContentOf, protectedEventWrite } from "./protectedEvents.js";
 import { meetingLinkSecrets } from "../videoconf/protectedMeetings.js";
@@ -276,7 +277,12 @@ export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
  * content that changed, and the content the server invites with (`protectedEventWrite()`; `input.invitationContent` when `current` isn't
  * opened, none with `{ defer: true }`). For an event whose video meeting is protected,
  * every attendee's link key goes with it (`meetingLinkSecrets()`), for the server to add to their links in the invitations it sends. */
-export async function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient, current?: CalendarEvent): Promise<CalendarEvent> {
+export function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient, current?: CalendarEvent): Promise<CalendarEvent> {
+    // A move of a protected event to another mailbox is refused (`SealedMoveError`), before anything is opened or sent when `current` says so.
+    return guardSealedMove(current, input.mailboxUid, () => saveCalendarEvent(input, client, current));
+}
+
+async function saveCalendarEvent(input: UpdateCalendarEventInput, client: ApiClient | undefined, current: CalendarEvent | undefined): Promise<CalendarEvent> {
     current = await fullyOpenedEvent(current);
     const { invitationContent: given, ...changes } = input;
     const body: Record<string, any> = protectedEventWrite(current, changes);

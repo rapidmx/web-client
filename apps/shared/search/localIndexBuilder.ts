@@ -46,7 +46,7 @@ import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { getPinnedSigners } from "../components/mail/pinnedSigners.js";
 import { currentVerificationSeal, readVaultGeneration, sendVerificationSeal, verificationSealPending } from "../components/mail/verificationSeals.js";
-import type { LocalIndexEntity } from "./localIndexSchema.js";
+import { type LocalIndexEntity, messageRowFlags, messageRowVersion } from "./localIndexSchema.js";
 import {
     getIndexedVersions,
     moveLocalEntity,
@@ -214,20 +214,8 @@ function estimateByteSize(entity: Pick<LocalIndexEntity, "subject" | "body" | "a
     return textBytes + MAX_APPROX_BYTES_PER_MESSAGE_PADDING;
 }
 
-/** The change marker stored per row: a new server `version` (flags, content) or a folder move both
- * invalidate the indexed copy. */
-function versionOf(message: Message): string {
-    return `${message.version}:${message.folderUid}`;
-}
-
-/** A message's set flags as a row stores them. Leading/trailing comma so `flags LIKE '%,x,%'` (localIndexSchema.ts's
- * buildSearchPredicates()) matches correctly even for the first/last flag in the list. */
-function entityFlags(message: Message): string {
-    const set = Object.entries(message.flags)
-        .filter(([, value]) => value)
-        .map(([key]) => key);
-    return `,${set.join(",")},`;
-}
+const versionOf = (message: Message): string => messageRowVersion(message);
+const entityFlags = (message: Message): string => messageRowFlags(message);
 
 /** `Promise.all(items.map(fn))`, but with at most `limit` calls in flight. Preserves input order. */
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

@@ -38,8 +38,9 @@ import {
 } from "../../../lib/search/zeroAccessIndexApi.js";
 import { ApiRequestError, type ApiClient } from "../../../lib/util/api.js";
 import { clientPlatform, isConstrainedConnection, type ClientPlatform } from "../../../lib/util/clientPlatform.js";
-import { getLocalCoverage, indexLocalEntities, moveLocalEntity } from "./localIndexRpcClient.js";
-import type { LocalIndexEntity } from "./localIndexSchema.js";
+import { getMessage } from "../../../lib/mail/mailApi.js";
+import { getIndexedVersions, getLocalCoverage, indexLocalEntities, moveLocalEntity } from "./localIndexRpcClient.js";
+import { type LocalIndexEntity, messageRowFlags, messageRowVersion } from "./localIndexSchema.js";
 
 /** The segment format this client writes and reads. */
 export const SEGMENT_SCHEMA_VERSION = 1;
@@ -210,8 +211,37 @@ async function applyRememberedMetadata(mailboxUid: string, messageUids: string[]
     }
 }
 
+/** At most this many live-tail rows a pass looks up (`recordTailMetadata()`); the rest get theirs from the next build pass. */
+export const MAX_TAIL_LOOKUPS = 500;
+
+/** How many of those lookups run at once. */
+const TAIL_LOOKUP_CONCURRENCY = 4;
+
+/**
+ * Gives the live tail's rows that nothing recorded yet (`docs`: rows the builder hasn't seen - mail that arrived after its walk) their
+ * folder, version and flags at import, from the message itself, so a folder or flag filter finds them before the next build pass. At
+ * most `MAX_TAIL_LOOKUPS`. Best effort: a message that is gone, moved to another mailbox or won't load is left to the builder.
+ */
+async function recordTailMetadata(mailboxUid: string, messageUids: string[], client?: ApiClient): Promise<void> {
+    const queue: string[] = messageUids.slice(0, MAX_TAIL_LOOKUPS);
+    const worker = async (): Promise<void> => {
+        for (let uid = queue.shift(); uid !== undefined; uid = queue.shift()) {
+            try {
+                const message = await getMessage(uid, client);
+                if (message.mailboxUid === mailboxUid && message.folderUid) {
+                    await moveLocalEntity(mailboxUid, uid, message.folderUid, messageRowVersion(message), messageRowFlags(message));
+                }
+            } catch {
+                // Left to the next build pass.
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(TAIL_LOOKUP_CONCURRENCY, queue.length) }, worker));
+}
+
 /** A document as a row of the local index. Folder and flags aren't in the document - the builder records them (`localIndexBuilder.ts`,
- * here through `rememberZeroAccessMetadata()` when the row came later), and the upsert keeps what is already there. */
+ * here through `rememberZeroAccessMetadata()` when the row came later; a live-tail row nothing recorded is looked up,
+ * `recordTailMetadata()`), and the upsert keeps what is already there. */
 export function documentEntity(mailboxUid: string, doc: ZeroAccessIndexDocument): LocalIndexEntity {
     const participants: string = (doc.participants ?? []).join(" ");
     const attachmentText: string = [...(doc.attachmentNames ?? []), ...(doc.attachmentText ?? [])].join("\n");
@@ -524,7 +554,12 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
     const tailStart = new Date().toISOString();
     const since = state.tailSince ? new Date(new Date(state.tailSince).getTime() - TAIL_OVERLAP_MS).toISOString() : undefined;
     const tail = await openEntries(await listAllEntries(mailboxUid, since ? { since } : {}, client), keys);
+    // Rows nothing has recorded a folder and flags for: not on this device with a version yet (the builder's mark), nor remembered by it.
+    const tailUids: string[] = [...new Set(tail.docs.map((doc) => doc.messageUid))];
+    const recorded: Record<string, string> = tailUids.length > 0 ? await getIndexedVersions(mailboxUid, tailUids) : {};
+    const unrecorded: string[] = tailUids.filter((uid) => recorded[uid] === undefined && !rememberedMetadata.get(mailboxUid)?.has(uid));
     await importDocuments(mailboxUid, tail.docs);
+    await recordTailMetadata(mailboxUid, unrecorded, client);
     result.entriesImported += tail.docs.length;
     result.unreadable += tail.unreadable;
     state.tailSince = tailStart;

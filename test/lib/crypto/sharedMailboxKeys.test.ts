@@ -273,6 +273,49 @@ describe("maintainSharedMailbox", () => {
         expect(await decryptEnvelopedDataWithKeys(fromBase64(wraps[0].cms), [reader])).toEqual(active.pkcs8);
     });
 
+    it("never wraps a key the server lists with another key's certificate, from a member wrap or the owner's vault", async () => {
+        const reader = await identity("fp-reader");
+        const swapped = status({
+            manager: true,
+            activeKeyFingerprint: "fp-active",
+            zeroAccessKeys: [{ ...active.key, publicKey: older.key.publicKey }, older.key],
+            members: [member("me", me, ["fp-active", "fp-older"], true), member("reader", reader)],
+        });
+        api.getSharedKeyStatus.mockResolvedValue(swapped);
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("me", me, active), await wrap("me", me, older)]);
+
+        expect((await maintainSharedMailbox("shared", "shared@example.com")).wrapped).toBe(1);
+        expect(api.putMemberKeyWraps.mock.calls[0][1].map((w: any) => w.zeroAccessKeyFingerprint)).toEqual(["fp-older"]);
+
+        api.putMemberKeyWraps.mockClear();
+        const mk = generateMasterKey();
+        const aad = buildAad("owned", ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE);
+        session.getUnlockedKeys.mockReturnValue({ masterKey: mk });
+        api.getKeyVault.mockResolvedValue({
+            wrappedKeys: [{ ...(await sealWithKey(mk, active.pkcs8.slice(), aad)), algorithm: "AES-256-GCM", fingerprint: "fp-active", useType: "zero-access" }],
+            masterKeyWraps: [],
+        });
+        api.getSharedKeyStatus.mockResolvedValue({ ...swapped, role: "owner" });
+        expect((await maintainSharedMailbox("owned", "owned@example.com")).wrapped).toBe(0);
+        expect(api.putMemberKeyWraps).not.toHaveBeenCalled();
+    });
+
+    it("wraps nothing for this user's own certificate when the server lists another key's under its fingerprint", async () => {
+        const server = await identity("fp-server");
+        api.getSharedKeyStatus.mockResolvedValue(
+            status({
+                manager: true,
+                activeKeyFingerprint: "fp-active",
+                zeroAccessKeys: [active.key],
+                members: [member("me", { ...me, key: { ...me.key, publicKey: server.key.publicKey } }), member("other", server)],
+            }),
+        );
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("me", me, active)]);
+
+        expect((await maintainSharedMailbox("shared", "shared@example.com")).wrapped).toBe(1);
+        expect(api.putMemberKeyWraps.mock.calls[0][1].map((w: any) => w.memberUserUid)).toEqual(["other"]);
+    });
+
     it("opens the keys from the vault with the owner's master key, skipping what won't open, and wraps nothing it doesn't hold", async () => {
         const reader = await identity("fp-reader");
         const mk = generateMasterKey();

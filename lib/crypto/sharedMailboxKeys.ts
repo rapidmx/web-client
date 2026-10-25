@@ -183,7 +183,8 @@ export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient
 }
 
 /** The PKCS#8 of every zero-access key of `mailboxUid` the caller can open, by fingerprint - from the vault with the owner's unlocked master
- * key, or from the caller's own member wraps. The caller zeroes them. */
+ * key, or from the caller's own member wraps. Only keys whose certificate in `status` (the server's) is really theirs: a key is wrapped
+ * for members and escrow under that certificate's fingerprint, so a mismatched one is left out. The caller zeroes them. */
 async function openPrivateKeys(
     mailboxUid: string,
     status: SharedKeyStatus,
@@ -191,6 +192,14 @@ async function openPrivateKeys(
     client?: ApiClient,
 ): Promise<Map<string, Uint8Array>> {
     const keys = new Map<string, Uint8Array>();
+    const keep = async (fingerprint: string, pkcs8: Uint8Array): Promise<void> => {
+        const certificate = status.zeroAccessKeys.find((key) => key.fingerprint === fingerprint);
+        if (certificate && (await certificateHoldsKey(fromBase64(certificate.publicKey), pkcs8))) {
+            keys.set(fingerprint, pkcs8);
+        } else {
+            pkcs8.fill(0);
+        }
+    };
     if (ownerUnlocked) {
         const vault = await getKeyVault(mailboxUid, client);
         const aad = buildAad(mailboxUid, ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE);
@@ -198,7 +207,7 @@ async function openPrivateKeys(
             const wrapped = vault.wrappedKeys.find((w) => w.fingerprint === key.fingerprint && w.useType === "zero-access");
             if (wrapped) {
                 try {
-                    keys.set(key.fingerprint, await openWithKey(ownerUnlocked.masterKey, wrapped, aad));
+                    await keep(key.fingerprint, await openWithKey(ownerUnlocked.masterKey, wrapped, aad));
                 } catch {
                     // Sealed under a master key since replaced: not this device's to share.
                 }
@@ -210,7 +219,7 @@ async function openPrivateKeys(
     for (const wrap of await getMyMemberKeyWraps(mailboxUid, client)) {
         const unwrapped = await openWrap(wrap, own);
         if (unwrapped) {
-            keys.set(wrap.zeroAccessKeyFingerprint, unwrapped.pkcs8);
+            await keep(wrap.zeroAccessKeyFingerprint, unwrapped.pkcs8);
         }
     }
     return keys;
@@ -224,9 +233,22 @@ async function wrapFor(member: { userUid: string; certificate: ZeroAccessKey }, 
     };
 }
 
-/** The members with a certificate of their own - the ones a key can be wrapped for. */
+/** The members with a certificate of their own - the ones a key can be wrapped for. A certificate listed under the fingerprint of one of
+ * this user's own opened zero-access keys must be that key's certificate (checked against its private key at unlock): one the server
+ * swapped is left out, so a wrap meant for this user never goes to a key that isn't theirs. */
 function wrappable(status: SharedKeyStatus): { userUid: string; certificate: ZeroAccessKey; wrapped: string[] }[] {
-    return status.members.filter((member): member is typeof member & { certificate: ZeroAccessKey } => !!member.certificate);
+    const own = ownZeroAccessKeys();
+    return status.members.filter((member): member is typeof member & { certificate: ZeroAccessKey } => {
+        if (!member.certificate) {
+            return false;
+        }
+        const mine = own.find((key) => key.fingerprint === member.certificate!.fingerprint);
+        return !mine || sameBytes(mine.certDer, fromBase64(member.certificate.publicKey));
+    });
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+    return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
 
 /** `pkcs8` wrapped to the certificate of the escrow scope `escrow` describes. */

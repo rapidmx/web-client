@@ -44,6 +44,23 @@ const FAST_PARAMS = { memorySize: 8, iterations: 1, parallelism: 1 };
 const MAILBOX_UID = "mb1";
 const PASSWORD = "a fine password";
 
+/** A certificate (as restapi lists it, self-signed here) of `publicKey`. */
+async function certificateOf(publicKey: CryptoKey): Promise<Uint8Array> {
+    x509.cryptoProvider.set(crypto);
+    const signer = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const cert = await x509.X509CertificateGenerator.create({
+        serialNumber: "0c",
+        subject: "CN=za",
+        issuer: "CN=za",
+        notBefore: new Date(Date.now() - 1000),
+        notAfter: new Date(Date.now() + 86_400_000),
+        signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
+        publicKey,
+        signingKey: signer.privateKey,
+    });
+    return new Uint8Array(cert.rawData);
+}
+
 /** Builds a real KeyVault + Mailbox.keys pair the way KeyEnrollmentGate's own enrollment flow does,
  * so this test proves unlockWithPassword() is genuinely compatible with what enrollment produces —
  * not just internally self-consistent with its own assumptions about wrap format. */
@@ -75,7 +92,8 @@ async function enrollForTest(
         const sealedPriv = await sealWithKey(mk, privateRaw, buildAad(mailboxUid, purpose));
         const fingerprint = `fp-${useType}`;
         mailboxKeys.push({
-            publicKey: toBase64(new Uint8Array([1, 2, 3])), // placeholder DER - not exercised by unlock itself
+            // A real certificate of the key: the unlock checks the encryption key's is its own.
+            publicKey: toBase64(await certificateOf(keyPair.publicKey)),
             type: "x509",
             useType,
             fingerprint,
@@ -793,23 +811,6 @@ describe("unlockWithRecoveryCode", () => {
 });
 
 describe("zero-access keys", () => {
-    /** A certificate (as restapi lists it, self-signed here) of `publicKey`. */
-    async function certificateOf(publicKey: CryptoKey): Promise<Uint8Array> {
-        x509.cryptoProvider.set(crypto);
-        const signer = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-        const cert = await x509.X509CertificateGenerator.create({
-            serialNumber: "0c",
-            subject: "CN=za",
-            issuer: "CN=za",
-            notBefore: new Date(Date.now() - 1000),
-            notAfter: new Date(Date.now() + 86_400_000),
-            signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
-            publicKey,
-            signingKey: signer.privateKey,
-        });
-        return new Uint8Array(cert.rawData);
-    }
-
     /** Adds zero-access keys to an enrollment: each entry is `{ fingerprint, notBefore, revokedAt?, wrap? }`, where `wrap` is
      * `"ok"` (default, sealed under `mk` with the zero-access purpose), `"corrupt"`, `"none"` (no wrapped key), `"wrong-type"` or
      * `"other-cert"` (sealed fine, but listed with the certificate of another key). */

@@ -7,6 +7,7 @@
 
 import { ApiClient, apiUrl, withClient, withClientBlob, withClientRaw } from "../util/api.js";
 import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
+import { guardSealedMove } from "../zeroAccess/sealedMoves.js";
 import { type EncryptionPreference, type EndToEndFormat, type KeyConflict, type PreviousKey, type PublicKey, type RejectedKey, signingKeyFingerprints, isOpenPgpKey, isTrustedForVerification } from "../crypto/keyvaultApi.js";
 
 export type ContactAddressKind = "home" | "work" | "other";
@@ -279,11 +280,15 @@ export interface UpdateContactInput extends ContactInput {
  * fetched `Contact`. An `UpdateContactInput` is also a valid `ContactPatch`. */
 export type ContactPatch = Partial<Contact> & Pick<Contact, "uid" | "version">;
 
-export function updateContact(patch: ContactPatch, client?: ApiClient): Promise<Contact> {
-    return withClient(client, `/mail/contacts/${encodeURIComponent(patch.uid)}`, {
-        method: "PUT",
-        body: JSON.stringify(patch),
-    });
+/** Saves `patch`. A patch moving the contact to another mailbox (`mailboxUid`) is refused with `SealedMoveError` when the contact is
+ * protected - before sending anything when `current` (the contact as this device has it) says so, else from the server's refusal. */
+export function updateContact(patch: ContactPatch, client?: ApiClient, current?: Contact): Promise<Contact> {
+    return guardSealedMove(current, patch.mailboxUid, () =>
+        withClient<Contact>(client, `/mail/contacts/${encodeURIComponent(patch.uid)}`, {
+            method: "PUT",
+            body: JSON.stringify(patch),
+        }),
+    );
 }
 
 /** Thin `updateContact()` wrapper for toggling favorite/star status — same pattern as `mailApi.ts`'s

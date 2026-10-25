@@ -11,6 +11,7 @@
 import type { ApiClient } from "../util/api.js";
 import { fromBase64 } from "./encoding.js";
 import { type KeyVault, enrollKey, getKeyVault } from "./keyvaultApi.js";
+import { certificateHoldsKey } from "./keyPairMatch.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr, importPrivateKeyPkcs8 } from "./keys.js";
 import { addZeroAccessKey, getUnlockedKeys, type RetainedEncryptionKey, ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE } from "./keySession.js";
 import { buildAad, sealWithKey } from "./masterKey.js";
@@ -55,6 +56,10 @@ export async function provisionZeroAccessKey(
         const certificate = enrolled && vault.zeroAccessKeys?.find((k) => k.fingerprint === enrolled.fingerprint);
         if (!enrolled || !certificate) {
             throw new Error("The server did not return the enrolled zero-access key.");
+        }
+        // The certificate is the server's: this device seals to it (index segments, protected meetings' keys), so it must be the new key's.
+        if (!(await certificateHoldsKey(fromBase64(certificate.publicKey), raw))) {
+            throw new Error("The server returned a zero-access certificate that isn't the enrolled key's.");
         }
         const privateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
         return { vault, key: { fingerprint: enrolled.fingerprint, certDer: fromBase64(certificate.publicKey), privateKey } };

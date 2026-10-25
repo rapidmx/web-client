@@ -114,6 +114,21 @@ export interface LocalIndexEntity {
     entityVersion?: string;
 }
 
+/** The change marker a message's row stores (`LocalIndexEntity.entityVersion`): a new server `version` (flags, content) or a folder move
+ * both invalidate the indexed copy. */
+export function messageRowVersion(message: { version: number; folderUid: string }): string {
+    return `${message.version}:${message.folderUid}`;
+}
+
+/** A message's set flags as a row stores them. Leading/trailing comma so `flags LIKE '%,x,%'` (`buildSearchPredicates()`) matches
+ * correctly even for the first/last flag in the list. */
+export function messageRowFlags(message: { flags: object }): string {
+    const set = Object.entries(message.flags as Record<string, unknown>)
+        .filter(([, value]) => value)
+        .map(([key]) => key);
+    return `,${set.join(",")},`;
+}
+
 /** `entity_uid` upsert - `ON CONFLICT` (SQLite's UPSERT syntax) rather than a separate delete-then-insert,
  * so re-indexing an already-present message (a flag changed, a folder move) updates it in place and the
  * `entities_au` trigger keeps `entities_fts` in sync automatically. */

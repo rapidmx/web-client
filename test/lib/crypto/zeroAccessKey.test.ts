@@ -2,19 +2,22 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toBase64 } from "../../../lib/crypto/encoding.js";
 import type { KeyVault, ZeroAccessKey } from "../../../lib/crypto/keyvaultApi.js";
 import { ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE } from "../../../lib/crypto/keySession.js";
 import { buildAad, generateMasterKey, openWithKey } from "../../../lib/crypto/masterKey.js";
 import { ensureZeroAccessKey, provisionZeroAccessKey } from "../../../lib/crypto/zeroAccessKey.js";
 
-const { enrollKey, getKeyVault, getUnlockedKeys, addZeroAccessKey } = vi.hoisted(() => ({
+const { enrollKey, getKeyVault, getUnlockedKeys, addZeroAccessKey, certificateHoldsKey } = vi.hoisted(() => ({
     enrollKey: vi.fn(),
     getKeyVault: vi.fn(),
     getUnlockedKeys: vi.fn(),
     addZeroAccessKey: vi.fn(),
+    certificateHoldsKey: vi.fn(),
 }));
+// The placeholder certificates below aren't real: the pairing check is stubbed (and tested on its own in keyPairMatch.test.ts).
+vi.mock("../../../lib/crypto/keyPairMatch.js", () => ({ certificateHoldsKey }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
     enrollKey,
@@ -53,6 +56,10 @@ function enrolledVault(fingerprint = "za-new"): KeyVault {
     };
 }
 
+beforeEach(() => {
+    certificateHoldsKey.mockResolvedValue(true);
+});
+
 afterEach(() => {
     vi.clearAllMocks();
 });
@@ -88,6 +95,14 @@ describe("provisionZeroAccessKey", () => {
         await provisionZeroAccessKey(MAILBOX_UID, ADDRESS, generateMasterKey());
 
         expect("expectedMasterKeyGeneration" in enrollKey.mock.calls[0][1]).toBe(false);
+    });
+
+    it("throws when the certificate the server returned for the new key isn't the key's", async () => {
+        enrollKey.mockResolvedValue(enrolledVault());
+        certificateHoldsKey.mockResolvedValue(false);
+
+        await expect(provisionZeroAccessKey(MAILBOX_UID, ADDRESS, generateMasterKey())).rejects.toThrow("isn't the enrolled key's");
+        expect(Array.from(certificateHoldsKey.mock.calls[0][0] as Uint8Array)).toEqual([7, 8, 9]);
     });
 
     it("throws when the server does not return the enrolled key", async () => {

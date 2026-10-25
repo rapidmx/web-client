@@ -102,6 +102,8 @@ interface VaultKeySpec {
     corruptWrap?: boolean;
     /** Publish an undecodable certificate. */
     badCertificate?: boolean;
+    /** Publish this other identity's certificate (one the server swapped in) instead of the key's own. */
+    certificateOf?: { certDer: Uint8Array };
 }
 
 async function buildVault(specs: VaultKeySpec[]): Promise<{ vault: KeyVault; mailboxKeys: PublicKey[]; mk: Uint8Array }> {
@@ -123,7 +125,7 @@ async function buildVault(specs: VaultKeySpec[]): Promise<{ vault: KeyVault; mai
     for (const spec of specs) {
         const useType = spec.useType ?? "encrypt";
         mailboxKeys.push({
-            publicKey: spec.badCertificate ? "!!! not base64 !!!" : toBase64(spec.identity.certDer),
+            publicKey: spec.badCertificate ? "!!! not base64 !!!" : toBase64((spec.certificateOf ?? spec.identity).certDer),
             type: "x509",
             useType,
             fingerprint: spec.fingerprint,
@@ -218,6 +220,35 @@ describe("unlock opens retained encryption keys", () => {
         expect(unlocked.retainedEncryptionKeys!.map((k) => k.fingerprint)).toEqual(["fp-good"]);
     });
 
+    it("treats a retained key listed with a certificate that isn't its own as unopenable, never pairing the two", async () => {
+        const now = Date.now();
+        const [swapped, server, good, active] = await Promise.all([makeIdentity(), makeIdentity(), makeIdentity(), makeIdentity()]);
+        const { vault, mailboxKeys } = await buildVault([
+            { identity: swapped, fingerprint: "fp-swapped", notBefore: now - 2 * DAY, revokedAt: now, revocationReason: "superseded", certificateOf: server },
+            { identity: good, fingerprint: "fp-good", notBefore: now - 3 * DAY, revokedAt: now, revocationReason: "superseded" },
+            { identity: active, fingerprint: "fp-active", notBefore: now - DAY },
+        ]);
+        getKeyVault.mockResolvedValue(vault);
+
+        const result = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(result.unopenableKeys).toEqual(["fp-swapped"]);
+        const unlocked = getUnlockedKeys(MAILBOX_UID)!;
+        expect(unlocked.retainedEncryptionKeys!.map((k) => k.fingerprint)).toEqual(["fp-good"]);
+    });
+
+    it("fails the unlock with UnopenableEncryptionKeyError when the active encryption key's certificate isn't its own", async () => {
+        const [active, server] = await Promise.all([makeIdentity(), makeIdentity()]);
+        const { vault, mailboxKeys } = await buildVault([{ identity: active, fingerprint: "fp-active", notBefore: Date.now() - DAY, certificateOf: server }]);
+        getKeyVault.mockResolvedValue(vault);
+
+        const err = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(UnopenableEncryptionKeyError);
+        expect((err as UnopenableEncryptionKeyError).fingerprint).toBe("fp-active");
+        expect(getUnlockedKeys(MAILBOX_UID)).toBeUndefined();
+    });
+
     it("still throws UnopenableEncryptionKeyError only for the active key, dropping retained keys already opened", async () => {
         const now = Date.now();
         const [old, active] = await Promise.all([makeIdentity(), makeIdentity()]);
@@ -281,8 +312,9 @@ describe("unlock opens retained encryption keys", () => {
         const retained = getUnlockedKeys(MAILBOX_UID)!.retainedEncryptionKeys!;
         expect(retained).toHaveLength(MAX_RETAINED_ENCRYPTION_KEYS);
         expect(retained.map((k) => k.fingerprint)).toEqual(Array.from({ length: MAX_RETAINED_ENCRYPTION_KEYS }, (_, i) => `fp-old-${i}`));
-        // Only the bounded keys were ever imported (plus the active key) - the older ones weren't opened at all.
-        const pkcs8Imports = importSpy.mock.calls.filter(([format]) => format === "pkcs8");
+        // Only the bounded keys were ever imported (plus the active key) - the older ones weren't opened at all. (The extractable
+        // imports are the certificate pairing checks of the same keys.)
+        const pkcs8Imports = importSpy.mock.calls.filter(([format, , , extractable]) => format === "pkcs8" && !extractable);
         expect(pkcs8Imports).toHaveLength(MAX_RETAINED_ENCRYPTION_KEYS + 1);
     });
 
