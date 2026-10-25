@@ -334,7 +334,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             aria-busy={pending === "acceptProposal" || undefined}
                             loading={pending === "acceptProposal"}
                             disabled={busy}
-                            onClick={() => void run("acceptProposal", "Couldn't accept the proposed time", () => acceptProposal(messageUid, client))}
+                            onClick={() => void run("acceptProposal", "Couldn't accept the proposed time", () => acceptProposal(messageUid, client, invite.calendarEventUid))}
                         >
                             Accept proposal
                         </Button>

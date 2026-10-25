@@ -6,6 +6,8 @@ import type { PushEvent } from "../../../lib/mail/pushClient.js";
 
 const { getCalendarEvent } = vi.hoisted(() => ({ getCalendarEvent: vi.fn() }));
 vi.mock("../../../lib/calendar/calendarApi.js", () => ({ getCalendarEvent }));
+const { openSealedEvent } = vi.hoisted(() => ({ openSealedEvent: vi.fn(async (event: unknown) => event) }));
+vi.mock("../../../apps/shared/calendar/sealedEvents.js", () => ({ openSealedEvent }));
 
 import {
     calendarEventHref,
@@ -29,6 +31,15 @@ describe("openedReminder", () => {
         expect(await openedReminder(notice)).toBe(notice);
         expect(await openedReminder(NOTICE)).toBe(NOTICE);
         expect(getCalendarEvent).toHaveBeenCalledTimes(2);
+    });
+
+    it("opens an event made from a zero-access invitation, whose content is sealed whole (sealedContent)", async () => {
+        const notice = { ...NOTICE, title: "[...]", protected: true };
+        const sealed = { title: "[...]", location: null, sealedContent: { keyFingerprint: "f", sealed: "c" } };
+        getCalendarEvent.mockResolvedValueOnce(sealed);
+        openSealedEvent.mockResolvedValueOnce({ ...sealed, title: "Board meeting", location: "Room 4" });
+        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4", sealedTitle: "[...]" });
+        expect(openSealedEvent).toHaveBeenCalledWith(sealed);
     });
 });
 

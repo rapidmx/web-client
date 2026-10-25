@@ -92,6 +92,15 @@ describe("updateTask", () => {
         );
         expect(result.title).toBe("Buy oat milk");
     });
+
+    it("never sends a protected task's placeholders back, nor names a clear for a task it couldn't open", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, task));
+        const locked = { ...task, title: "Protected task", body: undefined, sealedFields: { title: "c", body: "c" } };
+        await updateTask({ uid: "t1", version: 0, title: "Protected task", body: "", dueDate: "d" }, undefined, locked);
+        expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ uid: "t1", version: 0, dueDate: "d" });
+        await updateTask({ uid: "t1", version: 0, title: "" }, undefined, locked);
+        expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({ uid: "t1", version: 0, title: "" });
+    });
 });
 
 describe("setTaskCompleted", () => {

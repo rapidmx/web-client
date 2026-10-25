@@ -25,13 +25,33 @@ export interface InvitationContent {
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
-/** `current`'s content with `changes` applied, for the server to invite with - `undefined` unless `current` is protected and was opened on
- * this device (its values are otherwise placeholders). */
+/** Set on an event made from a zero-access invitation (`sealedContent`) whose sealed content was opened on this device
+ * (`apps/shared/calendar/sealedEvents.ts`). A symbol, so it survives a spread copy (an occurrence) and is never sent. */
+const CONTENT_OPENED = Symbol("openedSealedContent");
+
+/** `event` marked as holding its opened `sealedContent` (its real title, location and description). */
+export function markSealedContentOpened<T extends CalendarEvent>(event: T): T {
+    return { ...event, [CONTENT_OPENED]: true };
+}
+
+/** Whether `event`'s `sealedContent` was opened on this device: its title, location and description are the real ones. */
+export function isSealedContentOpened(event: CalendarEvent | undefined): boolean {
+    return !!event && (event as any)[CONTENT_OPENED] === true;
+}
+
+/** Whether `event` shows its real content: nothing of it is sealed, or every sealed part (`sealedFields`, `sealedContent`) was opened. */
+function shownOpened(event: CalendarEvent): boolean {
+    return (!isProtectedRecord(event) || isOpenedRecord(event)) && (!event.sealedContent || isSealedContentOpened(event));
+}
+
+/** `current`'s content with `changes` applied, for the server to invite (or name a reply or change request) with - `undefined` unless
+ * `current` is protected (`sealedFields`) or made from a zero-access invitation (`sealedContent`) and was opened on this device (its values
+ * are otherwise placeholders). */
 export function invitationContentOf(current: CalendarEvent | undefined, changes: Record<string, unknown> = {}): InvitationContent | undefined {
-    if (!isProtectedRecord(current) || !isOpenedRecord(current)) {
+    if (!current || !(isProtectedRecord(current) || current.sealedContent) || !shownOpened(current)) {
         return undefined;
     }
-    const value = (field: (typeof EVENT_CONTENT_FIELDS)[number]): string => text(field in changes ? changes[field] : current![field]);
+    const value = (field: (typeof EVENT_CONTENT_FIELDS)[number]): string => text(field in changes ? changes[field] : current[field]);
     const title = value("title");
     if (!title) {
         return undefined;

@@ -7,6 +7,7 @@
 
 import { getCalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import type { PushEvent } from "../../../lib/mail/pushClient.js";
+import { openSealedEvent } from "./sealedEvents.js";
 
 /** How long "Snooze" waits before the alarm comes back. */
 export const SNOOZE_MS = 5 * 60_000;
@@ -20,7 +21,8 @@ export interface CalendarReminderNotice {
     /** The event's own `location`, verbatim - `undefined`/`null` when the event has none. Not necessarily a URL;
      * see `joinMeetingUrl()` for when it's shown as a join link. */
     location?: string | null;
-    /** The event is of a calendar zero-access encryption protects: `title` and `location` are placeholders (`openedReminder()`). */
+    /** The event is of a calendar zero-access encryption protects, or was made from a zero-access invitation: `title` and `location` are
+     * placeholders (`openedReminder()`). */
     protected?: boolean;
     /** Set by `openedReminder()` on a protected notice it opened: the placeholder title the push carried, for anything recorded beyond
      * this tab's memory (the notification history is kept in `sessionStorage` and outlives a mailbox lock). */
@@ -34,7 +36,8 @@ export async function openedReminder(notice: CalendarReminderNotice): Promise<Ca
         return notice;
     }
     try {
-        const event = await getCalendarEvent(notice.eventUid);
+        // `getCalendarEvent()` opens sealed fields; an event made from a zero-access invitation keeps its content in `sealedContent`.
+        const event = await openSealedEvent(await getCalendarEvent(notice.eventUid));
         return { ...notice, title: event.title, location: event.location ?? null, sealedTitle: notice.title };
     } catch {
         return notice;

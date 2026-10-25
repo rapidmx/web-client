@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { ApiRequestError, createApiClient } from "../../../lib/util/api.js";
 import {
+    PROTECTED_PROPOSAL_MESSAGE,
     acceptProposal,
     getMessageInvite,
     proposeNewTime,
@@ -25,6 +26,22 @@ vi.mock("../../../lib/crypto/keySession.js", () => ({
         keyListeners.push(listener);
         return () => undefined;
     },
+}));
+
+const { invitationContentOf, meetingLinkSecrets, followMeetingKeyExpiry } = vi.hoisted(() => ({
+    invitationContentOf: vi.fn((): unknown => undefined),
+    meetingLinkSecrets: vi.fn(async (): Promise<unknown> => undefined),
+    followMeetingKeyExpiry: vi.fn(async (): Promise<void> => undefined),
+}));
+vi.mock("../../../lib/calendar/protectedEvents.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/calendar/protectedEvents.js")>()),
+    invitationContentOf,
+}));
+vi.mock("../../../lib/videoconf/protectedMeetings.js", () => ({ meetingLinkSecrets, followMeetingKeyExpiry }));
+// The event read for an accepted proposal comes back as stored (opening is sealedRecords' own tests'), subscribing to no key session.
+vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>()),
+    openSealedRecord: async (record: unknown) => record,
 }));
 
 const invite: MessageInvite = {
@@ -164,6 +181,58 @@ describe("acceptProposal", () => {
     it("rejects with the server's error", async () => {
         mockFetch(() => jsonResponse(409, { message: "Conflict" }));
         await expect(acceptProposal("m1")).rejects.toBeInstanceOf(ApiRequestError);
+    });
+
+    const counter = { ...invite, method: "COUNTER", response: "accepted" as const, canAcceptProposal: false };
+    const event = {
+        uid: "ev1",
+        mailboxUid: "mb",
+        title: "Protected event",
+        videoMeetingUid: "vm1",
+        organizer: { address: "me@example.com" },
+        attendees: [{ address: "me@example.com" }, { address: "guest@example.com" }],
+    };
+    const routed = (stored: unknown, status: number = 200) =>
+        mockFetch((url: string) => (String(url).endsWith("/accept-proposal") ? jsonResponse(200, counter) : jsonResponse(status, stored)));
+
+    it("sends a protected or keyed meeting's content and guests' link keys, for the server to send the moved meeting's invitations", async () => {
+        invitationContentOf.mockReturnValueOnce({ title: "Board meeting", location: "Room 4" });
+        meetingLinkSecrets.mockResolvedValueOnce({ "guest@example.com": "k" });
+        const fetchMock = routed({ ...event, sealedFields: { title: "c" } });
+        expect(await acceptProposal("m1", undefined, "ev1")).toEqual(counter);
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/calendar-events/ev1");
+        expect(meetingLinkSecrets).toHaveBeenLastCalledWith({ videoMeetingUid: "vm1", attendees: event.attendees, organizer: event.organizer }, undefined);
+        expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+            invitationContent: { title: "Board meeting", location: "Room 4", meetingLinkSecrets: { "guest@example.com": "k" } },
+        });
+        // The meeting key's expiry follows the accepted time (the COUNTER's).
+        expect(followMeetingKeyExpiry).toHaveBeenLastCalledWith("vm1", new Date(counter.endDate!), undefined);
+        // A keyed meeting whose content isn't sealed: the link keys alone.
+        meetingLinkSecrets.mockResolvedValueOnce({ "guest@example.com": "k" });
+        const keyedOnly = routed(event);
+        await acceptProposal("m1", undefined, "ev1");
+        expect(JSON.parse(keyedOnly.mock.calls[1][1].body)).toEqual({ invitationContent: { meetingLinkSecrets: { "guest@example.com": "k" } } });
+    });
+
+    it("sends nothing more for a meeting that needs neither, or that can't be read here", async () => {
+        followMeetingKeyExpiry.mockClear();
+        const plain = routed({ ...event, videoMeetingUid: undefined });
+        await acceptProposal("m1", undefined, "ev1");
+        expect(plain.mock.calls[1][1].body).toBeUndefined();
+        expect(followMeetingKeyExpiry).not.toHaveBeenCalled();
+        const unreadable = routed({ message: "Not found" }, 404);
+        expect(await acceptProposal("m1", undefined, "ev1")).toEqual(counter);
+        expect(unreadable.mock.calls[1][1].body).toBeUndefined();
+    });
+
+    it("refuses a protected meeting it can't open, before moving anything", async () => {
+        const fetchMock = routed({ ...event, sealedFields: { title: "c" } });
+        await expect(acceptProposal("m1", undefined, "ev1")).rejects.toThrow(PROTECTED_PROPOSAL_MESSAGE);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        // One the organizer's own client sealed is claimed, never mailed: nothing is needed.
+        const originated = routed({ ...event, sealedFields: { title: "c" }, encryptionOrigin: "originated", videoMeetingUid: undefined });
+        await acceptProposal("m1", undefined, "ev1");
+        expect(originated.mock.calls[1][1].body).toBeUndefined();
     });
 });
 

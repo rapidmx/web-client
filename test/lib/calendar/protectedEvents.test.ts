@@ -11,7 +11,7 @@ vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
     isOpenedRecord,
 }));
 
-const { invitationContentOf, protectedEventWrite } = await import("../../../lib/calendar/protectedEvents.js");
+const { invitationContentOf, isSealedContentOpened, markSealedContentOpened, protectedEventWrite } = await import("../../../lib/calendar/protectedEvents.js");
 
 const sealedFields = { title: "c", location: "c", description: "c" };
 const openedEvent: any = { uid: "e1", mailboxUid: "mb", title: "Board meeting", location: "Room 4", description: "Agenda", descriptionHtml: null, sealedFields, opened: true };
@@ -55,5 +55,22 @@ describe("protectedEvents", () => {
         expect(invitationContentOf(lockedEvent)).toBeUndefined();
         expect(invitationContentOf({ ...openedEvent, sealedFields: undefined })).toBeUndefined();
         expect(invitationContentOf({ ...openedEvent, title: "" })).toBeUndefined();
+    });
+
+    it("names an event made from a zero-access invitation (sealedContent) by its content once it was opened here", () => {
+        const sealedContent = { keyFingerprint: "f", sealed: "c" };
+        const unopened: any = { uid: "e2", mailboxUid: "mb", title: "[...]", location: null, description: null, sealedContent };
+        expect(invitationContentOf(unopened)).toBeUndefined();
+        const opened = markSealedContentOpened({ ...unopened, title: "Offsite", location: "Lisbon", description: "Plan" });
+        expect(isSealedContentOpened(opened)).toBe(true);
+        expect(isSealedContentOpened(unopened)).toBe(false);
+        // An occurrence is a spread copy: still opened.
+        expect(invitationContentOf({ ...opened, startDate: "s" })).toEqual({ title: "Offsite", location: "Lisbon", description: "Plan", descriptionHtml: undefined });
+        // A write to it is the server's own sealing (keepSealed()): left as it is.
+        const input = { uid: "e2", version: 1, title: "Offsite" };
+        expect(protectedEventWrite(opened, input)).toBe(input);
+        // Sealed field by field as well: both parts must be opened.
+        expect(invitationContentOf({ ...opened, sealedFields })).toBeUndefined();
+        expect(invitationContentOf({ ...opened, sealedFields, opened: true })).toEqual({ title: "Offsite", location: "Lisbon", description: "Plan", descriptionHtml: undefined });
     });
 });

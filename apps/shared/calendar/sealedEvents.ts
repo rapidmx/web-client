@@ -11,6 +11,7 @@
 import type { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
 import { getUnlockedKeys, subscribeKeySession } from "../../../lib/crypto/keySession.js";
 import { fromBase64 } from "../../../lib/crypto/encoding.js";
+import { markSealedContentOpened } from "../../../lib/calendar/protectedEvents.js";
 import { onSigningOut } from "../components/mail/compose/composeFlushRegistry.js";
 
 /** What `sealedContent.sealed` decrypts to. */
@@ -77,7 +78,8 @@ async function openFields(event: CalendarEvent): Promise<Partial<CalendarEvent> 
     }
 }
 
-/** `events` with every sealed one this device can open shown with its real title, location and description. Never rejects. */
+/** `events` with every sealed one this device can open shown with its real title, location and description (and marked opened,
+ * `isSealedContentOpened()`). Never rejects. */
 export async function openSealedEvents(events: CalendarEvent[]): Promise<CalendarEvent[]> {
     if (!events.some((event) => event.sealedContent)) {
         return events;
@@ -89,7 +91,8 @@ export async function openSealedEvents(events: CalendarEvent[]): Promise<Calenda
                 return event;
             }
             const fields = await openFields(event);
-            return fields ? { ...event, ...fields } : event;
+            // Marked, so a reply or change request names it by its real title (`invitationContentOf()`).
+            return fields ? markSealedContentOpened({ ...event, ...fields }) : event;
         }),
     );
 }

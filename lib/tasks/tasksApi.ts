@@ -8,6 +8,7 @@
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, SETTINGS_LIST_LIMIT, buildQuery } from "../util/apiQuery.js";
 import { guardSealedMove } from "../zeroAccess/sealedMoves.js";
+import { protectedRecordWrite } from "../zeroAccess/sealedRecords.js";
 
 export type TaskPriority = "low" | "normal" | "high";
 
@@ -88,12 +89,14 @@ export interface UpdateTaskInput {
 }
 
 /** Saves `input`. One moving the task to another mailbox (`mailboxUid`) is refused with `SealedMoveError` when the task is protected -
- * before sending anything when `current` (the task as this device has it) says so, else from the server's refusal. */
+ * before sending anything when `current` (the task as this device has it) says so, else from the server's refusal. With `current`, a
+ * protected task's sealed fields go only when they changed from it, and an emptied one is named in `clearedFields` when `current` was
+ * opened here (`protectedRecordWrite()`). */
 export function updateTask(input: UpdateTaskInput, client?: ApiClient, current?: Task): Promise<Task> {
     return guardSealedMove(current, input.mailboxUid, () =>
         withClient<Task>(client, `/mail/tasks/${encodeURIComponent(input.uid)}`, {
             method: "PUT",
-            body: JSON.stringify(input),
+            body: JSON.stringify(protectedRecordWrite(current, input)),
         }),
     );
 }
