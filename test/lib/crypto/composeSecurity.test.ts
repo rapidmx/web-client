@@ -65,6 +65,14 @@ describe("resolveRecipientEncryption - OpenPGP", () => {
         expect(resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@x.com", both)).toMatchObject({ format: "smime" });
         // A preference for OpenPGP the server doesn't allow falls back to the certificate.
         expect(resolveRecipientEncryption("a@x.com", true, ALL_AUTOMATIC, "b@x.com", { ...both, preferredFormat: "openpgp" })).toMatchObject({ format: "smime" });
+        // So does one the sender has no OpenPGP key for: a preference never leaves the recipient unencrypted.
+        expect(resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@x.com", { ...both, preferredFormat: "openpgp" }, false)).toMatchObject({
+            format: "smime",
+            canEncrypt: true,
+            autoEncrypt: true,
+        });
+        // A recipient with only an OpenPGP key is still one, for the caller to judge.
+        expect(resolveRecipientEncryption("a@x.com", true, withOpenPgp, "b@proton.me", { keys: [openPgpKey], ...mutual }, false)).toMatchObject({ format: "openpgp" });
     });
 
     it.each([

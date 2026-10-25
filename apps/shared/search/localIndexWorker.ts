@@ -126,6 +126,8 @@ export interface MoveEntityParams {
     folderUid: string;
     /** Recorded as the row's `entity_version`; cleared (the row then counts as changed) when absent. */
     entityVersion?: string;
+    /** The row's flags (`,flag,flag,`), set too when given - a zero-access row, whose imported document carries none. */
+    flags?: string;
 }
 
 export interface IndexedVersionsParams {
@@ -637,10 +639,14 @@ async function removeEntity(connection: OpenConnection, entityUid: string): Prom
 }
 
 /** Re-points an indexed message at a new folder in place (archive, cancel-scheduled-send). Clears
- * `entity_version` so the next build pass re-validates the row against the server. */
-async function moveEntity(connection: OpenConnection, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
-    for await (const stmt of connection.sqlite3.statements(connection.db, "UPDATE entities SET folder_uid = ?, entity_version = ? WHERE entity_uid = ?")) {
-        connection.sqlite3.bind_collection(stmt, [folderUid, entityVersion ?? null, entityUid]);
+ * `entity_version` so the next build pass re-validates the row against the server. Sets its flags too when `flags` is given. */
+async function moveEntity(connection: OpenConnection, entityUid: string, folderUid: string, entityVersion?: string, flags?: string): Promise<void> {
+    const [sql, values] =
+        flags === undefined
+            ? ["UPDATE entities SET folder_uid = ?, entity_version = ? WHERE entity_uid = ?", [folderUid, entityVersion ?? null, entityUid]]
+            : ["UPDATE entities SET folder_uid = ?, entity_version = ?, flags = ? WHERE entity_uid = ?", [folderUid, entityVersion ?? null, flags, entityUid]];
+    for await (const stmt of connection.sqlite3.statements(connection.db, sql)) {
+        connection.sqlite3.bind_collection(stmt, values);
         await connection.sqlite3.step(stmt);
     }
 }
@@ -873,7 +879,7 @@ export async function handleRequest(method: LocalIndexRequest["method"], params:
         }
         case "moveEntity": {
             const p = params as MoveEntityParams;
-            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => moveEntity(c, p.entityUid, p.folderUid, p.entityVersion)));
+            return runExclusive(p.mailboxUid, () => withConnection(p.mailboxUid, (c) => moveEntity(c, p.entityUid, p.folderUid, p.entityVersion, p.flags)));
         }
         case "indexedVersions": {
             const p = params as IndexedVersionsParams;

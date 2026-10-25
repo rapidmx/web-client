@@ -11,8 +11,9 @@ import { jsonResponse, mockFetch } from "../testUtils.js";
 import ZeroAccessSetting from "../../../apps/shared/components/settings/ZeroAccessSetting.js";
 import type { Mailbox } from "../../../lib/mail/mailApi.js";
 
-const { notifyApiError } = vi.hoisted(() => ({ notifyApiError: vi.fn() }));
+const { notifyApiError, patchMailbox } = vi.hoisted(() => ({ notifyApiError: vi.fn(), patchMailbox: vi.fn() }));
 vi.mock("../../../apps/shared/notifications/apiErrors.js", () => ({ notifyApiError }));
+vi.mock("../../../apps/shared/components/settings/layout/SettingsShell.js", () => ({ useSettingsShell: () => ({ mailboxes: [], patchMailbox }) }));
 
 const MAILBOX = { uid: "mb1", version: 4, ownerUserUid: "u1", primarySmtpAddress: "alice@example.com", displayName: "Alice" } as Mailbox;
 const POLICY = { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" };
@@ -61,6 +62,8 @@ describe("ZeroAccessSetting", () => {
         expect(checkbox()).not.toBeChecked();
 
         expect(saved).toEqual([{ uid: "mb1", version: 4, zeroAccessEnabled: false }]);
+        // The shell keeps what was saved, for when this is mounted again.
+        expect(patchMailbox).toHaveBeenCalledWith("mb1", { zeroAccessEnabled: false, version: 5 });
         expect(screen.queryByRole("note")).not.toBeInTheDocument();
     });
 

@@ -11,8 +11,14 @@ import { encryptForRecipients } from "../../../lib/crypto/smime.js";
 
 x509.cryptoProvider.set(crypto);
 
-const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
-vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
+const { getUnlockedKeys, keyListeners } = vi.hoisted(() => ({
+    getUnlockedKeys: vi.fn(),
+    keyListeners: [] as ((event: { mailboxUid: string; state: "locked" | "unlocked" }) => void)[],
+}));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
+    getUnlockedKeys,
+    subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => keyListeners.push(listener),
+}));
 
 const { clearSealedEvents, openSealedEvent, openSealedEvents } = await import("../../../apps/shared/calendar/sealedEvents.js");
 const { markSigningOut, clearSigningOut } = await import("../../../apps/shared/components/mail/compose/composeFlushRegistry.js");
@@ -61,8 +67,26 @@ describe("openSealedEvents", () => {
         expect(opened).toMatchObject({ title: "Board meeting", location: "Room 4", description: "Agenda", descriptionHtml: "<p>Agenda</p>" });
         expect(untitled).toMatchObject({ title: "[...]", location: undefined, description: null, descriptionHtml: null });
 
-        getUnlockedKeys.mockReturnValue(undefined);
+        // Remembered: not opened again while the mailbox stays unlocked.
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await zeroAccessKey()] });
         expect((await openSealedEvent(event("b", sealed))).title).toBe("Board meeting");
+        // Never shown while it is locked, remembered or not.
+        getUnlockedKeys.mockReturnValue(undefined);
+        expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
+    });
+
+    it("forgets what it opened when a mailbox locks", async () => {
+        const key = await zeroAccessKey();
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });
+        const sealed = await seal({ title: "Remembered" }, key.certDer);
+        await openSealedEvent(event("b", sealed));
+        expect(keyListeners).toHaveLength(1);
+
+        keyListeners[0]({ mailboxUid: "mb", state: "unlocked" });
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await zeroAccessKey()] });
+        expect((await openSealedEvent(event("b", sealed))).title).toBe("Remembered");
+        keyListeners[0]({ mailboxUid: "mb", state: "locked" });
+        expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
     });
 
     it("keeps the placeholder while the mailbox is locked, or when the content won't open", async () => {
@@ -83,7 +107,8 @@ describe("openSealedEvents", () => {
 
         markSigningOut();
         clearSigningOut();
-        getUnlockedKeys.mockReturnValue(undefined);
+        // Another key: only what is still remembered would open.
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await zeroAccessKey()] });
         expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
     });
 });

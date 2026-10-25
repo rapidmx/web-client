@@ -14,6 +14,8 @@ import EventEditor from "./EventEditor.js";
 import EventMatchNav from "./EventMatchNav.js";
 import EventShell, { EventAnchor, EventShellVariant } from "./EventShell.js";
 import SlideIn, { SlideFrom } from "./SlideIn.js";
+import { isOpenedRecord, isProtectedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
+import { useOpenedRecord } from "../../zeroAccess/useOpenedRecord.js";
 import { QuickTab } from "./QuickCreateTabs.js";
 
 export { VIDEO_LOCATION_PLACEHOLDER } from "./EventEditor.js";
@@ -101,7 +103,7 @@ export default function EventModal({
     folderColors,
     organizerAddress,
     organizerAliases,
-    occurrence,
+    occurrence: listedOccurrence,
     initialStart,
     initialEnd,
     initialAllDay,
@@ -123,10 +125,22 @@ export default function EventModal({
     // Escape or the close button on a form that holds something asks before throwing it away.
     const [confirmingDiscard, setConfirmingDiscard] = useState(false);
     // An event on a calendar shared with the reader view-only cannot be changed, deleted or answered.
-    const canWrite = useMailboxUpdateAccess(mailboxOptions?.find((option) => option.mailbox.uid === occurrence?.mailboxUid)?.mailbox);
+    const canWrite = useMailboxUpdateAccess(mailboxOptions?.find((option) => option.mailbox.uid === listedOccurrence?.mailboxUid)?.mailbox);
+    // A protected event from a list has only what the views draw opened (`EVENT_LIST_FIELDS`): the card shows and the form edits all of it, so
+    // the rest is opened first - a form seeded from a placeholder description would save it over the real one.
+    const partlyOpened = !!listedOccurrence && isProtectedRecord(listedOccurrence) && !isOpenedRecord(listedOccurrence);
+    const opening = useOpenedRecord(partlyOpened ? listedOccurrence : undefined);
+    const occurrence: CalendarOccurrence | null = partlyOpened ? opening.record! : listedOccurrence;
 
     if (!open) {
         return null;
+    }
+    if (partlyOpened && !opening.ready) {
+        return (
+            <EventShell variant="card" label="Event details" focusKey="opening" anchor={anchor} width={DETAILS_WIDTH} onClose={onClose}>
+                <p className="text-sm text-text-muted p-4">Opening this event…</p>
+            </EventShell>
+        );
     }
 
     if (syncWarning) {

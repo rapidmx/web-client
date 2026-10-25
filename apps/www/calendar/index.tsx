@@ -24,7 +24,8 @@ import {
 import { ApiRequestError } from "../../../lib/util/api.js";
 import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import useIsMobile from "../../../lib/util/useIsMobile.js";
-import { CalendarEvent, getCalendarEvent, listCalendarEvents } from "../../../lib/calendar/calendarApi.js";
+import { CalendarEvent, fullyOpenedEvent, getCalendarEvent, listCalendarEvents } from "../../../lib/calendar/calendarApi.js";
+import { isOpenedRecord, isProtectedRecord } from "../../../lib/zeroAccess/sealedRecords.js";
 import { openSealedEvent, openSealedEvents } from "../../shared/calendar/sealedEvents.js";
 import { useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
@@ -77,6 +78,8 @@ import { SHORTCUTS, ShortcutDef } from "../../shared/keyboard/keymap.js";
 import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
+import { notify } from "../../shared/notifications/store.js";
+import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
 import { bookingSettingsHref } from "../../shared/calendar/bookingPlugin.js";
 import { changedEventOf } from "../../shared/calendar/calendarLiveUpdates.js";
 
@@ -390,11 +393,29 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     // Today moves on at midnight: the List's "from today on" is worked out again then (`listDay` is only a dependency).
     const listDay = useDayKey();
     const dayOfList = view === "list" ? listDay : "";
+    // A search matches descriptions too, which a list leaves sealed (`EVENT_LIST_FIELDS`): the protected events are opened in full once one
+    // runs, and searched as they are until then.
+    const [searchable, setSearchable] = useState<{ from: CalendarEvent[]; events: CalendarEvent[] } | null>(null);
+    useEffect(() => {
+        if (!searching || !events.some((event) => isProtectedRecord(event) && !isOpenedRecord(event))) {
+            return;
+        }
+        let cancelled = false;
+        void Promise.all(events.map((event) => fullyOpenedEvent(event))).then((opened) => {
+            if (!cancelled) {
+                setSearchable({ from: events, events: opened });
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [events, searching]);
+    const searchedEvents = searchable?.from === events ? searchable.events : events;
     const matches = useMemo(() => {
-        const found = searching ? searchOccurrences(events, query) : [];
+        const found = searching ? searchOccurrences(searchedEvents, query) : [];
         const today = new Date();
         return view === "list" ? found.filter((occurrence) => isUpcoming(occurrence, today)) : found;
-    }, [events, query, searching, view, dayOfList]);
+    }, [searchedEvents, query, searching, view, dayOfList]);
     const activeIndex = matches.findIndex((m) => m.occurrenceKey === activeKey);
 
     // What an open event card steps through, in order: the matches while a search runs, else every event of the checked calendars (bounded as a
@@ -684,7 +705,13 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
             }
             reload();
         } catch (err) {
-            notifyApiError(err, action.type === "move" ? "Couldn't move the event" : "Couldn't resize the event");
+            const context = action.type === "move" ? "Couldn't move the event" : "Couldn't resize the event";
+            if (err instanceof KeysLockedError) {
+                // A protected occurrence while the mailbox is locked: nothing was written.
+                notify({ kind: "warning", title: context, message: err.message });
+            } else {
+                notifyApiError(err, context);
+            }
             // A refused change (a 409 most of all) means the page holds a stale version: load again, or every later drag of this event fails the same way.
             reload();
         }

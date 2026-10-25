@@ -220,6 +220,75 @@ describe("LocalIndexLifecycle (zero-access sync)", () => {
         expect(syncZeroAccessIndex.mock.calls.length).toBeGreaterThanOrEqual(4);
     });
 
+    it("syncs a zero-access mailbox even when its build failed: the sync is how its mail reaches the index", async () => {
+        getUnlockedKeys.mockImplementation(zeroAccessUnlocked);
+        unlockedMailboxes.add("mb1");
+        buildLocalIndex.mockRejectedValueOnce(new Error("listing failed"));
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("doesn't let a pass still running from before a lock hold up the next unlock's first sync", async () => {
+        getUnlockedKeys.mockImplementation(zeroAccessUnlocked);
+        unlockedMailboxes.add("mb1");
+        let finishOld: (() => void) | undefined;
+        let finishNew: (() => void) | undefined;
+        syncZeroAccessIndex
+            .mockImplementationOnce(() => new Promise<void>((resolve) => (finishOld = resolve)))
+            .mockImplementationOnce(() => new Promise<void>((resolve) => (finishNew = resolve)));
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
+
+        unlockedMailboxes.delete("mb1");
+        await tick();
+        unlockedMailboxes.add("mb1");
+        await tick();
+        await flush();
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(2);
+        // The old pass ending doesn't clear the new one's mark: no third pass alongside the new one.
+        await act(async () => {
+            finishOld!();
+            await vi.advanceTimersByTimeAsync(ZERO_ACCESS_SYNC_INTERVAL_MS + POLL_INTERVAL_MS);
+        });
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(2);
+        await act(async () => {
+            finishNew!();
+            await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+        });
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(3);
+    });
+
+    it("starts no sync for a build a lock overtook", async () => {
+        getUnlockedKeys.mockImplementation(zeroAccessUnlocked);
+        unlockedMailboxes.add("mb1");
+        let finishBuild: (() => void) | undefined;
+        buildLocalIndex.mockImplementationOnce(() => new Promise<void>((resolve) => (finishBuild = resolve)));
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        unlockedMailboxes.delete("mb1");
+        await tick();
+        await act(async () => {
+            finishBuild!();
+            await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(syncZeroAccessIndex).not.toHaveBeenCalled();
+
+        // Unlocked again while the first build still ran: only the new build's end starts one.
+        unlockedMailboxes.add("mb1");
+        let finishSecond: (() => void) | undefined;
+        buildLocalIndex.mockImplementationOnce(() => new Promise<void>((resolve) => (finishSecond = resolve)));
+        await tick();
+        await flush();
+        expect(syncZeroAccessIndex).not.toHaveBeenCalled();
+        await act(async () => {
+            finishSecond!();
+            await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
+    });
+
     it("never syncs a mailbox without zero-access keys, and starts over after it is locked and unlocked again", async () => {
         unlockedMailboxes.add("mb1");
         render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);

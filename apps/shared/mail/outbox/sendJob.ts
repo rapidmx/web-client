@@ -21,7 +21,7 @@ import {
 } from "../../../../lib/mail/mailApi.js";
 import { describeSendFailure } from "../../../../lib/mail/sendFailure.js";
 import { RecipientEncryptionStatus, resolveRecipientEncryption } from "../../../../lib/crypto/composeSecurity.js";
-import { getUnlockedKeys } from "../../../../lib/crypto/keySession.js";
+import { getUnlockedKeys, type UnlockedKeys } from "../../../../lib/crypto/keySession.js";
 import { EncryptionPolicy, findActivePublicKey, getEncryptionPolicy, lookupKeys } from "../../../../lib/crypto/keyvaultApi.js";
 import { fromBase64 } from "../../../../lib/crypto/encoding.js";
 import type { ProtectedHeaders } from "../../../../lib/crypto/smimeMessage.js";
@@ -68,6 +68,9 @@ export interface SendRequest {
      * show the message as soon as it is sent (see `outgoingReplies.ts`). Absent for a new message, and for a draft opened again, which the draft's own
      * `inReplyTo`/`references` stand in for. */
     threading?: DraftThreading;
+    /** The copies of this message (`assemble()`: one per encryption format) already built but not handed over yet, after an attempt that
+     * failed part-way: a retry hands over just these - never one that already went, and without building them again. */
+    pendingCopies?: Message[];
 }
 
 /** How long a background send waits for the mailbox / encryption policy it did not have, before it goes ahead treating them as unknown. Nobody waits for it. */
@@ -118,6 +121,12 @@ export function readSendKeys(mailboxUid: string, signEnabled: boolean, mailbox: 
     };
 }
 
+/** Whether the sender can make an OpenPGP copy (it is encrypted to them too, with their own OpenPGP key) - or can't be told yet, the
+ * mailbox being locked: `decideSend()` then asks for the unlock rather than settling for another format, or none. */
+export function senderCanUseOpenPgp(unlocked: UnlockedKeys | undefined): boolean {
+    return !unlocked || !!unlocked.openPgpKeys?.length;
+}
+
 /** Whether this sender could encrypt at all: an encryption key unlocked here, enrolled on the mailbox, or offered earlier this session. */
 export function senderHasEncryptionKey(request: Pick<SendRequest, "mailbox" | "offeredEncrypt">, canEncryptSelf: boolean): boolean {
     return canEncryptSelf || request.offeredEncrypt || !!findActivePublicKey(request.mailbox?.keys ?? [], "encrypt");
@@ -154,9 +163,11 @@ interface Failure {
     message: string;
     details: string[];
     block?: SendBlock;
+    /** Some copies went (their recipients have it); the others are the attempt's `pendingCopies`. */
+    partial?: boolean;
 }
 
-type Outcome = { kind: "queued" | "sent" | "scheduled" } | { kind: "failed"; failure: Failure };
+type Outcome = { kind: "queued" | "sent" | "scheduled" } | { kind: "failed"; failure: Failure; pendingCopies?: Message[] };
 
 const OPEN_POLICY: EncryptionPolicy = { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" };
 
@@ -274,14 +285,56 @@ function failureOf(err: unknown, fallback: string): Failure {
     return { message: failure.message, details: failure.lines };
 }
 
-/** Whether the server already holds `request`'s message as accepted (out of Drafts, or leased) - the answer to "did that request that never returned actually land?". */
-async function alreadyAccepted(request: SendRequest, client: ApiClient | undefined): Promise<boolean> {
+/** Whether the server already holds `copy` as accepted (out of Drafts, or leased) - the answer to "did that request that never returned actually land?". */
+async function accepted(copy: Message, client: ApiClient | undefined): Promise<boolean> {
     try {
-        const fresh = await getMessage(request.draft.uid, client);
-        return fresh.folderUid !== request.draft.folderUid || !!fresh.scheduledSendLeaseExpiresAt || !!fresh.scheduledSendRelayedAt;
+        const fresh = await getMessage(copy.uid, client);
+        return fresh.folderUid !== copy.folderUid || !!fresh.scheduledSendLeaseExpiresAt || !!fresh.scheduledSendRelayedAt;
     } catch {
         return false;
     }
+}
+
+/** Whether the server already holds every copy of `request`'s message still to go (its draft, when none was built yet) as accepted. */
+async function alreadyAccepted(request: SendRequest, client: ApiClient | undefined): Promise<boolean> {
+    for (const copy of request.pendingCopies ?? [request.draft]) {
+        if (!(await accepted(copy, client))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Hands `copies` over to the server - queued, or scheduled - one after the other. One that fails stops the rest: the failure carries the
+ * copies still to go, so a retry never sends one twice (an encrypted message's other copy may already be on its way to its recipients). */
+async function handOver(request: SendRequest, copies: Message[], client: ApiClient | undefined): Promise<Outcome> {
+    let queued = false;
+    for (let index = 0; index < copies.length; index++) {
+        const copy = copies[index];
+        try {
+            if (request.scheduledSendTime) {
+                await sendMessage(copy.uid, { scheduledSendTime: request.scheduledSendTime }, client);
+            } else {
+                queued = (await queueMessageSend(copy.uid, client)).queued || queued;
+            }
+        } catch (err) {
+            // A request that never came back may still have landed: never offer to send it twice if it did.
+            if (!(err instanceof ApiRequestError) && (await accepted(copy, client))) {
+                queued = true;
+                continue;
+            }
+            const failure = failureOf(err, request.scheduledSendTime ? "Could not schedule this message." : "Could not send this message.");
+            const partial = index > 0;
+            return {
+                kind: "failed",
+                failure: partial
+                    ? { ...failure, partial, message: `Only some of its recipients ${request.scheduledSendTime ? "will get it" : "were sent it"} - the copy for the others didn't go. ${failure.message}` }
+                    : failure,
+                pendingCopies: copies.slice(index),
+            };
+        }
+    }
+    return { kind: request.scheduledSendTime ? "scheduled" : queued ? "queued" : "sent" };
 }
 
 /** The whole client-side path of one send: settle, decide, assemble, hand over. Never rejects. `client` is the explicit `ApiClient` (from
@@ -289,6 +342,11 @@ async function alreadyAccepted(request: SendRequest, client: ApiClient | undefin
 async function attempt(request: SendRequest, client: ApiClient | undefined): Promise<Outcome> {
     try {
         await request.saved?.catch(() => undefined);
+        // Built already by the attempt that failed part-way: only what didn't go is handed over.
+        if (request.pendingCopies?.length) {
+            setPendingStage(request.draft.uid, "queuing");
+            return await handOver(request, request.pendingCopies, client);
+        }
         const all = [...request.to, ...request.cc, ...request.bcc];
         let mailbox = request.mailbox;
         let policy = request.policy;
@@ -311,11 +369,15 @@ async function attempt(request: SendRequest, client: ApiClient | undefined): Pro
                         ),
                     ),
                 );
-                const ownOpenPgp = !!keys.unlocked?.openPgpKeys?.length;
+                const ownOpenPgp = senderCanUseOpenPgp(keys.unlocked);
                 statuses = all.map((recipient, index) => {
                     const found = lookups[index];
-                    const status = found ? resolveRecipientEncryption(own.primarySmtpAddress, ownPrefersMutual, policy ?? OPEN_POLICY, recipient.address, found.lookup) : undefined;
-                    // An OpenPGP copy is encrypted to the sender too, with their own OpenPGP key: without one unlocked here it can't be made.
+                    // Without an OpenPGP key of the sender's, a recipient with both formats gets S/MIME, whatever they prefer.
+                    const status = found
+                        ? resolveRecipientEncryption(own.primarySmtpAddress, ownPrefersMutual, policy ?? OPEN_POLICY, recipient.address, found.lookup, ownOpenPgp)
+                        : undefined;
+                    // An OpenPGP copy is encrypted to the sender too, with their own OpenPGP key: a recipient with only an OpenPGP key can't
+                    // be encrypted to while the unlocked session has none.
                     return status?.format === "openpgp" && !ownOpenPgp ? { ...status, canEncrypt: false, autoEncrypt: false } : status;
                 });
             }
@@ -333,25 +395,7 @@ async function attempt(request: SendRequest, client: ApiClient | undefined): Pro
         const assembled = await assemble(request, mailbox, decision.action, statuses, decision.action === "sign" || (decision.action === "encrypt" && decision.sign), client);
         const copies = request.requestReceipt ? await Promise.all(assembled.map((copy) => setMessageRequestReceipt(copy, true, client))) : assembled;
         setPendingStage(request.draft.uid, "queuing");
-        try {
-            if (request.scheduledSendTime) {
-                for (const copy of copies) {
-                    await sendMessage(copy.uid, { scheduledSendTime: request.scheduledSendTime }, client);
-                }
-                return { kind: "scheduled" };
-            }
-            let queued = false;
-            for (const copy of copies) {
-                queued = (await queueMessageSend(copy.uid, client)).queued || queued;
-            }
-            return { kind: queued ? "queued" : "sent" };
-        } catch (err) {
-            // A request that never came back may still have landed: never offer to send it twice if it did.
-            if (!(err instanceof ApiRequestError) && (await alreadyAccepted(request, client))) {
-                return { kind: request.scheduledSendTime ? "scheduled" : "queued" };
-            }
-            throw err;
-        }
+        return await handOver(request, copies, client);
     } catch (err) {
         return { kind: "failed", failure: failureOf(err, request.scheduledSendTime ? "Could not schedule this message." : "Could not send this message.") };
     }
@@ -417,7 +461,10 @@ function notifyFailure(request: SendRequest, failure: Failure, client: ApiClient
     } else {
         actions.push({ label: "Retry", onClick: () => void retrySend(request, client) });
     }
-    actions.push({ label: "Open draft", onClick: () => void openDraftFromRequest(request) });
+    // Part of it went: editing and sending the draft again would send those recipients a second copy.
+    if (!failure.partial) {
+        actions.push({ label: "Open draft", onClick: () => void openDraftFromRequest(request) });
+    }
     notify({
         id: failureNotificationId(uid),
         kind: "error",
@@ -464,7 +511,7 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
         finishPendingSend(uid);
         if (outcome.kind === "failed") {
             tracker?.revert();
-            notifyFailure(request, outcome.failure, client);
+            notifyFailure(outcome.pendingCopies ? { ...request, pendingCopies: outcome.pendingCopies } : request, outcome.failure, client);
             return;
         }
         tracker?.settle();

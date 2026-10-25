@@ -59,7 +59,7 @@ import {
 } from "./localIndexRpcClient.js";
 import { deriveLocalIndexKey } from "./localIndexKey.js";
 import { getLocalIndexByteBudget } from "./localIndexSizePreference.js";
-import { importClientSegments, uploadClientDocuments } from "./zeroAccessIndexSync.js";
+import { importClientSegments, rememberZeroAccessMetadata, uploadClientDocuments } from "./zeroAccessIndexSync.js";
 
 /** The RFC 9788 placeholder subject every encrypted message's outer envelope carries server-side - see
  * `apps/www/index.tsx`'s identical constant and its own doc comment for the full citation. */
@@ -98,6 +98,9 @@ export const MAX_WALK_ATTEMPTS = 3;
 export const CLOCK_SKEW_MARGIN_MS = 10 * 60 * 1000;
 
 const PAGE_SIZE = 100;
+/** Decrypted end-to-end messages are uploaded for the mailbox's other devices (`uploadClientDocuments()`) whenever this many are waiting,
+ * not all at the end of the pass: a pass cut short keeps what it shared, and the plaintext isn't all held in memory at once. */
+export const CLIENT_UPLOAD_BATCH = 500;
 const MAX_APPROX_BYTES_PER_MESSAGE_PADDING = 512; // subject/participants/flags overhead beyond raw text length
 const FETCH_FAILED = Symbol("fetch-failed");
 
@@ -217,6 +220,15 @@ function versionOf(message: Message): string {
     return `${message.version}:${message.folderUid}`;
 }
 
+/** A message's set flags as a row stores them. Leading/trailing comma so `flags LIKE '%,x,%'` (localIndexSchema.ts's
+ * buildSearchPredicates()) matches correctly even for the first/last flag in the list. */
+function entityFlags(message: Message): string {
+    const set = Object.entries(message.flags)
+        .filter(([, value]) => value)
+        .map(([key]) => key);
+    return `,${set.join(",")},`;
+}
+
 /** `Promise.all(items.map(fn))`, but with at most `limit` calls in flight. Preserves input order. */
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
     const results = new Array<R>(items.length);
@@ -255,12 +267,7 @@ async function buildEntity(message: Message, sealer: PassSealer): Promise<LocalI
         const participants = [message.from.address, message.from.displayName, ...message.recipients.map((r) => r.address)]
             .filter(Boolean)
             .join(" ");
-        const setFlags = Object.entries(message.flags)
-            .filter(([, value]) => value)
-            .map(([key]) => key);
-        // Leading/trailing comma so `flags LIKE '%,x,%'` (localIndexSchema.ts's buildSearchPredicates())
-        // matches correctly even for the first/last flag in the list.
-        const flags = `,${setFlags.join(",")},`;
+        const flags = entityFlags(message);
         const entity: LocalIndexEntity = {
             entityType: "message",
             entityUid: message.uid,
@@ -400,8 +407,10 @@ async function runBuildPass(
             .filter((f) => MESSAGE_FOLDER_TYPES.has(f.type))
             .sort((a, b) => (FOLDER_PRIORITY[a.type] ?? 99) - (FOLDER_PRIORITY[b.type] ?? 99));
         const seenEncryptedUids = new Set<string>();
-        // What this pass decrypted, for the mailbox's other devices.
+        // What this pass decrypted and hasn't shared yet, for the mailbox's other devices.
         const decrypted: LocalIndexEntity[] = [];
+        // Best effort: what fails to upload is decrypted again by the other devices themselves.
+        const share = (): Promise<unknown> => uploadClientDocuments(mailboxUid, unlocked, decrypted.splice(0), client).catch(() => undefined);
 
         async function walkFolder(folder: Folder): Promise<WalkOutcome> {
             for (let page = 0; ; page++) {
@@ -421,7 +430,8 @@ async function runBuildPass(
                     seenEncryptedUids.add(m.uid);
                 }
                 // A zero-access message's content comes from the server's sealed index (`zeroAccessIndexSync.ts`), never decrypted here:
-                // only its folder is recorded on its row - and remembered by version, so an unchanged one costs nothing next time.
+                // only its folder and flags are recorded on its row - and remembered by version, so an unchanged one costs nothing next
+                // time. Its row may not be imported yet (a new device, or after a lock): the sync applies them when it imports it.
                 const sealed = encrypted.filter((m) => m.zeroAccess);
                 if (sealed.length > 0) {
                     const indexed = await getIndexedVersions(
@@ -429,7 +439,9 @@ async function runBuildPass(
                         sealed.map((m) => m.uid),
                     );
                     for (const m of sealed.filter((s) => indexed[s.uid] !== versionOf(s))) {
-                        await moveLocalEntity(mailboxUid, m.uid, m.folderUid, versionOf(m));
+                        const metadata = { folderUid: m.folderUid, entityVersion: versionOf(m), flags: entityFlags(m) };
+                        await moveLocalEntity(mailboxUid, m.uid, metadata.folderUid, metadata.entityVersion, metadata.flags);
+                        rememberZeroAccessMetadata(mailboxUid, m.uid, metadata);
                     }
                 }
                 // Anything older than the eviction watermark would only be inserted and evicted again.
@@ -451,6 +463,9 @@ async function runBuildPass(
                     if (entities.length > 0) {
                         ({ evictedBefore } = await indexLocalEntities(mailboxUid, entities, generation));
                         decrypted.push(...entities);
+                        if (decrypted.length >= CLIENT_UPLOAD_BATCH) {
+                            await share();
+                        }
                     }
                 }
                 const oldestOnPage = messages[messages.length - 1].receivedDate;
@@ -508,7 +523,7 @@ async function runBuildPass(
             const since = evictedBefore && isWithinTimeFloor(evictedBefore, cutoff) ? evictedBefore : cutoff?.toISOString();
             await pruneLocalEntities(mailboxUid, [...seenEncryptedUids], since, { folderUids: reliable, generation });
         }
-        await uploadClientDocuments(mailboxUid, unlocked, decrypted, client).catch(() => undefined);
+        await share();
     } catch (err) {
         complete = false;
         throw err;

@@ -115,6 +115,8 @@ describe("localIndexRpcClient's swappable transport", () => {
         expect(calls.moveEntity).toEqual(["mb1", "m1", "archive"]);
         await expect(rpc.moveLocalEntity("mb1", "m1", "archive", "3:archive")).resolves.toBeUndefined();
         expect(calls.moveEntity).toEqual(["mb1", "m1", "archive", "3:archive"]);
+        await expect(rpc.moveLocalEntity("mb1", "m1", "archive", "3:archive", ",read,")).resolves.toBeUndefined();
+        expect(calls.moveEntity).toEqual(["mb1", "m1", "archive", "3:archive", ",read,"]);
 
         await expect(rpc.getIndexedVersions("mb1", ["m1"])).resolves.toEqual({ m1: "1:f" });
         expect(calls.indexedVersions).toEqual(["mb1", ["m1"]]);

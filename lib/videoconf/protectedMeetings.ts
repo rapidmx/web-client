@@ -12,11 +12,11 @@
  * The meeting key is discarded an hour after the event ends (the last occurrence's end for a series with an end; five years at most).
  */
 import { fromBase64, toBase64 } from "../crypto/encoding.js";
-import { getUnlockedKeys } from "../crypto/keySession.js";
+import { getUnlockedKeys, subscribeKeySession } from "../crypto/keySession.js";
 import { generateMeetingKey, meetingKeyFragment } from "../crypto/meetingKeys.js";
 import { decryptEnvelopedDataWithKeys, encryptForRecipients } from "../crypto/smime.js";
 import type { ApiClient } from "../util/api.js";
-import { getVideoMeeting, type VideoMeetingDetail, type VideoMeetingInvitee } from "./videoMeetingsApi.js";
+import { getVideoMeeting, updateVideoMeeting, type VideoMeetingDetail, type VideoMeetingInvitee } from "./videoMeetingsApi.js";
 
 /** How long after the meeting ends its key is kept (`mail:videoconf:key_grace_minutes`' default). */
 export const MEETING_KEY_GRACE_MS = 60 * 60_000;
@@ -36,14 +36,47 @@ export interface MeetingProtectionInput {
 export interface ProtectedMeetingFields {
     keyProtected?: boolean | null;
     keyWraps?: { mailboxUid: string; recipientFingerprint: string; kind: string; cms: string }[] | null;
+    /** When the meeting key is discarded (ISO). */
+    keyExpiresAt?: string | null;
 }
 
-/** Link keys by meeting uid, for this page's life: a protected meeting's key is opened once. `null`: a meeting known to be unprotected. */
-const fragments = new Map<string, string | null>();
+/** Link keys by meeting uid, each with the organizer mailbox it belongs to: a protected meeting's key is opened once, and forgotten when
+ * that mailbox's keys are locked. `fragment: null`: a meeting known to be unprotected. */
+const fragments = new Map<string, { mailboxUid: string; fragment: string | null }>();
 
 /** Forgets every opened meeting key (sign-out, or the test seam). */
 export function clearMeetingKeys(): void {
     fragments.clear();
+}
+
+let watchingKeys = false;
+
+/** Records `uid`'s link key, forgetting it - like everything opened with a mailbox's keys - once that mailbox locks. Subscribed on the
+ * first key remembered, not on import. */
+function remember(uid: string, mailboxUid: string, fragment: string | null): void {
+    if (!watchingKeys) {
+        watchingKeys = true;
+        subscribeKeySession(({ mailboxUid: locked, state }) => {
+            if (state === "locked") {
+                for (const [meetingUid, entry] of fragments) {
+                    if (entry.mailboxUid === locked) {
+                        fragments.delete(meetingUid);
+                    }
+                }
+            }
+        });
+    }
+    fragments.set(uid, { mailboxUid, fragment });
+}
+
+/** Meeting `uid`'s remembered link key - `null` for one known to be unprotected - or `undefined` when none is remembered, or its mailbox
+ * isn't unlocked here (a key is never handed out past its mailbox's lock). */
+function rememberedFragment(uid: string): string | null | undefined {
+    const entry = fragments.get(uid);
+    if (!entry || (entry.fragment !== null && !getUnlockedKeys(entry.mailboxUid))) {
+        return undefined;
+    }
+    return entry.fragment;
 }
 
 /** When a meeting ending at `endDate` - the last occurrence's end, for a series that has one - has its key discarded. */
@@ -86,9 +119,9 @@ export async function protectMeeting(
 }
 
 /** Remembers a just-created meeting's link key - `null` for one that isn't protected - so the save that invites to it needn't fetch the
- * meeting or reopen its wrap. */
-export function rememberMeetingKey(meetingUid: string, fragment: string | null): void {
-    fragments.set(meetingUid, fragment);
+ * meeting or reopen its wrap. `mailboxUid` is the organizer's mailbox: its lock forgets the key. */
+export function rememberMeetingKey(meetingUid: string, fragment: string | null, mailboxUid: string): void {
+    remember(meetingUid, mailboxUid, fragment);
 }
 
 /** `meeting`'s link key - remembered, or opened from the organizer's wrap with the mailbox's unlocked zero-access keys - or `undefined`
@@ -97,7 +130,7 @@ export async function meetingKeyFragmentOf(meeting: VideoMeetingDetail & Protect
     if (!meeting.keyProtected) {
         return undefined;
     }
-    const known = fragments.get(meeting.uid);
+    const known = rememberedFragment(meeting.uid);
     if (known !== undefined) {
         return known ?? undefined;
     }
@@ -108,7 +141,7 @@ export async function meetingKeyFragmentOf(meeting: VideoMeetingDetail & Protect
     }
     try {
         const fragment = meetingKeyFragment(await decryptEnvelopedDataWithKeys(fromBase64(wrap.cms), keys));
-        fragments.set(meeting.uid, fragment);
+        remember(meeting.uid, meeting.mailboxUid, fragment);
         return fragment;
     } catch {
         return undefined;
@@ -138,7 +171,7 @@ export async function meetingLinkSecrets(
         return undefined;
     }
     try {
-        const known = fragments.get(event.videoMeetingUid);
+        const known = rememberedFragment(event.videoMeetingUid);
         const fragment = known !== undefined ? known : await meetingKeyFragmentOf(await getVideoMeeting(event.videoMeetingUid, client));
         if (!fragment) {
             return undefined;
@@ -154,5 +187,27 @@ export async function meetingLinkSecrets(
         return Object.keys(secrets).length > 0 ? secrets : undefined;
     } catch {
         return undefined;
+    }
+}
+
+/**
+ * Moves the key expiry of meeting `meetingUid` - when it is protected - to follow its event's new end, `endDate` (the last occurrence's
+ * end, for a series): its key is discarded an hour after the end it was made for, so a meeting moved later (or a series extended) would
+ * otherwise be unjoinable by then. Best effort, after the event itself is saved: a failure is logged, never thrown.
+ */
+export async function followMeetingKeyExpiry(meetingUid: string, endDate: Date, client?: ApiClient): Promise<void> {
+    try {
+        if (fragments.get(meetingUid)?.fragment === null) {
+            return;
+        }
+        const meeting: VideoMeetingDetail & ProtectedMeetingFields = await getVideoMeeting(meetingUid, client);
+        const keyExpiresAt = meetingKeyExpiry(endDate);
+        // Unprotected, or already right to the minute (an unchanged end).
+        if (!meeting.keyProtected || (meeting.keyExpiresAt && Math.abs(new Date(meeting.keyExpiresAt).valueOf() - keyExpiresAt.valueOf()) < 60_000)) {
+            return;
+        }
+        await updateVideoMeeting(meetingUid, { keyExpiresAt: keyExpiresAt.toISOString() }, client);
+    } catch (err) {
+        console.warn("Could not move the video meeting's key expiry to the event's new end", err);
     }
 }

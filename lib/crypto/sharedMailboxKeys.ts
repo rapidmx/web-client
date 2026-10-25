@@ -32,8 +32,10 @@ import {
     type ZeroAccessEscrowWrapInput,
     type ZeroAccessKey,
 } from "./keyvaultApi.js";
+import { certificateHoldsKey } from "./keyPairMatch.js";
 import { exportPrivateKeyPkcs8, generateKeyPairWithCsr, importPrivateKeyPkcs8 } from "./keys.js";
 import {
+    addZeroAccessKey,
     getUnlockedKeys,
     installSharedSession,
     personalSessions,
@@ -106,9 +108,13 @@ function keyOrder(status: Pick<SharedKeyStatus, "activeKeyFingerprint" | "zeroAc
 /**
  * Opens shared mailbox `mailboxUid` for its member, with no password: their member wraps, opened with the zero-access keys of a mailbox they
  * own and have unlocked, become this session's keys for it (`installSharedSession()`). See `SharedUnlockOutcome` for when it can't.
+ *
+ * `refresh`: a shared session already open is opened again when it lacks the mailbox's active key and the member now holds a wrap of it -
+ * after a rotation, new mail is sealed to a key the session doesn't have. Its `masterKey` secret is kept, so the local index stays readable.
  */
-export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient): Promise<SharedUnlockOutcome> {
-    if (getUnlockedKeys(mailboxUid)) {
+export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient, refresh = false): Promise<SharedUnlockOutcome> {
+    const existing: UnlockedKeys | undefined = getUnlockedKeys(mailboxUid);
+    if (existing && !(refresh && existing.shared)) {
         return "unlocked";
     }
     const generation: string = sharedUnlockGeneration(mailboxUid);
@@ -117,14 +123,22 @@ export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient
         status = await getSharedKeyStatus(mailboxUid, client);
     } catch (err) {
         if (err instanceof ApiRequestError && (err.status === 403 || err.status === 404)) {
-            return "not_shared";
+            return existing ? "unlocked" : "not_shared";
         }
         throw err;
     }
+    const holdsActive = (keys: { fingerprint: string }[] | undefined): boolean => !!keys?.some((key) => key.fingerprint === status.activeKeyFingerprint);
+    if (existing && (!status.activeKeyFingerprint || holdsActive(existing.zeroAccessKeys))) {
+        return "unlocked";
+    }
     if (status.role !== "member") {
-        return "not_shared";
+        return existing ? "unlocked" : "not_shared";
     }
     const wraps: MemberKeyWrap[] = await getMyMemberKeyWraps(mailboxUid, client);
+    // Nothing new to open yet: the active key's wrap is still on its way.
+    if (existing && !holdsActive(wraps.map((wrap) => ({ fingerprint: wrap.zeroAccessKeyFingerprint })))) {
+        return "unlocked";
+    }
     if (wraps.length === 0) {
         return "pending";
     }
@@ -141,18 +155,27 @@ export async function unlockSharedMailbox(mailboxUid: string, client?: ApiClient
         }
         const pkcs8 = unwrapped.pkcs8;
         try {
+            // The certificate is the server's: one that isn't this key's must never be what this session seals to.
+            if (!(await certificateHoldsKey(fromBase64(certificate.publicKey), pkcs8))) {
+                continue;
+            }
             secret ??= await sessionSecret(pkcs8);
             const privateKey = await importPrivateKeyPkcs8(pkcs8, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"]);
             opened.push({ fingerprint: wrap.zeroAccessKeyFingerprint, certDer: fromBase64(certificate.publicKey), privateKey });
             openedWith.add(unwrapped.openedWith);
         } catch {
-            // A wrap that doesn't hold a usable key is skipped; the others still open the mailbox.
+            // A wrap that doesn't hold a usable key (or one its certificate doesn't match) is skipped; the others still open the mailbox.
         } finally {
             pkcs8.fill(0);
         }
     }
     if (!secret || opened.length === 0) {
-        return "own_keys_locked";
+        return existing ? "unlocked" : "own_keys_locked";
+    }
+    if (existing) {
+        // Opened again: the secret the local index key is derived from stays the one the session started with.
+        secret.fill(0);
+        secret = new Uint8Array(existing.masterKey);
     }
     const unlocked: UnlockedKeys = { masterKey: secret, zeroAccessKeys: opened, openedWith: [...openedWith] };
     installSharedSession(mailboxUid, unlocked, generation);
@@ -271,7 +294,9 @@ export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: 
             status = await enrollNewSharedKey(mailboxUid, mailboxAddress, status, client);
         } else {
             const vault = await getKeyVault(mailboxUid, client);
-            await provisionZeroAccessKey(mailboxUid, mailboxAddress, ownerUnlocked!.masterKey, vault.masterKeyGeneration, client);
+            const { key } = await provisionZeroAccessKey(mailboxUid, mailboxAddress, ownerUnlocked!.masterKey, vault.masterKeyGeneration, client);
+            // The owner's open session gets the new key as its active one, as `ensureZeroAccessKey()` does: new mail is sealed to it.
+            addZeroAccessKey(mailboxUid, ownerUnlocked!, key);
             status = await getSharedKeyStatus(mailboxUid, client);
         }
         result.rotated = true;

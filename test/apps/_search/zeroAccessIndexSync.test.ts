@@ -20,7 +20,7 @@ const api = vi.hoisted(() => ({
     putSearchIndexSegment: vi.fn(),
 }));
 vi.mock("../../../lib/search/zeroAccessIndexApi.js", () => api);
-const rpc = vi.hoisted(() => ({ getLocalCoverage: vi.fn(), indexLocalEntities: vi.fn() }));
+const rpc = vi.hoisted(() => ({ getLocalCoverage: vi.fn(), indexLocalEntities: vi.fn(), moveLocalEntity: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
 const {
@@ -33,6 +33,8 @@ const {
     forgetZeroAccessSync,
     importClientSegments,
     isoWeekId,
+    MAX_REMEMBERED_METADATA,
+    rememberZeroAccessMetadata,
     shouldCompact,
     syncZeroAccessIndex,
     TAIL_OVERLAP_MS,
@@ -185,6 +187,31 @@ describe("syncZeroAccessIndex", () => {
         const since = new Date(api.listSearchIndexEntries.mock.calls[0][1].since).getTime();
         expect(since).toBeLessThanOrEqual(Date.now() - TAIL_OVERLAP_MS + 5_000);
         expect(since).toBeGreaterThan(Date.now() - TAIL_OVERLAP_MS - 60_000);
+    });
+
+    it("gives an imported row the folder and flags the builder saw before the row existed, once", async () => {
+        rememberZeroAccessMetadata("mb", "m1", { folderUid: "inbox", entityVersion: "3:inbox", flags: ",read," });
+        rememberZeroAccessMetadata("mb", "m1", { folderUid: "archive", entityVersion: "4:archive", flags: ",read,flagged," });
+        api.listSearchIndexEntries.mockResolvedValue({ entries: [await sealEntry("e1", "2026-W43", doc("m1"), key.certDer), await sealEntry("e2", "2026-W43", doc("m2"), key.certDer)] });
+
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+        expect(rpc.moveLocalEntity.mock.calls).toEqual([["mb", "m1", "archive", "4:archive", ",read,flagged,"]]);
+
+        rpc.moveLocalEntity.mockClear();
+        localStorage.clear();
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+        expect(rpc.moveLocalEntity).not.toHaveBeenCalled();
+    });
+
+    it("keeps at most so many messages' metadata per mailbox, dropping the oldest", async () => {
+        for (let i = 0; i <= MAX_REMEMBERED_METADATA; i++) {
+            rememberZeroAccessMetadata("big", `m${i}`, { folderUid: "inbox", entityVersion: "1:inbox", flags: ",," });
+        }
+        api.listSearchIndexEntries.mockResolvedValue({
+            entries: [await sealEntry("e0", "2026-W43", doc("m0"), key.certDer), await sealEntry("e1", "2026-W43", doc("m1"), key.certDer)],
+        });
+        await syncZeroAccessIndex("big", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+        expect(rpc.moveLocalEntity.mock.calls.map(([, uid]) => uid)).toEqual(["m1"]);
     });
 
     it("compacts a closed week: merges its entries into its segment, seals the result to the active key and folds only what it read", async () => {

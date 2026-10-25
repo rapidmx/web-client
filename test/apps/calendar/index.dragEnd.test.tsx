@@ -276,6 +276,25 @@ describe("CalendarPage handleDragEnd", () => {
         expect(fetchMock.mock.calls.some(([url]: [string]) => url.startsWith("/api/mail/"))).toBe(false);
     });
 
+    it("refuses to move one occurrence of a protected series while the mailbox is locked, writing nothing", async () => {
+        const sealed = { ...event, title: "Protected event", sealedFields: { title: "c2VhbGVk" }, recurrenceRule: { freq: "daily", interval: 1, exceptions: [] } };
+        const fetchMock = mockFetch((url, init) => {
+            if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
+            if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [calendarFolder]);
+            if (url.startsWith("/api/mail/calendar-events") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [sealed]);
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        render(<CalendarPage userUid="u1" />);
+        await screen.findAllByText(/Protected event/);
+
+        await act(async () => {
+            await capturedOnDragEnd!({ active: { id: "e1::2026-06-15T15:00:00.000Z" }, over: { id: dayDropId(new Date("2026-06-16T00:00:00.000Z")) } });
+        });
+
+        expect(await screen.findByText(/This event is protected and your mailbox is locked/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => ["PUT", "POST"].includes((init as RequestInit | undefined)?.method ?? "GET"))).toBe(false);
+    });
+
     it("shows a generic error message when the mutation fails with a non-API error", async () => {
         mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);

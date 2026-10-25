@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Folder, Message } from "../../../lib/mail/mailApi.js";
 import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
 import {
+    CLIENT_UPLOAD_BATCH,
     CLOCK_SKEW_MARGIN_MS,
     FETCH_CONCURRENCY,
     MAX_WALK_ATTEMPTS,
@@ -35,7 +36,7 @@ const rpc = vi.hoisted(() => ({
 }));
 vi.mock("../../../apps/shared/search/localIndexRpcClient.js", () => rpc);
 
-const sourceC = vi.hoisted(() => ({ importClientSegments: vi.fn(), uploadClientDocuments: vi.fn() }));
+const sourceC = vi.hoisted(() => ({ importClientSegments: vi.fn(), uploadClientDocuments: vi.fn(), rememberZeroAccessMetadata: vi.fn() }));
 vi.mock("../../../apps/shared/search/zeroAccessIndexSync.js", () => sourceC);
 
 // No readable vault generation, so these passes never seal - see localIndexBuilder.seal.test.ts.
@@ -101,7 +102,9 @@ describe("buildLocalIndex", () => {
 
         expect(getMessageRawContent.mock.calls.map(([uid]) => uid)).toEqual(["e2e"]);
         expect(rpc.moveLocalEntity).toHaveBeenCalledTimes(1);
-        expect(rpc.moveLocalEntity).toHaveBeenCalledWith("mb1", "za-new", "inbox", "1:inbox");
+        // Its flags too, which its imported document doesn't carry - and remembered, for a row the sync imports later.
+        expect(rpc.moveLocalEntity).toHaveBeenCalledWith("mb1", "za-new", "inbox", "1:inbox", ",read,");
+        expect(sourceC.rememberZeroAccessMetadata).toHaveBeenCalledWith("mb1", "za-new", { folderUid: "inbox", entityVersion: "1:inbox", flags: ",read," });
         expect(rpc.pruneLocalEntities.mock.calls[0][1].sort()).toEqual(["e2e", "za-new", "za-same"]);
     });
 
@@ -421,6 +424,18 @@ describe("buildLocalIndex - end-to-end mail shared with the mailbox's other devi
         const [mailboxUid, keys, entities, uploadClient] = sourceC.uploadClientDocuments.mock.calls[0];
         expect([mailboxUid, keys, uploadClient]).toEqual(["mb1", unlocked, client]);
         expect(entities.map((e: { entityUid: string }) => e.entityUid)).toEqual(["m1"]);
+    });
+
+    it("shares what it decrypted as it goes, a batch at a time, rather than all at the end", async () => {
+        const many = Array.from({ length: CLIENT_UPLOAD_BATCH + 50 }, (_, i) => message(`m${i}`));
+        listMessages.mockImplementation(async (folderUid: string, { page, limit }: { page: number; limit: number }) =>
+            folderUid === "inbox" ? many.slice(page * limit, (page + 1) * limit) : [],
+        );
+
+        await buildLocalIndex("mb1", unlocked, [folder("inbox", "inbox")], WINDOW);
+
+        const batches = sourceC.uploadClientDocuments.mock.calls.map(([, , entities]) => entities.length);
+        expect(batches).toEqual([CLIENT_UPLOAD_BATCH, 50]);
     });
 
     it("builds on when either fails", async () => {

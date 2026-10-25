@@ -430,6 +430,27 @@ describe("SettingsShell", () => {
         expect(await screen.findByText("mb-a/1")).toBeInTheDocument();
     });
 
+    it("merges what a section saved of a mailbox into its copy, leaving the other mailboxes as they are", async () => {
+        function Probe() {
+            const { mailboxes, patchMailbox } = useSettingsShell();
+            return (
+                <button type="button" onClick={() => patchMailbox!("mb-a", { zeroAccessEnabled: false, version: 3 })}>
+                    {mailboxes.map((mb) => `${mb.uid}:${mb.version}:${mb.zeroAccessEnabled ?? "-"}:${mb.displayName}`).join(" ")}
+                </button>
+            );
+        }
+        mockMailboxes([mailboxA, mailboxB]);
+        const user = userEvent.setup();
+        render(
+            <SettingsShell active="encryption" userUid="u1">
+                <Probe />
+            </SettingsShell>,
+        );
+
+        await user.click(await screen.findByRole("button", { name: /mb-a:0/ }));
+        expect(screen.getByRole("button", { name: "mb-a:3:false:Mailbox A mb-b:0:-:Mailbox B" })).toBeInTheDocument();
+    });
+
     it("lists mailboxes via the ApiClient from ApiClientContext, not the default cookie-based fetch, when one is provided", async () => {
         const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
         const fetchMock = mockFetch((url) => {

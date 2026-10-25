@@ -26,7 +26,13 @@ const api = vi.hoisted(() => ({
     putZeroAccessEscrowWraps: vi.fn(),
 }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
-const session = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), installSharedSession: vi.fn(), personalSessions: vi.fn(), sharedUnlockGeneration: vi.fn() }));
+const session = vi.hoisted(() => ({
+    getUnlockedKeys: vi.fn(),
+    installSharedSession: vi.fn(),
+    personalSessions: vi.fn(),
+    sharedUnlockGeneration: vi.fn(),
+    addZeroAccessKey: vi.fn(),
+}));
 vi.mock("../../../lib/crypto/keySession.js", async (importOriginal) => ({ ...(await importOriginal<object>()), ...session }));
 const { provisionZeroAccessKey } = vi.hoisted(() => ({ provisionZeroAccessKey: vi.fn() }));
 vi.mock("../../../lib/crypto/zeroAccessKey.js", () => ({ provisionZeroAccessKey }));
@@ -141,6 +147,57 @@ describe("unlockSharedMailbox", () => {
         const unknownKey = { ...(await wrap("u", me, active)), zeroAccessKeyFingerprint: "fp-unknown" };
         api.getMyMemberKeyWraps.mockResolvedValueOnce([garbage, unreadable, unknownKey]);
         expect(await unlockSharedMailbox("shared")).toBe("own_keys_locked");
+        expect(session.installSharedSession).not.toHaveBeenCalled();
+    });
+
+    it("skips a wrap whose key the server lists with another key's certificate", async () => {
+        api.getSharedKeyStatus.mockResolvedValue(status({ activeKeyFingerprint: "fp-active", zeroAccessKeys: [{ ...active.key, publicKey: older.key.publicKey }, older.key] }));
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("u", me, active), await wrap("u", me, older)]);
+
+        expect(await unlockSharedMailbox("shared")).toBe("unlocked");
+        const [, unlocked] = session.installSharedSession.mock.calls[0];
+        expect(unlocked.zeroAccessKeys.map((k: any) => k.fingerprint)).toEqual(["fp-older"]);
+    });
+
+    it("opens an open shared session again, keeping its secret, once it lacks the active key and the member holds a wrap of it", async () => {
+        const open = { masterKey: new Uint8Array(32).fill(7), zeroAccessKeys: [older], shared: true };
+        session.getUnlockedKeys.mockReturnValue(open);
+        api.getSharedKeyStatus.mockResolvedValue(status({ activeKeyFingerprint: "fp-active", zeroAccessKeys: [older.key, active.key] }));
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("u", me, older), await wrap("u", me, active)]);
+
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+
+        const [, unlocked] = session.installSharedSession.mock.calls[0];
+        expect(unlocked.zeroAccessKeys.map((k: any) => k.fingerprint)).toEqual(["fp-active", "fp-older"]);
+        expect(unlocked.masterKey).toEqual(open.masterKey);
+        expect(unlocked.masterKey).not.toBe(open.masterKey);
+    });
+
+    it("leaves an open shared session as it is when nothing newer can be opened, or it isn't asked to refresh", async () => {
+        const open = { masterKey: new Uint8Array(32), zeroAccessKeys: [older], shared: true };
+        session.getUnlockedKeys.mockReturnValue(open);
+        // Not asked to refresh; or a session opened with the mailbox's own keys.
+        expect(await unlockSharedMailbox("shared")).toBe("unlocked");
+        session.getUnlockedKeys.mockReturnValueOnce({ ...open, shared: undefined });
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+        expect(api.getSharedKeyStatus).not.toHaveBeenCalled();
+        // It holds the active key already, or there is none.
+        api.getSharedKeyStatus.mockResolvedValueOnce(status({ activeKeyFingerprint: "fp-older", zeroAccessKeys: [older.key] }));
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+        api.getSharedKeyStatus.mockResolvedValueOnce(status({ zeroAccessKeys: [] }));
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+        // No longer the member's to open, or not readable just now.
+        api.getSharedKeyStatus.mockResolvedValueOnce(status({ role: "owner", activeKeyFingerprint: "fp-active", zeroAccessKeys: [active.key] }));
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+        api.getSharedKeyStatus.mockRejectedValueOnce(new ApiRequestError("no", 403));
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+        // The active key's wrap isn't there yet; or it is, but won't open with the member's own keys (locked).
+        api.getSharedKeyStatus.mockResolvedValue(status({ activeKeyFingerprint: "fp-active", zeroAccessKeys: [older.key, active.key] }));
+        api.getMyMemberKeyWraps.mockResolvedValueOnce([await wrap("u", me, older)]);
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
+        session.personalSessions.mockReturnValueOnce([]);
+        api.getMyMemberKeyWraps.mockResolvedValueOnce([await wrap("u", me, active)]);
+        expect(await unlockSharedMailbox("shared", undefined, true)).toBe("unlocked");
         expect(session.installSharedSession).not.toHaveBeenCalled();
     });
 });
@@ -331,7 +388,9 @@ describe("maintainSharedMailbox", () => {
     it("rotates an owned mailbox with the owner's master key, then wraps the new key for the members", async () => {
         const reader = await identity("fp-reader");
         const mk = generateMasterKey();
-        session.getUnlockedKeys.mockReturnValue({ masterKey: mk });
+        const ownerSession = { masterKey: mk };
+        session.getUnlockedKeys.mockReturnValue(ownerSession);
+        provisionZeroAccessKey.mockResolvedValueOnce({ key: active });
         api.getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [], masterKeyGeneration: 3 });
         api.getSharedKeyStatus
             .mockResolvedValueOnce(status({ role: "owner", manager: true, activeKeyFingerprint: "fp-older", zeroAccessKeys: [older.key], rotationPending: true, departed: ["gone"], members: [member("reader", reader, ["fp-older"])] }))
@@ -341,6 +400,8 @@ describe("maintainSharedMailbox", () => {
 
         expect(result.rotated).toBe(true);
         expect(provisionZeroAccessKey).toHaveBeenCalledWith("owned", "owned@example.com", mk, 3, undefined);
+        // The owner's open session reads mail sealed to the new key at once.
+        expect(session.addZeroAccessKey).toHaveBeenCalledWith("owned", ownerSession, active);
         expect(api.removeMemberKeyWraps).toHaveBeenCalledWith("owned", "gone", undefined);
     });
 });

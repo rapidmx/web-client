@@ -28,6 +28,8 @@ import {
 } from "./calendarApi.js";
 import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "./recurrence.js";
 import { ApiClient } from "../util/api.js";
+import { KeysLockedError } from "../crypto/masterKey.js";
+import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../zeroAccess/sealedRecords.js";
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
@@ -35,6 +37,9 @@ import { ApiClient } from "../util/api.js";
  * and threads the same `client` through to every `calendarApi.ts` call it makes internally. */
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** The title restapi gives an event whose content is sealed (`sealedContent`) until it is opened. */
+const PROTECTED_TITLE = "[...]";
 
 function positiveModulo(value: number, modulus: number): number {
     return ((value % modulus) + modulus) % modulus;
@@ -150,12 +155,23 @@ export async function saveEventSeries(
  * original start as its `recurrenceId` (the RFC5545 way of identifying a modified instance), and never
  * carries the series' `recurrenceRule` — even if `fields` includes one (e.g. the event modal's full
  * field set).
+ *
+ * A protected occurrence (zero-access) is copied from its opened content: one that can't be opened here - its mailbox is locked - holds
+ * only placeholders, which the new event would store as its real title, location and description. It throws `KeysLockedError` instead,
+ * before anything is written.
  */
 export async function detachOccurrence(
     occurrence: CalendarOccurrence,
     fields: Partial<CalendarEventInput>,
     client?: ApiClient,
 ): Promise<CalendarEvent> {
+    if (isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) {
+        occurrence = await openSealedRecord(occurrence);
+    }
+    // An event made from an invitation to a zero-access mailbox (`sealedContent`) still titled `[...]` wasn't opened either.
+    if ((isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) || (occurrence.sealedContent && occurrence.title === PROTECTED_TITLE)) {
+        throw new KeysLockedError("This event is protected and your mailbox is locked. Unlock it to change one occurrence of the event.");
+    }
     const originalStart = occurrence.recurrenceId!;
     // `icalUid`/`recurrenceId` aren't part of `CalendarEventInput`, but `@rapidmx/restapi`'s
     // `CalendarEvent` model accepts both on create (and `createCalendarEvent` already sends `icalUid`).

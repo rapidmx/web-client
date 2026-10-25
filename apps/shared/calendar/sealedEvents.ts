@@ -9,7 +9,7 @@
  * decryption code is loaded only when a sealed event is actually seen.
  */
 import type { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
-import { getUnlockedKeys } from "../../../lib/crypto/keySession.js";
+import { getUnlockedKeys, subscribeKeySession } from "../../../lib/crypto/keySession.js";
 import { fromBase64 } from "../../../lib/crypto/encoding.js";
 import { onSigningOut } from "../components/mail/compose/composeFlushRegistry.js";
 
@@ -24,20 +24,37 @@ interface SealedEventFields {
 /** Opened fields by sealed text - the same sealed content always opens to the same fields. Cleared with `clearSealedEvents()`. */
 const opened: Map<string, Partial<CalendarEvent>> = new Map();
 
-/** Forgets every opened event (sign-out, or the test seam). */
+/** Forgets every opened event (a mailbox locking, sign-out, or the test seam). */
 export function clearSealedEvents(): void {
     opened.clear();
 }
 
+let watchingKeys = false;
+
+/** Opened fields go when keys are locked, so nothing opened outlives its key session. Subscribed when the first sealed event is seen,
+ * not on import. */
+function forgetOnLock(): void {
+    if (watchingKeys) {
+        return;
+    }
+    watchingKeys = true;
+    subscribeKeySession((event) => {
+        if (event.state === "locked") {
+            clearSealedEvents();
+        }
+    });
+}
+
 async function openFields(event: CalendarEvent): Promise<Partial<CalendarEvent> | undefined> {
     const sealed: string = event.sealedContent!.sealed;
-    const known = opened.get(sealed);
-    if (known) {
-        return known;
-    }
+    // Checked before the cache: a locked mailbox's events show their placeholders, whatever was opened before.
     const keys = getUnlockedKeys(event.mailboxUid)?.zeroAccessKeys;
     if (!keys?.length) {
         return undefined;
+    }
+    const known = opened.get(sealed);
+    if (known) {
+        return known;
     }
     try {
         const { decryptEnvelopedDataWithKeys } = await import("../../../lib/crypto/smime.js");
@@ -61,6 +78,7 @@ export async function openSealedEvents(events: CalendarEvent[]): Promise<Calenda
     if (!events.some((event) => event.sealedContent)) {
         return events;
     }
+    forgetOnLock();
     return Promise.all(
         events.map(async (event) => {
             if (!event.sealedContent) {

@@ -439,8 +439,9 @@ describe("startSend - encryption and signing", () => {
         await vi.waitFor(() => expect(unlock).toHaveBeenCalledWith("mb1", [enrolledKey]));
         await vi.waitFor(() => expect(mocks.getMessage).toHaveBeenCalled());
         // Unlocked (by the mock) but the keys are still not there: the retry is refused again, and the failure is back.
-        await vi.waitFor(() => expect(toasts()).toHaveLength(1));
+        await vi.waitFor(() => expect(mocks.lookupKeys).toHaveBeenCalledTimes(2));
         await settle();
+        await vi.waitFor(() => expect(toasts()).toHaveLength(1));
         // The override sends it plain.
         toasts()[0].actions[1].onClick!();
         await vi.waitFor(() => expect(mocks.assembleDraft).toHaveBeenCalledTimes(1));
@@ -567,6 +568,67 @@ describe("startSend - OpenPGP recipients", () => {
         expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m1", "m2"]);
     });
 
+    it("says only some recipients got it when one copy went and the other didn't, and Retry hands over only the other", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend.mockResolvedValueOnce({ queued: true, message: draft }).mockRejectedValueOnce(new ApiRequestError("Unavailable", 503));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+
+        expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+        expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m1", "m2"]);
+
+        // m1 is on its way; m2 is still a draft. Retry hands over m2 alone, without building or creating anything again.
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: uid === "m1" ? "outbox" : "drafts" }));
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(3));
+        await settle();
+        expect(mocks.queueMessageSend.mock.calls[2][0]).toBe("m2");
+        expect(mocks.getMessage.mock.calls.map(([uid]) => uid)).toEqual(["m2"]);
+        expect(mocks.createDraft).toHaveBeenCalledTimes(1);
+        expect(mocks.buildPgpEncryptedMessage).toHaveBeenCalledTimes(1);
+        expect(toasts().filter((toast) => toast.kind === "error")).toEqual([]);
+
+        // Once every copy is out, a Retry says it is already on its way.
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: "outbox" }));
+        await retrySend(request({ pendingCopies: [{ ...draft, uid: "m2" }] }));
+        expect(toasts().some((toast) => toast.title === "This message is already on its way")).toBe(true);
+    });
+
+    it("counts a copy whose request never answered but which landed as gone, and keeps both copies for a retry when the first didn't go", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend.mockResolvedValueOnce({ queued: false, message: draft }).mockRejectedValueOnce(new TypeError("network down"));
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: "outbox" }));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts().filter((toast) => toast.kind === "error")).toEqual([]);
+
+        // Nothing went: a plain failure, with the copies already built kept for the retry.
+        forgetRetainedRequest("m1");
+        mocks.createDraft.mockClear();
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid }));
+        mocks.queueMessageSend.mockReset().mockRejectedValueOnce(new ApiRequestError("Unavailable", 503)).mockResolvedValue({ queued: true, message: draft });
+        send({ cc: [{ address: "pat@proton.example" }], scheduledSendTime: undefined });
+        await settle();
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(3));
+        await settle();
+        expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m1", "m1", "m2"]);
+        expect(mocks.createDraft).toHaveBeenCalledTimes(1);
+    });
+
+    it("says only some recipients will get a send-later message when one copy couldn't be scheduled", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.sendMessage.mockResolvedValueOnce(draft).mockRejectedValueOnce(new ApiRequestError("Unavailable", 503));
+        send({ cc: [{ address: "pat@proton.example" }], scheduledSendTime: new Date(Date.now() + 1e6).toISOString() });
+        await settle();
+        expect(toasts()[0].message).toContain("Only some of its recipients will get it");
+    });
+
     it("schedules every copy of a send-later message", async () => {
         mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
         mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
@@ -584,6 +646,25 @@ describe("startSend - OpenPGP recipients", () => {
         send({ encryptRequested: true });
         await settle();
         expect(mocks.buildPgpEncryptedMessage).not.toHaveBeenCalled();
+        expect(mocks.queueMessageSend).not.toHaveBeenCalled();
+    });
+
+    it("encrypts with S/MIME to a recipient who prefers OpenPGP but also has a certificate, when the sender has no OpenPGP key unlocked", async () => {
+        mocks.getUnlockedKeys.mockReturnValue({ ...unlockedEncryption, ...unlockedSigning });
+        mocks.lookupKeys.mockResolvedValue({ keys: [pgpKey, peerKey], encryptPreference: MUTUAL, preferredFormat: "openpgp" });
+        send();
+        await settle();
+        expect(mocks.buildPgpEncryptedMessage).not.toHaveBeenCalled();
+        expect(mocks.buildEncryptedMessage).toHaveBeenCalled();
+        expect(mocks.queueMessageSend).toHaveBeenCalledWith("m1", undefined);
+    });
+
+    it("asks for the unlock, rather than sending plain, to an OpenPGP recipient while the mailbox is locked", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(undefined);
+        mocks.lookupKeys.mockResolvedValue({ keys: [pgpKey], encryptPreference: MUTUAL });
+        send();
+        await settle();
+        expect(mocks.assembleDraft).not.toHaveBeenCalled();
         expect(mocks.queueMessageSend).not.toHaveBeenCalled();
     });
 

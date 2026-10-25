@@ -75,17 +75,22 @@ async function look(
     mailbox: Mailbox,
     me: string | undefined,
     client: ApiClient | undefined,
-    unlockSharedMailbox: (uid: string, client?: ApiClient) => Promise<string>,
-    maintainSharedMailbox: (uid: string, address: string, client?: ApiClient) => Promise<unknown>,
+    unlockSharedMailbox: (uid: string, client?: ApiClient, refresh?: boolean) => Promise<string>,
+    maintainSharedMailbox: (uid: string, address: string, client?: ApiClient) => Promise<{ provisioned: boolean; rotated: boolean }>,
 ): Promise<void> {
     const owned = !!mailbox.ownerUserUid && mailbox.ownerUserUid === me;
-    if (!owned && !getUnlockedKeys(mailbox.uid)) {
-        await unlockSharedMailbox(mailbox.uid, client);
+    if (!owned) {
+        // Opened, or - once open - opened again when a rotation left it without the active key.
+        await unlockSharedMailbox(mailbox.uid, client, true);
     }
     const unlocked = getUnlockedKeys(mailbox.uid);
     // An owner looks after their mailbox with its own keys; a member, with full access, whether or not it is open yet (a mailbox
     // without an owner may have no key to open).
     if (owned ? unlocked && !unlocked.shared : true) {
-        await maintainSharedMailbox(mailbox.uid, mailbox.primarySmtpAddress, client);
+        const done = await maintainSharedMailbox(mailbox.uid, mailbox.primarySmtpAddress, client);
+        // A key this member just made (a mailbox without an owner) goes into their session now, not on the next pass.
+        if (!owned && (done.provisioned || done.rotated)) {
+            await unlockSharedMailbox(mailbox.uid, client, true);
+        }
     }
 }

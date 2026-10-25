@@ -8,6 +8,7 @@ import { getMailbox, type Mailbox, updateMailbox } from "../../../../lib/mail/ma
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
+import { useSettingsShell } from "./layout/SettingsShell.js";
 import PolicyLockedNotice from "./PolicyLockedNotice.js";
 import ZeroAccessTypes from "./ZeroAccessTypes.js";
 
@@ -32,6 +33,7 @@ export interface ZeroAccessSettingProps {
  */
 export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSettingProps) {
     const client = useApiClient();
+    const { patchMailbox } = useSettingsShell();
     const [enabled, setEnabled] = useState(mailbox.zeroAccessEnabled !== false);
     const [blocker, setBlocker] = useState<Blocker | null | undefined>(undefined);
     const [saving, setSaving] = useState(false);
@@ -61,16 +63,18 @@ export default function ZeroAccessSetting({ mailbox, canManage }: ZeroAccessSett
         setEnabled(next);
         try {
             const write = (version: number) => updateMailbox({ uid: mailbox.uid, version, zeroAccessEnabled: next }, client);
+            let saved: Mailbox;
             try {
-                await write(mailbox.version);
+                saved = await write(mailbox.version);
             } catch (err) {
                 // Enrolling a key (which happens on unlock) moves the mailbox's version on, so the copy this page was given may be
                 // behind: read it again and retry once.
                 if (!(err instanceof ApiRequestError && err.status === 409)) {
                     throw err;
                 }
-                await write((await getMailbox(mailbox.uid, {}, client)).version);
+                saved = await write((await getMailbox(mailbox.uid, {}, client)).version);
             }
+            patchMailbox?.(mailbox.uid, { zeroAccessEnabled: next, version: saved.version });
         } catch (err) {
             setEnabled(previous);
             notifyApiError(err, "Couldn't save the zero-access encryption setting");

@@ -27,7 +27,7 @@ vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
 }));
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
 
-const { clearProtectedContactNames, fetchSuggestionsWithProtectedContacts, PROTECTED_NAMES_TTL_MS, searchProtectedContactNames } = await import(
+const { clearProtectedContactNames, fetchSuggestionsWithProtectedContacts, PROTECTED_NAMES_TTL_MS, PROTECTED_NAMES_WAIT_MS, searchProtectedContactNames } = await import(
     "../../../apps/shared/components/mail/compose/protectedContactSuggestions.js"
 );
 
@@ -57,10 +57,13 @@ describe("protectedContactSuggestions", () => {
         expect(listContacts).toHaveBeenCalledTimes(1);
     });
 
-    it("reads again after a minute, and once the mailbox has been locked", async () => {
+    it("reads again after ten minutes, and once the mailbox has been locked", async () => {
         vi.useFakeTimers({ now: 0 });
         arrange();
         await searchProtectedContactNames("mb1", "jane");
+        vi.setSystemTime(PROTECTED_NAMES_TTL_MS - 1);
+        await searchProtectedContactNames("mb1", "jane");
+        expect(listContacts).toHaveBeenCalledTimes(1);
         vi.setSystemTime(PROTECTED_NAMES_TTL_MS + 1);
         await searchProtectedContactNames("mb1", "jane");
         expect(listContacts).toHaveBeenCalledTimes(2);
@@ -91,5 +94,28 @@ describe("protectedContactSuggestions", () => {
         listFolders.mockRejectedValue(new Error("offline"));
         expect((await fetchSuggestionsWithProtectedContacts("jane", { mailboxUid: "mb1" })).map((s) => s.displayName)).toEqual(["Server Jane", "Jan"]);
         expect(await fetchSuggestionsWithProtectedContacts("jane")).toHaveLength(2);
+    });
+
+    it("shows the server's suggestions without waiting for a slow crawl, and the protected matches once it is read", async () => {
+        vi.useFakeTimers();
+        arrange();
+        let release: (() => void) | undefined;
+        listFolders.mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve([{ uid: "f-contacts", type: "contacts" }]))));
+        fetchRecipientSuggestions.mockResolvedValue([{ displayName: "Jan", address: "jan@example.com", kind: "user" }]);
+
+        const first = fetchSuggestionsWithProtectedContacts("jane", { mailboxUid: "mb1" });
+        await vi.advanceTimersByTimeAsync(PROTECTED_NAMES_WAIT_MS);
+        expect((await first).map((s) => s.displayName)).toEqual(["Jan"]);
+
+        release!();
+        await vi.advanceTimersByTimeAsync(0);
+        expect((await fetchSuggestionsWithProtectedContacts("jane", { mailboxUid: "mb1" })).map((s) => s.displayName)).toEqual(["Jane Doe", "Jan"]);
+    });
+
+    it("reads every contacts folder", async () => {
+        listFolders.mockResolvedValue([{ uid: "f-a", type: "contacts" }, { uid: "f-b", type: "contacts" }]);
+        listContacts.mockImplementation(async (folderUid: string) => [protectedContact(folderUid, `${folderUid}@example.com`)]);
+        openSealedRecords.mockImplementation(async (records: any[]) => records);
+        expect((await searchProtectedContactNames("mb1", "@example.com")).map((s) => s.address).sort()).toEqual(["f-a@example.com", "f-b@example.com"]);
     });
 });

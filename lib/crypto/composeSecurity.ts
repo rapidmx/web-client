@@ -70,19 +70,22 @@ export interface RecipientEncryptionStatus {
 
 /** Per-recipient encryption eligibility, given this device's own encryption preference and the
  * system-wide policy. One entry per (address, lookup result) pair the caller already resolved via
- * `lookupKeys()` - this function does no discovery itself. */
+ * `lookupKeys()` - this function does no discovery itself. `ownCanUseOpenPgp` false: the sender has no OpenPGP key to use here
+ * (an OpenPGP copy is encrypted to the sender too), so a recipient who prefers OpenPGP but has an S/MIME certificate gets S/MIME - a
+ * preference never leaves them unencrypted (restapi `specs/end-to-end_encryption.md` *Choosing the format*). */
 export function resolveRecipientEncryption(
     ownAddress: string,
     ownPrefersMutual: boolean,
     policy: EncryptionPolicy,
     recipientAddress: string,
     lookup: KeyLookupResult | undefined,
+    ownCanUseOpenPgp: boolean = true,
 ): RecipientEncryptionStatus {
     const smimeCert = lookup ? findActivePublicKey(lookup.keys, "encrypt") : undefined;
     const usableOpenPgpKey = lookup && policy.allowOpenPgp === true ? findActivePublicKey(lookup.keys, "encrypt", "openpgp") : undefined;
     // S/MIME, unless the recipient has no certificate or prefers OpenPGP (restapi *Choosing the format*: the user's choice for the
     // contact, what the address advertises, what it was last seen using) - and OpenPGP only where the server allows it.
-    const useOpenPgp = !!usableOpenPgpKey && (!smimeCert || lookup?.preferredFormat === "openpgp");
+    const useOpenPgp = !!usableOpenPgpKey && (!smimeCert || (lookup?.preferredFormat === "openpgp" && ownCanUseOpenPgp));
     const encryptCert = useOpenPgp ? undefined : smimeCert;
     const openPgpKey = useOpenPgp ? usableOpenPgpKey : undefined;
     const tier = classifyRecipientTier(ownAddress, recipientAddress, !!lookup && lookup.keys.length > 0);

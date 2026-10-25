@@ -2,6 +2,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
+import "reflect-metadata";
+import * as x509 from "@peculiar/x509";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toBase64 } from "../../../lib/crypto/encoding.js";
 import { generateKeyPairWithCsr, exportPrivateKeyPkcs8 } from "../../../lib/crypto/keys.js";
@@ -791,20 +793,40 @@ describe("unlockWithRecoveryCode", () => {
 });
 
 describe("zero-access keys", () => {
+    /** A certificate (as restapi lists it, self-signed here) of `publicKey`. */
+    async function certificateOf(publicKey: CryptoKey): Promise<Uint8Array> {
+        x509.cryptoProvider.set(crypto);
+        const signer = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+        const cert = await x509.X509CertificateGenerator.create({
+            serialNumber: "0c",
+            subject: "CN=za",
+            issuer: "CN=za",
+            notBefore: new Date(Date.now() - 1000),
+            notAfter: new Date(Date.now() + 86_400_000),
+            signingAlgorithm: { name: "ECDSA", hash: "SHA-256" },
+            publicKey,
+            signingKey: signer.privateKey,
+        });
+        return new Uint8Array(cert.rawData);
+    }
+
     /** Adds zero-access keys to an enrollment: each entry is `{ fingerprint, notBefore, revokedAt?, wrap? }`, where `wrap` is
-     * `"ok"` (default, sealed under `mk` with the zero-access purpose), `"corrupt"`, `"none"` (no wrapped key) or `"wrong-type"`. */
+     * `"ok"` (default, sealed under `mk` with the zero-access purpose), `"corrupt"`, `"none"` (no wrapped key), `"wrong-type"` or
+     * `"other-cert"` (sealed fine, but listed with the certificate of another key). */
     async function addZeroAccessKeys(
         vault: KeyVault,
         mk: Uint8Array,
-        entries: { fingerprint: string; notBefore: number; revokedAt?: number; wrap?: "ok" | "corrupt" | "none" | "wrong-type" }[],
-    ): Promise<void> {
+        entries: { fingerprint: string; notBefore: number; revokedAt?: number; wrap?: "ok" | "corrupt" | "none" | "wrong-type" | "other-cert" }[],
+    ): Promise<Uint8Array> {
         const { keyPair } = await generateKeyPairWithCsr("alice@example.com", "encrypt");
         const raw = await exportPrivateKeyPkcs8(keyPair.privateKey);
         const sealed = await sealWithKey(mk, raw, buildAad(MAILBOX_UID, ZERO_ACCESS_PRIVATE_KEY_AAD_PURPOSE));
+        const certDer = await certificateOf(keyPair.publicKey);
+        const otherCertDer = await certificateOf((await generateKeyPairWithCsr("server@example.com", "encrypt")).keyPair.publicKey);
         vault.zeroAccessKeys = [];
         for (const entry of entries) {
             vault.zeroAccessKeys.push({
-                publicKey: toBase64(new Uint8Array([4, 5, 6])),
+                publicKey: toBase64(entry.wrap === "other-cert" ? otherCertDer : certDer),
                 type: "x509",
                 useType: "zero-access",
                 fingerprint: entry.fingerprint,
@@ -823,11 +845,12 @@ describe("zero-access keys", () => {
                 });
             }
         }
+        return certDer;
     }
 
     it("opens the active zero-access key first, then retained ones newest first, skipping unwrapped and mistyped entries", async () => {
         const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
-        await addZeroAccessKeys(vault, mk, [
+        const certDer = await addZeroAccessKeys(vault, mk, [
             { fingerprint: "za-old", notBefore: 1, revokedAt: 5 },
             { fingerprint: "za-newer-retired", notBefore: 3, revokedAt: 6 },
             { fingerprint: "za-active", notBefore: 2 },
@@ -843,7 +866,21 @@ describe("zero-access keys", () => {
         const key = getUnlockedKeys(MAILBOX_UID)!.zeroAccessKeys![0];
         expect(key.privateKey.extractable).toBe(false);
         expect(key.privateKey.algorithm.name).toBe("ECDH");
-        expect(Array.from(key.certDer)).toEqual([4, 5, 6]);
+        expect(Array.from(key.certDer)).toEqual(Array.from(certDer));
+    });
+
+    it("leaves out a zero-access key the server lists with another key's certificate, as unopenable", async () => {
+        const { vault, mailboxKeys, mk } = await enrollForTest(["encrypt"]);
+        await addZeroAccessKeys(vault, mk, [
+            { fingerprint: "za-swapped", notBefore: 2, wrap: "other-cert" },
+            { fingerprint: "za-real", notBefore: 1 },
+        ]);
+        getKeyVault.mockResolvedValue(vault);
+
+        const result = await unlockWithPassword(MAILBOX_UID, mailboxKeys, PASSWORD);
+
+        expect(result.unopenableKeys).toEqual(["za-swapped"]);
+        expect(getUnlockedKeys(MAILBOX_UID)?.zeroAccessKeys?.map((k) => k.fingerprint)).toEqual(["za-real"]);
     });
 
     it("reports a zero-access key that does not open in unopenableKeys and still unlocks", async () => {

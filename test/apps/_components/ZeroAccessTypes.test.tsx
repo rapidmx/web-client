@@ -11,8 +11,14 @@ import ZeroAccessTypes, { devicesSyncing, typeIncluded } from "../../../apps/sha
 import type { Mailbox } from "../../../lib/mail/mailApi.js";
 import { ApiRequestError } from "../../../lib/util/api.js";
 
-const { notifyApiError, updateMailbox, getMailbox } = vi.hoisted(() => ({ notifyApiError: vi.fn(), updateMailbox: vi.fn(), getMailbox: vi.fn() }));
+const { notifyApiError, updateMailbox, getMailbox, patchMailbox } = vi.hoisted(() => ({
+    notifyApiError: vi.fn(),
+    updateMailbox: vi.fn(),
+    getMailbox: vi.fn(),
+    patchMailbox: vi.fn(),
+}));
 vi.mock("../../../apps/shared/notifications/apiErrors.js", () => ({ notifyApiError }));
+vi.mock("../../../apps/shared/components/settings/layout/SettingsShell.js", () => ({ useSettingsShell: () => ({ mailboxes: [], patchMailbox }) }));
 vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     updateMailbox,
@@ -77,7 +83,7 @@ describe("ZeroAccessTypes", () => {
 
     it("saves one type at a time, retrying once against a newer version, and goes back when saving fails", async () => {
         const user = userEvent.setup();
-        updateMailbox.mockRejectedValueOnce(new ApiRequestError("stale", 409)).mockResolvedValueOnce({});
+        updateMailbox.mockRejectedValueOnce(new ApiRequestError("stale", 409)).mockResolvedValueOnce({ version: 8 });
         getMailbox.mockResolvedValue(mailbox({ version: 7 }));
         render(<ZeroAccessTypes mailbox={mailbox()} types={ALL} canManage />);
 
@@ -89,11 +95,14 @@ describe("ZeroAccessTypes", () => {
         ]);
         await waitFor(() => expect(box("Tasks")).not.toBeDisabled());
         expect(box("Tasks")).toBeChecked();
+        // The shell keeps what was saved, for when this is mounted again.
+        expect(patchMailbox).toHaveBeenCalledWith("mb1", { zeroAccessTypes: { tasks: true }, version: 8 });
 
         updateMailbox.mockRejectedValueOnce(new ApiRequestError("down", 503));
         await user.click(box("Mail"));
         await waitFor(() => expect(notifyApiError).toHaveBeenCalledWith(expect.any(ApiRequestError), "Couldn't save what zero-access encryption protects"));
         expect(box("Mail")).toBeChecked();
+        expect(patchMailbox).toHaveBeenCalledTimes(1);
     });
 
     it("is read-only to anyone but the owner", () => {

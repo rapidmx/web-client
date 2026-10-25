@@ -292,6 +292,15 @@ describe("localIndexWorker", () => {
         await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1", { folderUid: undefined, flags: "", entityVersion: undefined })] });
         const hits = await call<{ hits: { entityUid: string }[] }>("search", { mailboxUid: "mb1", parsed: { text: "budget", folderUid: "archive", flags: ["read"] }, limit: 10 });
         expect(hits.hits.map((h) => h.entityUid)).toEqual(["m1"]);
+
+        // The builder records them with the move.
+        await call("moveEntity", { mailboxUid: "mb1", entityUid: "m1", folderUid: "inbox", entityVersion: "8:inbox", flags: ",flagged," });
+        const flagged = await call<{ hits: { entityUid: string }[] }>("search", { mailboxUid: "mb1", parsed: { text: "budget", folderUid: "inbox", flags: ["flagged"] }, limit: 10 });
+        expect(flagged.hits.map((h) => h.entityUid)).toEqual(["m1"]);
+        const read = await call<{ hits: { entityUid: string }[] }>("search", { mailboxUid: "mb1", parsed: { text: "budget", flags: ["read"] }, limit: 10 });
+        expect(read.hits).toEqual([]);
+        await call("moveEntity", { mailboxUid: "mb1", entityUid: "m1", folderUid: "inbox", flags: ",read," });
+        await expect(call("indexedVersions", { mailboxUid: "mb1", entityUids: ["m1"] })).resolves.toEqual({});
     });
 
     it("prunes rows a complete pass didn't see, only within the pass's time floor", async () => {

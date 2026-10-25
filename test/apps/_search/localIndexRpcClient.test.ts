@@ -143,10 +143,12 @@ describe("localIndexRpcClient", () => {
         await expect(rpc.removeLocalEntity("mb1", "m1")).resolves.toBeUndefined();
         await rpc.moveLocalEntity("mb1", "m1", "archive");
         await rpc.moveLocalEntity("mb1", "m1", "archive", "2:archive");
+        await rpc.moveLocalEntity("mb1", "m1", "archive", "2:archive", ",read,");
         expect(posted.slice(1)).toEqual([
             { id: expect.any(Number), method: "removeEntity", params: { mailboxUid: "mb1", entityUid: "m1" } },
             { id: expect.any(Number), method: "moveEntity", params: { mailboxUid: "mb1", entityUid: "m1", folderUid: "archive" } },
             { id: expect.any(Number), method: "moveEntity", params: { mailboxUid: "mb1", entityUid: "m1", folderUid: "archive", entityVersion: "2:archive" } },
+            { id: expect.any(Number), method: "moveEntity", params: { mailboxUid: "mb1", entityUid: "m1", folderUid: "archive", entityVersion: "2:archive", flags: ",read," } },
         ]);
     });
 

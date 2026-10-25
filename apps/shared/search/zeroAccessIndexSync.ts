@@ -38,7 +38,7 @@ import {
 } from "../../../lib/search/zeroAccessIndexApi.js";
 import { ApiRequestError, type ApiClient } from "../../../lib/util/api.js";
 import { clientPlatform, isConstrainedConnection, type ClientPlatform } from "../../../lib/util/clientPlatform.js";
-import { getLocalCoverage, indexLocalEntities } from "./localIndexRpcClient.js";
+import { getLocalCoverage, indexLocalEntities, moveLocalEntity } from "./localIndexRpcClient.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 
 /** The segment format this client writes and reads. */
@@ -166,8 +166,52 @@ function isDocument(value: unknown): value is ZeroAccessIndexDocument {
     return !!doc && doc.v === 1 && typeof doc.messageUid === "string" && typeof doc.subject === "string" && typeof doc.body === "string";
 }
 
-/** A document as a row of the local index. Folder and flags aren't in the document - the builder records the folder
- * (`localIndexBuilder.ts`), and the upsert keeps what is already there. */
+/** What the builder (`localIndexBuilder.ts`) knows of a zero-access message from the message list - none of it is in its document. */
+export interface ZeroAccessRowMetadata {
+    folderUid: string;
+    entityVersion: string;
+    /** `,flag,flag,` */
+    flags: string;
+}
+
+/** At most this many messages' metadata are kept per mailbox for rows not imported yet; the oldest go first. */
+export const MAX_REMEMBERED_METADATA = 50_000;
+
+/** Folder, version and flags the builder recorded for zero-access messages, by mailbox and message uid, until their row is imported. */
+const rememberedMetadata = new Map<string, Map<string, ZeroAccessRowMetadata>>();
+
+/**
+ * Remembers zero-access message `messageUid`'s folder, version and flags for when its row is imported: the builder records them on the row
+ * as it walks, which does nothing for a row that isn't there yet (the index started empty - a new device, or after a lock - and this sync
+ * imports the rows after the build).
+ */
+export function rememberZeroAccessMetadata(mailboxUid: string, messageUid: string, metadata: ZeroAccessRowMetadata): void {
+    let remembered = rememberedMetadata.get(mailboxUid);
+    if (!remembered) {
+        remembered = new Map();
+        rememberedMetadata.set(mailboxUid, remembered);
+    }
+    remembered.delete(messageUid);
+    remembered.set(messageUid, metadata);
+    if (remembered.size > MAX_REMEMBERED_METADATA) {
+        remembered.delete(remembered.keys().next().value!);
+    }
+}
+
+/** Records on the just-imported rows of `messageUids` what the builder remembered of them, once. */
+async function applyRememberedMetadata(mailboxUid: string, messageUids: string[]): Promise<void> {
+    const remembered = rememberedMetadata.get(mailboxUid);
+    for (const uid of messageUids) {
+        const metadata = remembered?.get(uid);
+        if (metadata) {
+            await moveLocalEntity(mailboxUid, uid, metadata.folderUid, metadata.entityVersion, metadata.flags);
+            remembered!.delete(uid);
+        }
+    }
+}
+
+/** A document as a row of the local index. Folder and flags aren't in the document - the builder records them (`localIndexBuilder.ts`,
+ * here through `rememberZeroAccessMetadata()` when the row came later), and the upsert keeps what is already there. */
 export function documentEntity(mailboxUid: string, doc: ZeroAccessIndexDocument): LocalIndexEntity {
     const participants: string = (doc.participants ?? []).join(" ");
     const attachmentText: string = [...(doc.attachmentNames ?? []), ...(doc.attachmentText ?? [])].join("\n");
@@ -188,9 +232,14 @@ export function documentEntity(mailboxUid: string, doc: ZeroAccessIndexDocument)
 
 async function importDocuments(mailboxUid: string, docs: ZeroAccessIndexDocument[]): Promise<void> {
     for (let i = 0; i < docs.length; i += IMPORT_BATCH) {
+        const batch = docs.slice(i, i + IMPORT_BATCH);
         await indexLocalEntities(
             mailboxUid,
-            docs.slice(i, i + IMPORT_BATCH).map((doc) => documentEntity(mailboxUid, doc)),
+            batch.map((doc) => documentEntity(mailboxUid, doc)),
+        );
+        await applyRememberedMetadata(
+            mailboxUid,
+            batch.map((doc) => doc.messageUid),
         );
     }
 }
@@ -350,7 +399,12 @@ export async function uploadClientDocuments(mailboxUid: string, unlocked: Unlock
     const weeks = new Map<string, ClientIndexDocument[]>();
     for (const entity of entities) {
         const weekId: string = isoWeekId(new Date(entity.dateForSort));
-        weeks.set(weekId, [...(weeks.get(weekId) ?? []), clientDocument(entity)]);
+        let week = weeks.get(weekId);
+        if (!week) {
+            week = [];
+            weeks.set(weekId, week);
+        }
+        week.push(clientDocument(entity));
     }
     const state: SyncState = loadState(mailboxUid);
     let written = 0;

@@ -14,6 +14,7 @@ import {
     saveEventSeries,
 } from "../../../lib/calendar/calendarMutations.js";
 import type { ApiClient } from "../../../lib/util/api.js";
+import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
 
 /** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
  * default (no-client) path uses - lets a test assert an explicit client's calls never touch the global one. */
@@ -218,6 +219,21 @@ describe("saveEventSeries", () => {
 });
 
 describe("detachOccurrence", () => {
+    it("refuses, writing nothing, to detach a protected occurrence it can't open (the mailbox is locked)", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, occurrence()));
+        // Sealed fields with the placeholders beside them, as a locked list leaves them.
+        await expect(detachOccurrence(occurrence({ title: "Protected event", sealedFields: { title: "c2VhbGVk" } } as any), { startDate: "2026-06-04T15:00:00.000Z" })).rejects.toThrow(
+            KeysLockedError,
+        );
+        // An event made from an invitation to a zero-access mailbox, still unopened.
+        await expect(detachOccurrence(occurrence({ title: "[...]", sealedContent: { keyFingerprint: "fp", sealed: "x" } }), {})).rejects.toThrow(/Unlock it to change one occurrence/);
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        // Opened, it detaches as any other.
+        await detachOccurrence(occurrence({ title: "Board", sealedContent: { keyFingerprint: "fp", sealed: "x" } }), {});
+        expect(fetchMock).toHaveBeenCalled();
+    });
+
     it("adds an exception to the master and creates a standalone event with the edited fields", async () => {
         const created = occurrence({ uid: "e2", title: "Renamed", recurrenceRule: undefined, occurrenceKey: "e2", isRecurringOccurrence: false });
         const fetchMock = mockFetch((url, init) => {

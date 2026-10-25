@@ -24,6 +24,7 @@
 import { type KeyVault, type PublicKey, type WrappedPrivateKey, findActivePublicKey, getKeyVault, isOpenPgpKey } from "./keyvaultApi.js";
 import type { ApiClient } from "../util/api.js";
 import { fromBase64 } from "./encoding.js";
+import { certificateHoldsKey } from "./keyPairMatch.js";
 import { importPrivateKeyPkcs8 } from "./keys.js";
 import { KeysLockedError, buildAad, openWithKey } from "./masterKey.js";
 import { deriveFromPassword, parseArgon2idKdfLabel } from "./passwordUnlock.js";
@@ -399,7 +400,9 @@ async function openRetainedEncryptionKeys(
  * Opens the mailbox's zero-access private keys into `unlocked.zeroAccessKeys`: the vault's `zeroAccessKeys` that have a
  * wrapped private key, the unrevoked one with the latest `notBefore` first, then the rest newest first, at most
  * `MAX_RETAINED_ENCRYPTION_KEYS + 1`. A key that won't open is listed in `unopenableKeys` and skipped - zero-access mail
- * encrypted to it doesn't decrypt on this device, but nothing else about the unlock depends on it.
+ * encrypted to it doesn't decrypt on this device, but nothing else about the unlock depends on it. So is one whose certificate (the
+ * server's, unauthenticated) isn't the private key's: this device seals to the active key's certificate - search index segments of
+ * end-to-end mail, protected meetings' keys - so a certificate swapped by the server must never become it.
  */
 async function openZeroAccessKeys(mailboxUid: string, vault: KeyVault, unlocked: UnlockedKeys, unopenableKeys: string[]): Promise<void> {
     const ordered = [...(vault.zeroAccessKeys ?? [])].sort(
@@ -413,8 +416,17 @@ async function openZeroAccessKeys(mailboxUid: string, vault: KeyVault, unlocked:
             continue;
         }
         try {
-            const privateKey = await openPrivateKey(unlocked.masterKey, wrapped, aad, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
-            (unlocked.zeroAccessKeys ??= []).push({ fingerprint: publicKey.fingerprint, certDer: fromBase64(publicKey.publicKey), privateKey });
+            const certDer = fromBase64(publicKey.publicKey);
+            const raw = await openWithKey(unlocked.masterKey, wrapped, aad);
+            try {
+                if (!(await certificateHoldsKey(certDer, raw))) {
+                    throw new Error("The zero-access certificate isn't the key's.");
+                }
+                const privateKey = await importPrivateKeyPkcs8(raw, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], false);
+                (unlocked.zeroAccessKeys ??= []).push({ fingerprint: publicKey.fingerprint, certDer, privateKey });
+            } finally {
+                raw.fill(0);
+            }
         } catch {
             unopenableKeys.push(publicKey.fingerprint);
         }

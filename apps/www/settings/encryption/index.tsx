@@ -242,7 +242,8 @@ function EncryptionGate({ userUid, impersonating }: { userUid?: string; imperson
             mailboxKeys={mailbox.keys}
             canProvision={isOwner}
         >
-            <EncryptionContent canManageKeys={isOwner} />
+            {/* Mounted anew for each mailbox: switching mailbox keeps the page, and its settings seed their state from the mailbox. */}
+            <EncryptionContent key={mailboxUid} canManageKeys={isOwner} />
         </KeyEnrollmentGate>
     );
 }

@@ -99,6 +99,17 @@ describe("printableOlderMessage", () => {
         expect(fetchBodyContent).not.toHaveBeenCalled();
     });
 
+    it("opens a zero-access message with its mailbox's keys, and never asks the server for its body", async () => {
+        getUnlockedKeys.mockReturnValue({ k: 1 });
+        evaluateMessageSecurity.mockResolvedValue({ subject: "Real", text: "sealed text" });
+        const opened = await printableOlderMessage(message({ zeroAccess: true, subject: "[...]" }));
+        expect(opened).toMatchObject({ subject: "Real", content: { kind: "text", text: "sealed text" } });
+        getUnlockedKeys.mockReturnValue(undefined);
+        const locked = await printableOlderMessage(message({ zeroAccess: true, subject: "[...]" }));
+        expect(locked.content).toMatchObject({ text: expect.stringContaining("could not be decrypted") });
+        expect(fetchBodyContent).not.toHaveBeenCalled();
+    });
+
     it("uses a decrypted text body, and keeps a real outer subject", async () => {
         getUnlockedKeys.mockReturnValue({ k: 1 });
         evaluateMessageSecurity.mockResolvedValue({ subject: "Inner", text: "secret text" });

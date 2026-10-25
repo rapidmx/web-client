@@ -67,7 +67,19 @@ vi.mock("../../../../lib/crypto/keySession.js", () => ({
 // The zero-access key and setting, and the key export, have their own tests (zeroAccessKey.test.ts, ZeroAccessSetting.test.tsx,
 // KeyExportSetting.test.tsx).
 vi.mock("../../../../lib/crypto/zeroAccessKey.js", () => ({ ensureZeroAccessKey: async () => false, provisionZeroAccessKey: async () => undefined }));
-vi.mock("../../../../apps/shared/components/settings/ZeroAccessSetting.js", () => ({ default: () => null }));
+// Records each mailbox it is mounted for: switching mailbox must mount it anew, since it seeds its state from the mailbox.
+const { zeroAccessMounts } = vi.hoisted(() => ({ zeroAccessMounts: [] as string[] }));
+vi.mock("../../../../apps/shared/components/settings/ZeroAccessSetting.js", async () => {
+    const { useEffect } = await import("react");
+    return {
+        default: function ZeroAccessSettingStub({ mailbox }: { mailbox: { uid: string } }) {
+            useEffect(() => {
+                zeroAccessMounts.push(mailbox.uid);
+            }, []);
+            return null;
+        },
+    };
+});
 vi.mock("../../../../apps/shared/components/settings/KeyExportSetting.js", () => ({ default: () => null }));
 vi.mock("../../../../apps/shared/components/settings/OpenPgpKeySetting.js", () => ({ default: () => null }));
 
@@ -204,6 +216,28 @@ afterEach(() => {
 });
 
 describe("SettingsEncryptionPage", () => {
+    it("mounts the zero-access setting anew for each mailbox the switcher picks", async () => {
+        zeroAccessMounts.length = 0;
+        getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
+        getKeyVault.mockResolvedValue(vault);
+        const other = { ...mailbox, uid: "mb2", displayName: "Other Mail", primarySmtpAddress: "other@example.com" };
+        mockShell((url) => {
+            if (url === "/api/mail/mailboxes/mb2") return jsonResponse(200, other);
+            if (url.startsWith("/api/mail/mailboxes") && !url.startsWith("/api/mail/mailboxes/") && !url.includes("auto-provision")) return jsonResponse(200, [mailbox, other]);
+            return undefined;
+        });
+        // At the page's own address, so the switcher's navigation keeps the page (a shallow one), as in the app.
+        window.history.pushState(null, "", "/settings/encryption");
+        const user = userEvent.setup();
+        render(<SettingsEncryptionPage userUid="u1" />);
+
+        await screen.findByText(/Encryption key: abcd1234/);
+        await waitFor(() => expect(zeroAccessMounts).toEqual(["mb1"]));
+        await user.selectOptions(await screen.findByLabelText("Mailbox"), "mb2");
+        await waitFor(() => expect(zeroAccessMounts).toEqual(["mb1", "mb2"]));
+        window.history.pushState(null, "", "/");
+    });
+
     it("lists the mailbox's enrolled keys and unlock methods", async () => {
         getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32) });
         getKeyVault.mockResolvedValue(vault);

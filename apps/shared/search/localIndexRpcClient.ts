@@ -251,11 +251,17 @@ async function removeLocalEntityImpl(mailboxUid: string, entityUid: string): Pro
 
 /** Re-points one indexed message at its new folder (archive, cancel-scheduled-send) so `folder:`-scoped
  * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntityImpl()`. */
-async function moveLocalEntityImpl(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
+async function moveLocalEntityImpl(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string, flags?: string): Promise<void> {
     if (!initializedMailboxes.has(mailboxUid)) {
         return;
     }
-    await call("moveEntity", { mailboxUid, entityUid, folderUid, ...(entityVersion !== undefined ? { entityVersion } : {}) } satisfies MoveEntityParams).catch(
+    await call("moveEntity", {
+        mailboxUid,
+        entityUid,
+        folderUid,
+        ...(entityVersion !== undefined ? { entityVersion } : {}),
+        ...(flags !== undefined ? { flags } : {}),
+    } satisfies MoveEntityParams).catch(
         () => undefined,
     );
 }
@@ -411,8 +417,12 @@ export function removeLocalEntity(mailboxUid: string, entityUid: string): Promis
 }
 
 /** Re-points one indexed message at its new folder (archive, cancel-scheduled-send) so `folder:`-scoped
- * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntity()`. */
-export function moveLocalEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
+ * local searches stay correct. Same no-op/never-rejects rules as `removeLocalEntity()`. `flags` (`,flag,flag,`) sets the row's flags
+ * too - a zero-access row's, which nothing else records. */
+export function moveLocalEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string, flags?: string): Promise<void> {
+    if (flags !== undefined) {
+        return currentTransport.moveEntity(mailboxUid, entityUid, folderUid, entityVersion, flags);
+    }
     return entityVersion !== undefined
         ? currentTransport.moveEntity(mailboxUid, entityUid, folderUid, entityVersion)
         : currentTransport.moveEntity(mailboxUid, entityUid, folderUid);

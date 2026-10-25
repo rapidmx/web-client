@@ -9,11 +9,19 @@ import { fromBase64 } from "../../../lib/crypto/encoding.js";
 import { generateMeetingKey, importMeetingKey, readMeetingKeyFragment } from "../../../lib/crypto/meetingKeys.js";
 import { decryptEnvelopedDataWithKeys } from "../../../lib/crypto/smime.js";
 
-const { getUnlockedKeys, getVideoMeeting } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), getVideoMeeting: vi.fn() }));
-vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
-vi.mock("../../../lib/videoconf/videoMeetingsApi.js", () => ({ getVideoMeeting }));
+const { getUnlockedKeys, getVideoMeeting, updateVideoMeeting, keyListeners } = vi.hoisted(() => ({
+    getUnlockedKeys: vi.fn(),
+    getVideoMeeting: vi.fn(),
+    updateVideoMeeting: vi.fn(),
+    keyListeners: [] as ((event: { mailboxUid: string; state: "locked" | "unlocked" }) => void)[],
+}));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
+    getUnlockedKeys,
+    subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => keyListeners.push(listener),
+}));
+vi.mock("../../../lib/videoconf/videoMeetingsApi.js", () => ({ getVideoMeeting, updateVideoMeeting }));
 
-const { clearMeetingKeys, meetingKeyExpiry, meetingKeyFragmentOf, meetingLinkSecrets, organizerJoinLink, protectMeeting, rememberMeetingKey, MEETING_KEY_GRACE_MS } =
+const { clearMeetingKeys, followMeetingKeyExpiry, meetingKeyExpiry, meetingKeyFragmentOf, meetingLinkSecrets, organizerJoinLink, protectMeeting, rememberMeetingKey, MEETING_KEY_GRACE_MS } =
     await import("../../../lib/videoconf/protectedMeetings.js");
 
 /** A stand-in for the organizer's zero-access key: a meeting key pair serves, being P-256 with a certificate. */
@@ -58,9 +66,12 @@ describe("protectedMeetings", () => {
         const meeting: any = { uid: "m1", mailboxUid: "mb", keyProtected: true, keyWraps: secured.protection.keyWraps, organizerJoinUrl: "https://meet.example/o" };
 
         expect(await organizerJoinLink(meeting)).toBe(`https://meet.example/o#${secured.fragment}`);
-        getUnlockedKeys.mockReturnValue(undefined);
-        // Remembered: it opens even once the mailbox is locked.
+        // Remembered: it isn't opened again.
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [] });
         expect(await meetingKeyFragmentOf(meeting)).toBe(secured.fragment);
+        // Never handed out while the mailbox is locked, remembered or not.
+        getUnlockedKeys.mockReturnValue(undefined);
+        expect(await organizerJoinLink(meeting)).toBeNull();
         clearMeetingKeys();
         expect(await organizerJoinLink(meeting)).toBeNull();
         expect(await organizerJoinLink({ ...meeting, keyProtected: false })).toBe("https://meet.example/o");
@@ -71,15 +82,57 @@ describe("protectedMeetings", () => {
         expect(await meetingKeyFragmentOf(meeting)).toBeUndefined();
     });
 
+    it("forgets a mailbox's meeting keys when it locks, keeping other mailboxes'", async () => {
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [] });
+        rememberMeetingKey("m1", "k=one", "mb");
+        rememberMeetingKey("m2", "k=two", "other");
+        for (const listener of keyListeners) {
+            listener({ mailboxUid: "mb", state: "unlocked" });
+            listener({ mailboxUid: "mb", state: "locked" });
+        }
+        expect(await meetingKeyFragmentOf({ uid: "m1", mailboxUid: "mb", keyProtected: true } as any)).toBeUndefined();
+        expect(await meetingKeyFragmentOf({ uid: "m2", mailboxUid: "other", keyProtected: true } as any)).toBe("k=two");
+        // Subscribed once, on the first key remembered.
+        expect(keyListeners).toHaveLength(1);
+    });
+
+    it("moves a protected meeting's key expiry to follow its event's new end, best effort", async () => {
+        const end = new Date(Date.now() + 86_400_000);
+        const expiry = meetingKeyExpiry(end).toISOString();
+        getVideoMeeting.mockResolvedValueOnce({ uid: "m1", keyProtected: true, keyExpiresAt: "2026-01-01T00:00:00.000Z" });
+        await followMeetingKeyExpiry("m1", end);
+        expect(updateVideoMeeting).toHaveBeenCalledWith("m1", { keyExpiresAt: expiry }, undefined);
+        // Already right, or not protected: nothing to change.
+        updateVideoMeeting.mockClear();
+        getVideoMeeting.mockResolvedValueOnce({ uid: "m1", keyProtected: true, keyExpiresAt: expiry });
+        await followMeetingKeyExpiry("m1", end);
+        getVideoMeeting.mockResolvedValueOnce({ uid: "m1", keyProtected: false });
+        await followMeetingKeyExpiry("m1", end);
+        // Known unprotected: not even fetched.
+        getVideoMeeting.mockClear();
+        rememberMeetingKey("plain", null, "mb");
+        await followMeetingKeyExpiry("plain", end);
+        expect(getVideoMeeting).not.toHaveBeenCalled();
+        expect(updateVideoMeeting).not.toHaveBeenCalled();
+        // No expiry recorded yet: one is sent. A failure is only logged.
+        getVideoMeeting.mockResolvedValueOnce({ uid: "m1", keyProtected: true });
+        updateVideoMeeting.mockRejectedValueOnce(new Error("offline"));
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        await expect(followMeetingKeyExpiry("m1", end)).resolves.toBeUndefined();
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
+    });
+
     it("gives every attendee but the organizer the link key for a save of an event with a protected meeting", async () => {
-        rememberMeetingKey("m1", "k=remembered");
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [] });
+        rememberMeetingKey("m1", "k=remembered", "mb");
         const event = { videoMeetingUid: "m1", organizer: { address: "Me@Example.com" }, attendees: [{ address: "me@example.com" }, { address: " Bob@Example.org " }] };
         expect(await meetingLinkSecrets(event)).toEqual({ "bob@example.org": "k=remembered" });
         expect(getVideoMeeting).not.toHaveBeenCalled();
         expect(await meetingLinkSecrets({ ...event, attendees: [{ address: "me@example.com" }] })).toBeUndefined();
         expect(await meetingLinkSecrets({ attendees: event.attendees })).toBeUndefined();
         // Known to be unprotected: nothing to fetch.
-        rememberMeetingKey("plain", null);
+        rememberMeetingKey("plain", null, "mb");
         expect(await meetingLinkSecrets({ ...event, videoMeetingUid: "plain" })).toBeUndefined();
         expect(await meetingKeyFragmentOf({ uid: "plain", keyProtected: true } as any)).toBeUndefined();
         expect(getVideoMeeting).not.toHaveBeenCalled();

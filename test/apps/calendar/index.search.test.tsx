@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -12,6 +12,14 @@ import { withTestRouter } from "../routerTestUtils.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
+
+// Real unless a test says otherwise (`sealedRecords.test.ts` covers the decryption itself).
+const { openSealedRecord } = vi.hoisted(() => ({ openSealedRecord: vi.fn() }));
+vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>();
+    openSealedRecord.mockImplementation(actual.openSealedRecord);
+    return { ...actual, openSealedRecord };
+});
 
 // See `index.test.tsx`: dnd-kit's real sensors cannot be driven from jsdom.
 vi.mock("@dnd-kit/core", async () => {
@@ -177,6 +185,35 @@ describe("CalendarPage search", () => {
         await user.type(input, "lisbon");
 
         expect(await screen.findByRole("heading", { name: "September 2026" }, { timeout: 2000 })).toBeInTheDocument();
+    });
+
+    it("opens protected events in full once a search runs, so their descriptions are searched too", async () => {
+        const sealedEvent = calendarEvent({ uid: "e9", title: "Offsite board", description: null, startDate: "2026-09-08T10:00:00.000Z", endDate: "2026-09-08T11:00:00.000Z", sealedFields: { title: "c", description: "c" } });
+        const actual = openSealedRecord.getMockImplementation()!;
+        openSealedRecord.mockImplementation(async (record: any) => (record.sealedFields ? { ...record, description: "The quarterly budget review" } : actual(record)));
+        mockShellAndEvents([standup, sealedEvent]);
+        const { user, input } = await openPage();
+
+        await user.type(input, "budget{Enter}");
+
+        expect(await screen.findByRole("heading", { name: "September 2026" })).toBeInTheDocument();
+        expect(searchStatus()).toHaveTextContent("1 of 1");
+        openSealedRecord.mockImplementation(actual);
+    });
+
+    it("drops protected events opened for a search that lands after the page is gone", async () => {
+        const sealedEvent = calendarEvent({ uid: "e9", title: "Offsite board", startDate: "2026-09-08T10:00:00.000Z", endDate: "2026-09-08T11:00:00.000Z", sealedFields: { title: "c" } });
+        const actual = openSealedRecord.getMockImplementation()!;
+        let finish: (() => void) | undefined;
+        openSealedRecord.mockImplementation((record: any) => (record.sealedFields ? new Promise((resolve) => (finish = () => resolve(record))) : actual(record)));
+        mockShellAndEvents([standup, sealedEvent]);
+        const { user, input } = await openPage();
+        await user.type(input, "board{Enter}");
+        await waitFor(() => expect(finish).toBeDefined());
+        cleanup();
+        finish!();
+        await Promise.resolve();
+        openSealedRecord.mockImplementation(actual);
     });
 
     it("says there are no matches and leaves the view alone", async () => {

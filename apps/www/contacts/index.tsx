@@ -46,7 +46,7 @@ import { useShortcut } from "../../shared/keyboard/useShortcut.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { notify } from "../../shared/notifications/store.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
-import { openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
+import { isOpenedRecord, isProtectedRecord, openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
 
 /** The published model class name of a contact on either database (`ContactMongo`, `ContactSQL`) - not a `ContactList`'s. */
 const CONTACT_MODEL = /^Contact(Mongo|SQL)$/;
@@ -491,10 +491,17 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     // A suggested contact becomes one of the mailbox's own: a copy in its contacts folder, and the suggestion removed (the person is not suggested again).
     const handleAddToContacts = singleFlight(async () => {
         // In the All contacts view the selection can hold contacts that already are the mailbox's own: only the suggested ones are added.
+        let locked = 0;
         for (const listed of checkedContacts.filter((checked) => checked.folderUid === suggestedFolderUid)) {
             try {
                 // Copied in full: the list opened only what it shows.
                 const contact = await openSealedRecord(listed);
+                // A protected one that won't open here (the mailbox is locked) holds only placeholders: copying them would replace its real
+                // name for good once the original is deleted. It is left as it is.
+                if (isProtectedRecord(contact) && !isOpenedRecord(contact)) {
+                    locked++;
+                    continue;
+                }
                 await createContact(
                     {
                         mailboxUid: contact.mailboxUid,
@@ -516,6 +523,13 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             } catch (err) {
                 notifyApiError(err, "Couldn't add some of the contacts");
             }
+        }
+        if (locked > 0) {
+            notify({
+                kind: "warning",
+                title: "Some contacts weren't added",
+                message: `${locked === 1 ? "A suggested contact is" : `${locked} suggested contacts are`} protected and can't be opened while your mailbox is locked. Unlock it, then add ${locked === 1 ? "it" : "them"} again.`,
+            });
         }
         setCheckedUids(new Set());
         await reload();

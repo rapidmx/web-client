@@ -9,7 +9,7 @@
 
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
-import { openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
+import { isOpenedRecord, isProtectedRecord, openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
 import { type InvitationContent, invitationContentOf, protectedEventWrite } from "./protectedEvents.js";
 import { meetingLinkSecrets } from "../videoconf/protectedMeetings.js";
 
@@ -180,6 +180,16 @@ const EVENT_SORT = JSON.stringify({ uid: "ASC" });
  * `LIST_CALENDAR_EVENTS_MAX_PAGES` pages guards against looping forever should a server ever ignore
  * `page` and keep returning full pages.
  */
+/** What a list opens of a protected event: what the calendar views draw. Each field is one decryption, and a calendar lists every event
+ * it has - the rest (the description) is opened by the view that shows or edits it, by a search, and by a save. */
+export const EVENT_LIST_FIELDS = ["title", "location"] as const;
+
+/** `event` with every protected field opened, when only some were (a listed event) - for a write, which sends only what changed and
+ * invites with the whole content. */
+export async function fullyOpenedEvent<T extends CalendarEvent | undefined>(event: T): Promise<T> {
+    return event && isProtectedRecord(event) && !isOpenedRecord(event) ? openSealedRecord(event) : event;
+}
+
 export async function listCalendarEvents(folderUid: string, client?: ApiClient): Promise<CalendarEvent[]> {
     const events: CalendarEvent[] = [];
     for (let page = 0; page < LIST_CALENDAR_EVENTS_MAX_PAGES; page++) {
@@ -192,7 +202,7 @@ export async function listCalendarEvents(folderUid: string, client?: ApiClient):
             break;
         }
     }
-    return openSealedRecords(events);
+    return openSealedRecords(events, EVENT_LIST_FIELDS);
 }
 
 /** An event the server returned, opened. */
@@ -258,6 +268,7 @@ export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
  * content that changed, and the content the server invites with (`protectedEventWrite()`). For an event whose video meeting is protected,
  * every attendee's link key goes with it (`meetingLinkSecrets()`), for the server to add to their links in the invitations it sends. */
 export async function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient, current?: CalendarEvent): Promise<CalendarEvent> {
+    current = await fullyOpenedEvent(current);
     const body: Record<string, any> = protectedEventWrite(current, input);
     const secrets = await meetingLinkSecrets(
         { videoMeetingUid: input.videoMeetingUid ?? current?.videoMeetingUid, attendees: input.attendees ?? current?.attendees, organizer: current?.organizer ?? input.organizer },
@@ -297,7 +308,7 @@ export async function respondToEvent(
     client?: ApiClient,
     current?: CalendarEvent,
 ): Promise<CalendarEvent | { uid: string }> {
-    const invitationContent = invitationContentOf(current);
+    const invitationContent = invitationContentOf(await fullyOpenedEvent(current));
     const result = await withClient<CalendarEvent | { uid: string }>(client, `/mail/calendar-events/${encodeURIComponent(uid)}/respond`, {
         method: "POST",
         body: JSON.stringify(invitationContent ? { responseStatus, invitationContent } : { responseStatus }),

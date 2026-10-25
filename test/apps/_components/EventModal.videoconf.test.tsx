@@ -9,9 +9,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import EventModal from "../../../apps/shared/components/calendar/EventModal.js";
 import { CalendarOccurrence } from "../../../lib/calendar/recurrence.js";
-import { addGuest, clickModify } from "./eventModalHelpers.js";
+import { addGuest, clickModify, setWhen } from "./eventModalHelpers.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 const { protectMeeting } = vi.hoisted(() => ({ protectMeeting: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined) }));
 vi.mock("../../../lib/videoconf/protectedMeetings.js", async (importOriginal) => ({
@@ -632,12 +633,15 @@ describe("EventModal video conferencing with zero-access", () => {
     };
 
     afterEach(() => {
+        destroyUnlockedKeys();
         protectMeeting.mockReset().mockResolvedValue(undefined);
         vi.unstubAllGlobals();
     });
 
     it("protects the meeting, sends no readable title or names, keys the organizer's link and every invited attendee's", async () => {
         protectMeeting.mockResolvedValue(SECURED);
+        // A protected meeting is made with the mailbox unlocked, and its remembered key is handed out only while it stays so.
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
         const fetchMock = mockVideoFetch();
         const user = userEvent.setup();
         const openSpy = vi.fn();
@@ -659,6 +663,43 @@ describe("EventModal video conferencing with zero-access", () => {
         expect(screen.queryByText(/isn't end-to-end protected/)).toBeNull();
         await user.click(join);
         expect(openSpy).toHaveBeenCalledWith(`${JOIN_URL}#${SECURED.fragment}`, "_blank", "noopener,noreferrer");
+    });
+
+    const MOVED = { ...occurrence({ videoMeetingUid: "vm1" }), startDate: "2026-06-10T15:00:00.000Z", endDate: "2026-06-10T16:00:00.000Z", version: 3 };
+
+    it("moves a linked protected meeting's key expiry to follow a rescheduled event", async () => {
+        const fetchMock = mockVideoFetch({
+            getMeeting: () => jsonResponse(200, { ...meetingFixture, keyProtected: true, keyExpiresAt: "2026-06-03T16:30:00.000Z", organizerJoinUrl: JOIN_URL }),
+            updateEvent: () => jsonResponse(200, MOVED),
+        });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        setWhen("Start", "2026-06-10T15:00");
+        setWhen("End", "2026-06-10T16:00");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(callsTo(fetchMock, "/api/mail/video-meetings/vm1", "PUT")).toHaveLength(1);
+        // The new end an hour later, as at creation.
+        expect(bodyOf(fetchMock, "/api/mail/video-meetings/vm1", "PUT")).toEqual({ keyExpiresAt: "2026-06-10T17:00:00.000Z" });
+    });
+
+    it("saves a rescheduled event even when its meeting's key expiry can't be moved", async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        mockVideoFetch({
+            getMeeting: () => jsonResponse(200, { ...meetingFixture, keyProtected: true, keyExpiresAt: "2026-06-03T16:30:00.000Z" }),
+            updateMeeting: () => jsonResponse(500, { message: "nope" }),
+            updateEvent: () => jsonResponse(200, MOVED),
+        });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(occurrence({ videoMeetingUid: "vm1" }));
+        setWhen("Start", "2026-06-10T15:00");
+        setWhen("End", "2026-06-10T16:00");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
     });
 
     it("says why a meeting isn't protected when the mailbox has no zero-access key unlocked", async () => {

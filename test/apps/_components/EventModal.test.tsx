@@ -331,6 +331,38 @@ describe("EventModal", () => {
         expect(onSaved).toHaveBeenCalled();
     });
 
+    it("says why one occurrence of a protected series can't be changed while the mailbox is locked, writing nothing", async () => {
+        const recurring = occurrence({
+            title: "Protected event",
+            sealedFields: { title: "c2VhbGVk" },
+            recurrenceRule: { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] },
+            recurrenceId: "2026-06-03T15:00:00.000Z",
+            isRecurringOccurrence: true,
+        });
+        const fetchMock = mockFetch(() => jsonResponse(200, recurring));
+        const user = userEvent.setup();
+        render(
+            <EventModal
+                open
+                onClose={vi.fn()}
+                mailboxUid="mb1"
+                folderUid="f1"
+                organizerAddress="jane@example.com"
+                occurrence={recurring}
+                onSaved={vi.fn()}
+                onDeleted={vi.fn()}
+            />,
+        );
+        // Opened in full first - which, locked, leaves it as it is.
+        expect(screen.getByText("Opening this event…")).toBeInTheDocument();
+        await screen.findByRole("button", { name: "Modify" });
+        clickModify();
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        expect(await screen.findByText(/This event is protected and your mailbox is locked/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => ["PUT", "POST"].includes((init as RequestInit | undefined)?.method ?? "GET"))).toBe(false);
+    });
+
     it("saves the entire series when 'The entire series' is selected", async () => {
         const recurring = occurrence({
             recurrenceRule: { freq: "weekly", interval: 1, byDay: ["MO"], exceptions: [] },

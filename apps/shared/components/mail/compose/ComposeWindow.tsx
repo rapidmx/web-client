@@ -48,7 +48,7 @@ import { notify } from "../../../notifications/store.js";
 import { isFileDrag, isInlineImage } from "./dropFiles.js";
 import { evaluateEncryptionRequirement } from "./encryptionRequirement.js";
 import { decideSend, SendBlock } from "../../../mail/outbox/sendDecision.js";
-import { SendRequest, sendDecisionInput, startSend } from "../../../mail/outbox/sendJob.js";
+import { SendRequest, sendDecisionInput, senderCanUseOpenPgp, startSend } from "../../../mail/outbox/sendJob.js";
 import { useCompose, type ComposeSession } from "./ComposeContext.js";
 import { ariaKeyShortcuts, withHint } from "../../../keyboard/format.js";
 import { SHORTCUTS, ShortcutDef } from "../../../keyboard/keymap.js";
@@ -492,7 +492,14 @@ export default function ComposeWindow({
                         return;
                     }
                     lookupFailuresRef.current.delete(key);
-                    const status = resolveRecipientEncryption(mailbox.primarySmtpAddress, ownPrefersMutual, encryptionPolicy, recipient.address, result.lookup);
+                    const status = resolveRecipientEncryption(
+                        mailbox.primarySmtpAddress,
+                        ownPrefersMutual,
+                        encryptionPolicy,
+                        recipient.address,
+                        result.lookup,
+                        senderCanUseOpenPgp(getUnlockedKeys(mailbox.uid)),
+                    );
                     setRecipientStatuses((prev) => ({ ...prev, [key]: status }));
                 });
         }

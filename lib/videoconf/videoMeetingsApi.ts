@@ -129,9 +129,11 @@ export function createVideoMeeting(input: CreateVideoMeetingInput, client?: ApiC
 export interface UpdateVideoMeetingInput {
     title?: string;
     status?: "cancelled";
+    /** A protected meeting's new key expiry (ISO), when its event's end moved - `followMeetingKeyExpiry()` in `protectedMeetings.ts`. */
+    keyExpiresAt?: string;
 }
 
-/** Renames or cancels a meeting. Requires UPDATE on its owning mailbox. */
+/** Renames, cancels or moves the key expiry of a meeting. Requires UPDATE on its owning mailbox. */
 export function updateVideoMeeting(uid: string, input: UpdateVideoMeetingInput, client?: ApiClient): Promise<VideoMeeting> {
     return withClient(client, `/mail/video-meetings/${encodeURIComponent(uid)}`, { method: "PUT", body: JSON.stringify(input) });
 }

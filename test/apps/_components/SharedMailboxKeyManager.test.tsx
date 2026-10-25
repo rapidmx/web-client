@@ -65,6 +65,18 @@ describe("SharedMailboxKeyManager", () => {
         ]);
     });
 
+    it("asks every pass to open a shared mailbox again when a rotation left it without the active key, and right after making a key itself", async () => {
+        shared.maintainSharedMailbox.mockImplementation(async (uid: string) => ({ provisioned: false, rotated: uid === "support" }));
+        render(<SharedMailboxKeyManager mailboxes={mailboxes} userUid="me" />);
+        await flush();
+
+        expect(shared.unlockSharedMailbox.mock.calls.map(([uid, , refresh]) => [uid, refresh])).toEqual([
+            ["theirs", true],
+            ["support", true],
+            ["support", true],
+        ]);
+    });
+
     it("does nothing while no own mailbox is unlocked, and leaves an own mailbox that is locked or open only as shared", async () => {
         session.personallyUnlockedKeys.mockReturnValue([]);
         render(<SharedMailboxKeyManager mailboxes={mailboxes} userUid="me" />);

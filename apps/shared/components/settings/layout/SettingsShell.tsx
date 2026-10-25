@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import React, { createContext, PropsWithChildren, ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, PropsWithChildren, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { IconType } from "react-icons";
 import {
     HiOutlineArrowUturnLeft,
@@ -82,6 +82,9 @@ export interface SettingsShellContextValue {
      * every settings section so far (Automatic Replies) edits mailbox-scoped fields. */
     mailboxUid?: string;
     mailboxes: Mailbox[];
+    /** Merges what a section just saved of a mailbox (its new `version` included) into the shell's copy, so a section mounted again for
+     * it - after the mailbox switcher, say - starts from what was saved rather than from the list loaded once. */
+    patchMailbox?: (mailboxUid: string, patch: Partial<Mailbox>) => void;
 }
 
 const SettingsShellContext = createContext<SettingsShellContextValue>({ mailboxes: [] });
@@ -151,7 +154,11 @@ export default function SettingsShell({
         (requestedMailboxUid && mailboxes.some((mb) => mb.uid === requestedMailboxUid) ? requestedMailboxUid : undefined) ??
         primaryMailboxUid(mailboxes, userUid);
 
-    const contextValue = useMemo<SettingsShellContextValue>(() => ({ mailboxUid, mailboxes }), [mailboxUid, mailboxes]);
+    const patchMailbox = useCallback(
+        (uid: string, patch: Partial<Mailbox>) => setMailboxes((list) => list.map((mb) => (mb.uid === uid ? { ...mb, ...patch } : mb))),
+        [],
+    );
+    const contextValue = useMemo<SettingsShellContextValue>(() => ({ mailboxUid, mailboxes, patchMailbox }), [mailboxUid, mailboxes, patchMailbox]);
 
     // A full-screen takeover, not nested inside the rest of the app's chrome — same as ContactsShell/
     // TasksShell, there's nothing else for a mailbox-less caller to configure here yet.

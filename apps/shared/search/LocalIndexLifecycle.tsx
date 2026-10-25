@@ -75,23 +75,37 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
     // The latest props (and client), for the long-lived polling interval below.
     const latestRef = useRef({ mailboxUid, folders, client });
     latestRef.current = { mailboxUid, folders, client };
-    // mailboxUid -> when its last zero-access sync started. Set only once its first build finished (the sync writes into the index the
-    // build opened); a mailbox in `syncingRef` has a pass running, and never gets a second one alongside it.
+    // mailboxUid -> when its last zero-access sync started. A mailbox syncs only once its build of this unlock settled (`builtRef` - the
+    // sync writes into the index the build opened), first at once and then every interval; a mailbox in `syncingRef` has a pass running,
+    // and never gets a second one alongside it. A lock forgets all three, so a pass still winding down never holds up the next unlock's.
     const lastSyncRef = useRef(new Map<string, number>());
-    const syncingRef = useRef(new Set<string>());
+    const builtRef = useRef(new Set<string>());
+    // mailboxUid -> its latest build, so only that one's end starts the sync (not one a lock overtook).
+    const buildsRef = useRef(new Map<string, symbol>());
+    const syncingRef = useRef(new Map<string, symbol>());
 
-    function syncIfDue(targetMailboxUid: string, targetClient: ApiClient | undefined, first = false) {
+    function syncIfDue(targetMailboxUid: string, targetClient: ApiClient | undefined) {
         const unlocked = getUnlockedKeys(targetMailboxUid);
         const last = lastSyncRef.current.get(targetMailboxUid);
-        if (!unlocked?.zeroAccessKeys?.length || syncingRef.current.has(targetMailboxUid) || (!first && (last === undefined || Date.now() - last < ZERO_ACCESS_SYNC_INTERVAL_MS))) {
+        if (
+            !unlocked?.zeroAccessKeys?.length ||
+            !builtRef.current.has(targetMailboxUid) ||
+            syncingRef.current.has(targetMailboxUid) ||
+            (last !== undefined && Date.now() - last < ZERO_ACCESS_SYNC_INTERVAL_MS)
+        ) {
             return;
         }
         lastSyncRef.current.set(targetMailboxUid, Date.now());
-        syncingRef.current.add(targetMailboxUid);
+        const pass = Symbol(targetMailboxUid);
+        syncingRef.current.set(targetMailboxUid, pass);
         loadSyncer()
             .then(({ syncZeroAccessIndex }) => syncZeroAccessIndex(targetMailboxUid, unlocked, targetClient))
             .catch(() => undefined)
-            .finally(() => syncingRef.current.delete(targetMailboxUid));
+            .finally(() => {
+                if (syncingRef.current.get(targetMailboxUid) === pass) {
+                    syncingRef.current.delete(targetMailboxUid);
+                }
+            });
     }
 
     function startBuildIfUnlocked(targetMailboxUid: string, targetFolders: Folder[], targetClient: ApiClient | undefined) {
@@ -100,12 +114,21 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
             return;
         }
         trackedRef.current.set(targetMailboxUid, true);
+        const build = Symbol(targetMailboxUid);
+        buildsRef.current.set(targetMailboxUid, build);
         // Never an unhandled rejection - a broken local index is best-effort infrastructure, not a build
         // the rest of the app depends on.
-        loadBuilder()
+        // The sync runs however the build ended: zero-access mail reaches the index only through it, and a build that failed part-way
+        // isn't tried again until the next unlock. (Locked meanwhile, there are no keys to sync with.)
+        void loadBuilder()
             .then(({ buildLocalIndex }) => buildLocalIndex(targetMailboxUid, unlocked, targetFolders, undefined, targetClient))
-            .then(() => syncIfDue(targetMailboxUid, targetClient, true))
-            .catch(() => undefined);
+            .catch(() => undefined)
+            .then(() => {
+                if (buildsRef.current.get(targetMailboxUid) === build && trackedRef.current.get(targetMailboxUid)) {
+                    builtRef.current.add(targetMailboxUid);
+                    syncIfDue(targetMailboxUid, targetClient);
+                }
+            });
     }
 
     useEffect(() => {
@@ -121,6 +144,8 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
                     // A present-to-absent transition: something just destroyed this mailbox's keys.
                     trackedRef.current.set(trackedUid, false);
                     lastSyncRef.current.delete(trackedUid);
+                    builtRef.current.delete(trackedUid);
+                    syncingRef.current.delete(trackedUid);
                     // Stop the pass still running with the now-destroyed keys; the destroy itself also makes
                     // the Worker reject anything that pass still sends.
                     loadBuilder()

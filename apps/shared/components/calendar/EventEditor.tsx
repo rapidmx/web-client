@@ -5,6 +5,7 @@
 import React, { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { ApiClient, ApiRequestError } from "../../../../lib/util/api.js";
+import { KeysLockedError } from "../../../../lib/crypto/masterKey.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import {
     Attendee,
@@ -25,7 +26,7 @@ import {
 } from "../../../../lib/videoconf/videoMeetingsApi.js";
 import { detachOccurrence, saveEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { isProtectedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
-import { meetingKeyExpiry, organizerJoinLink, protectMeeting, rememberMeetingKey } from "../../../../lib/videoconf/protectedMeetings.js";
+import { followMeetingKeyExpiry, meetingKeyExpiry, organizerJoinLink, protectMeeting, rememberMeetingKey } from "../../../../lib/videoconf/protectedMeetings.js";
 import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
 import { deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
 import { Mailbox } from "../../../../lib/mail/mailApi.js";
@@ -426,10 +427,16 @@ export default function EventEditor({
      *
      * Never throws: the event is already stored by the time this runs, so a failure here is reported inline
      * next to the checkbox and left retryable, with `videoMeetingUid` still whatever it was before.
+     *
+     * `rescheduled`: the save changed the event's times or recurrence. A protected meeting's key is discarded an hour after the end it
+     * was made for, so a linked meeting's key expiry then follows the saved event's (series') new end - best effort.
      */
-    async function applyVideoConferencing(saved: CalendarEvent, guests: Attendee[]): Promise<{ event: CalendarEvent; failed: boolean }> {
-        // Off and never on, or on and already linked (see the limitation above) - nothing to do either way.
+    async function applyVideoConferencing(saved: CalendarEvent, guests: Attendee[], rescheduled: boolean): Promise<{ event: CalendarEvent; failed: boolean }> {
+        // Off and never on, or on and already linked (see the limitation above) - nothing to do either way, but for the key expiry.
         if (videoEnabled === !!videoMeetingUid) {
+            if (videoEnabled && rescheduled && saved.videoMeetingUid) {
+                await followMeetingKeyExpiry(saved.videoMeetingUid, seriesEndDate(saved), client);
+            }
             return { event: saved, failed: false };
         }
         // Detaching a single occurrence (`detachOccurrence()`, react-shared's `calendarMutations.ts`)
@@ -474,7 +481,7 @@ export default function EventEditor({
                         },
                         client,
                     );
-                    rememberMeetingKey(result.meeting.uid, secured?.fragment ?? null);
+                    rememberMeetingKey(result.meeting.uid, secured?.fragment ?? null, saved.mailboxUid);
                     setVideoNotice(secured ? null : "This meeting isn't end-to-end protected because zero-access encryption is off (or locked) for your mailbox.");
                     const organizerUrl = result.organizerJoinUrl ?? null;
                     mintedMeeting.current = { uid: result.meeting.uid, organizerJoinUrl: organizerUrl && secured ? `${organizerUrl}#${secured.fragment}` : organizerUrl };
@@ -644,7 +651,14 @@ export default function EventEditor({
             } else {
                 saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...(fields as Partial<CalendarEventInput>) }, client, occurrence);
             }
-            const video = await applyVideoConferencing(saved, merged.attendees);
+            // Against the record this save started from: a false positive only costs a look at the meeting.
+            const before = savedEvent ?? occurrence;
+            const rescheduled =
+                !!before &&
+                (!sameMinute(before.startDate, startDate) ||
+                    !sameMinute(before.endDate, endDate) ||
+                    JSON.stringify(before.recurrenceRule ?? null) !== JSON.stringify(fields.recurrenceRule ?? null));
+            const video = await applyVideoConferencing(saved, merged.attendees, rescheduled);
             if (video.failed) {
                 // The event itself is saved - keep the modal open on the inline error so the video meeting
                 // can be retried (or the toggle put back) rather than closing over it.
@@ -658,7 +672,8 @@ export default function EventEditor({
             }
             onSaved();
         } catch (err) {
-            setError(err instanceof ApiRequestError ? err.message : "Could not save this event.");
+            // `KeysLockedError`: one occurrence of a protected event, detached while the mailbox is locked (nothing was written).
+            setError(err instanceof ApiRequestError || err instanceof KeysLockedError ? err.message : "Could not save this event.");
         } finally {
             setSaving(false);
         }

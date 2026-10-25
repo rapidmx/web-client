@@ -7,6 +7,7 @@ import { getMailbox, type Mailbox, updateMailbox, type ZeroAccessDataType, type 
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
+import { useSettingsShell } from "./layout/SettingsShell.js";
 
 /** What each data type's protection covers, what stays readable and why, and what it breaks on a phone or Outlook - the copy restapi
  * `specs/search.md` §3 *What It Covers* requires settings to state plainly. */
@@ -65,24 +66,29 @@ export interface ZeroAccessTypesProps {
  */
 export default function ZeroAccessTypes({ mailbox, types, canManage }: ZeroAccessTypesProps) {
     const client = useApiClient();
+    const { patchMailbox } = useSettingsShell();
     const [chosen, setChosen] = useState<ChosenTypes>(mailbox.zeroAccessTypes ?? {});
     const [saving, setSaving] = useState(false);
 
     async function save(type: ZeroAccessDataType, on: boolean) {
         const previous = chosen;
-        setChosen({ ...chosen, [type]: on });
+        const next = { ...chosen, [type]: on };
+        setChosen(next);
         setSaving(true);
         try {
             const write = (version: number) => updateMailbox({ uid: mailbox.uid, version, zeroAccessTypes: { [type]: on } }, client);
+            let saved: Mailbox;
             try {
-                await write(mailbox.version);
+                saved = await write(mailbox.version);
             } catch (err) {
                 // The server records devices on the mailbox, moving its version on: read it again and retry once.
                 if (!(err instanceof ApiRequestError && err.status === 409)) {
                     throw err;
                 }
-                await write((await getMailbox(mailbox.uid, {}, client)).version);
+                saved = await write((await getMailbox(mailbox.uid, {}, client)).version);
             }
+            // Kept by the shell, so turning zero-access off and on again (which mounts this anew) shows what was saved.
+            patchMailbox?.(mailbox.uid, { zeroAccessTypes: next, version: saved.version });
         } catch (err) {
             setChosen(previous);
             notifyApiError(err, "Couldn't save what zero-access encryption protects");

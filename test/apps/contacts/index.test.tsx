@@ -1944,6 +1944,30 @@ describe("ContactsPage suggested contacts", () => {
         });
     });
 
+    it("leaves a protected suggested contact that won't open (locked) where it is, rather than copying its placeholders", async () => {
+        const sealedSam = { ...SUGGESTED, displayName: "sam@example.com", sealedFields: { displayName: "x" } };
+        // Locked: nothing opens (an earlier test leaves the list opening its own way).
+        openSealedRecords.mockImplementation(async (records: any[]) => records);
+        const fetchMock = mockWithSuggested((url, init) =>
+            url.startsWith("/api/mail/contacts") && (init?.method ?? "GET") === "GET" && url.includes("folderUid=f-suggested") ? jsonResponse(200, [sealedSam, { ...sealedSam, uid: "s2" }]) : undefined,
+        );
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await user.click(await screen.findByRole("button", { name: /Suggested contacts/ }));
+        await waitFor(() => expect(screen.getAllByText("sam@example.com").length).toBeGreaterThan(0));
+        await user.click(screen.getAllByLabelText("Select sam@example.com")[0]);
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add to contacts"));
+
+        expect(await screen.findByText(/A suggested contact is protected and can't be opened while your mailbox is locked/)).toBeInTheDocument();
+        await user.click(screen.getAllByLabelText("Select sam@example.com")[0]);
+        await user.click(screen.getAllByLabelText("Select sam@example.com")[1]);
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add to contacts"));
+        expect(await screen.findByText(/2 suggested contacts are protected/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/contacts" && (init as RequestInit)?.method === "POST")).toBe(false);
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "DELETE")).toBe(false);
+    });
+
     it("says so when a suggested contact can't be added", async () => {
         mockWithSuggested((url, init) => (url === "/api/mail/contacts" && init?.method === "POST" ? jsonResponse(500, { message: "nope" }) : undefined));
         const user = userEvent.setup();
