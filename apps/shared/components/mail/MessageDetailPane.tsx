@@ -1153,7 +1153,7 @@ function MessageDetailContent({
     // Registered while rendering, not in an effect: the invitation lookup below must find it the moment it is enabled. Writing the same
     // file for the same message again is a no-op.
     if (sealedCalendar !== undefined) {
-        rememberSealedInvite(message.uid, sealedCalendar);
+        rememberSealedInvite(message.uid, sealedCalendar, message.mailboxUid);
     }
     const mayHoldInvite =
         !message.encrypted &&

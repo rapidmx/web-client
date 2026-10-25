@@ -22,12 +22,18 @@ vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
 // file covers the round-3 fixes: every address is kept, and cleared fields are sent as null on update.
 
 // A protected contact opens to its real details here; `sealedRecords.test.ts` covers the decryption itself.
-const { openSealedRecord } = vi.hoisted(() => ({ openSealedRecord: vi.fn() }));
+// What a test's opening resolves to counts as opened (`openedRecords`), as the real opening marks it.
+const { openSealedRecord, openedRecords, actualOpen } = vi.hoisted(() => ({ openSealedRecord: vi.fn(), openedRecords: new WeakSet<object>(), actualOpen: { current: undefined as ((record: Contact) => Promise<Contact>) | undefined } }));
 vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>();
+    actualOpen.current = actual.openSealedRecord;
     openSealedRecord.mockImplementation(actual.openSealedRecord);
-    return { ...actual, openSealedRecord };
+    return { ...actual, openSealedRecord, isOpenedRecord: (record: object | undefined) => (!!record && openedRecords.has(record)) || actual.isOpenedRecord(record as never) };
 });
+const opened = <T extends object>(record: T): T => {
+    openedRecords.add(record);
+    return record;
+};
 
 function contact(overrides: Partial<Contact> = {}): Contact {
     return {
@@ -60,6 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    openSealedRecord.mockImplementation(actualOpen.current!);
 });
 
 describe("ContactForm", () => {
@@ -70,8 +77,44 @@ describe("ContactForm", () => {
         render(<ContactForm contact={sealed} onSaved={vi.fn()} onCancel={vi.fn()} />);
 
         expect(screen.getByText(/Opening this contact/)).toBeInTheDocument();
-        finish({ ...sealed, displayName: "Jane Doe" });
+        finish(opened({ ...sealed, displayName: "Jane Doe" }));
         expect(await screen.findByDisplayValue("Jane Doe")).toBeInTheDocument();
+    });
+
+    it("never edits a protected contact that can't be opened here, saying to unlock instead", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, {}));
+        openSealedRecord.mockImplementationOnce(async (record: Contact) => record);
+        const sealed = contact({ givenName: undefined, notes: undefined, addresses: [], sealedFields: { givenName: "x", notes: "y", addresses: "z" } });
+        const onCancel = vi.fn();
+        const user = userEvent.setup();
+        render(<ContactForm contact={sealed} onSaved={vi.fn()} onCancel={onCancel} />);
+
+        expect(await screen.findByText(/can.t be edited while your mailbox is locked/)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        expect(onCancel).toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("sends only the protected details that changed from the opened contact, clearing one the user emptied", async () => {
+        const fetchMock = mockFetch((_url, init) => jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string) }));
+        const sealed = contact({ sealedFields: { givenName: "a", surname: "b", company: "c", jobTitle: "d", notes: "e", addresses: "f", phones: "g", categories: "h" } });
+        openSealedRecord.mockImplementation(async (record: Contact) => opened({ ...record }));
+        const onSaved = vi.fn();
+        const user = userEvent.setup();
+        render(<ContactForm contact={sealed} onSaved={onSaved} onCancel={vi.fn()} />);
+
+        await user.clear(await screen.findByLabelText("Last name"));
+        await user.type(screen.getByLabelText("Notes"), " again");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        // The emptied one is named as cleared: restapi applies an empty sealed value only then.
+        expect(body).toMatchObject({ uid: "c1", version: 3, surname: null, notes: "Met at conf again", displayName: "Jane Doe", clearedFields: ["surname"] });
+        for (const unchanged of ["givenName", "company", "jobTitle", "addresses", "phones", "categories"]) {
+            expect(unchanged in body).toBe(false);
+        }
     });
 
     it("shows and saves every stored address, and edits/removes a non-first one", async () => {
@@ -239,6 +282,34 @@ describe("ContactForm", () => {
             expect(updates).toHaveLength(2);
             expect(updates[1]).toMatchObject({ uid: "c1", version: 4, company: "Acme Ltd" });
         });
+
+        it("compares a protected contact's retry with what the first save stored, so a detail changed back is still sent", async () => {
+            let photoAttempts = 0;
+            const sealed = contact({ sealedFields: { company: "c" } });
+            openSealedRecord.mockImplementation(async (record: Contact) => opened({ ...record }));
+            const fetchMock = mockFetch((url, init) => {
+                if (isPhoto(url)) {
+                    photoAttempts++;
+                    return photoAttempts === 1 ? jsonResponse(500, { message: "Storage down." }) : jsonResponse(200, contact({ version: 6 }));
+                }
+                return jsonResponse(200, { ...sealed, ...JSON.parse(init.body as string), version: 4 });
+            });
+            const onSaved = vi.fn();
+            const user = userEvent.setup();
+            render(<ContactForm contact={sealed} onSaved={onSaved} onCancel={vi.fn()} />);
+            await user.type(await screen.findByLabelText("Company"), " Ltd");
+            await user.upload(screen.getByLabelText("Contact photo file"), png());
+            await user.click(screen.getByRole("button", { name: "Save" }));
+            await screen.findByText(/Saved, but the picture/);
+
+            // Back to what the contact first showed - but no longer what it stores.
+            await user.clear(screen.getByLabelText("Company"));
+            await user.type(screen.getByLabelText("Company"), "Acme");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+            await waitFor(() => expect(onSaved).toHaveBeenCalled());
+            const updates = fetchMock.mock.calls.filter(([url]) => url === "/api/mail/contacts/c1").map(([, init]) => JSON.parse((init as RequestInit).body as string));
+            expect(updates.map((update) => update.company)).toEqual(["Acme Ltd", "Acme"]);
+            });
 
         it("offers to go on without the picture, which finishes with the contact as saved, and Cancel does the same", async () => {
             mockFetch((url, init) => (isPhoto(url) ? jsonResponse(500, { message: "Storage down." }) : jsonResponse(200, { ...contact(), ...JSON.parse(init.body as string), version: 4 })));

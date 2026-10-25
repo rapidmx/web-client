@@ -290,6 +290,19 @@ describe("startSend - failures", () => {
         expect(mocks.queueMessageSend).toHaveBeenCalledTimes(1);
     });
 
+    it("re-assembles a single-copy message on Retry when nothing went, rather than relaying the stored draft as it is now", async () => {
+        mocks.queueMessageSend.mockRejectedValueOnce(new ApiRequestError("Unavailable", 503));
+        startSend(request());
+        await settle();
+        expect(mocks.assembleDraft).toHaveBeenCalledTimes(1);
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+        await settle();
+        expect(mocks.assembleDraft).toHaveBeenCalledTimes(2);
+    });
+
     it("a network failure whose message state cannot be read is a failure", async () => {
         mocks.queueMessageSend.mockRejectedValue(new TypeError("network down"));
         mocks.getMessage.mockRejectedValue(new Error("still down"));
@@ -304,7 +317,10 @@ describe("startSend - failures", () => {
         mocks.assembleDraft.mockRejectedValue(new ApiRequestError("Nope", 500));
         startSend(request({ ccText: "c@example.com", bccText: "d@example.com", requestReceipt: true, signEnabled: true, encryptRequested: true }));
         await settle();
+        expect(toasts()).toHaveLength(1);
         toasts()[0].actions[1].onClick!();
+        // The pop-up goes with it: its Retry must not hand over the draft now being edited.
+        expect(toasts()).toEqual([]);
         expect(open).toHaveBeenCalledWith({
             mailboxUid: "mb1",
             resume: expect.objectContaining({ draft, to: "bob@example.com", cc: "c@example.com", bcc: "d@example.com", subject: "Hello", html: "<p>Hi</p>", requestReceipt: true, signEnabled: true, encryptRequested: true }),

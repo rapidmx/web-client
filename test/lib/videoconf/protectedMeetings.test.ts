@@ -96,6 +96,29 @@ describe("protectedMeetings", () => {
         expect(keyListeners).toHaveLength(1);
     });
 
+    it("keeps no meeting key opened or minted across a lock that came while it was in flight", async () => {
+        const organizer = await organizerZeroAccessKey();
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [organizer] });
+        const secured = (await protectMeeting("mb", "Board", [], new Date(Date.now() + 60_000)))!;
+        const meeting: any = { uid: "m1", mailboxUid: "mb", keyProtected: true, keyWraps: secured.protection.keyWraps };
+
+        // Unlocked when the wrap is opened, locked by the time it is: neither handed out nor kept.
+        getUnlockedKeys.mockReset().mockReturnValueOnce({ zeroAccessKeys: [organizer] }).mockReturnValue(undefined);
+        expect(await meetingKeyFragmentOf(meeting)).toBeUndefined();
+        // A new meeting's key, remembered after the mailbox locked (the save's request was in flight): not kept.
+        rememberMeetingKey("m2", secured.fragment, "mb");
+        // Unlocked again without a key that opens the wrap: only a kept key would come back.
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await organizerZeroAccessKey()] });
+        expect(await meetingKeyFragmentOf(meeting)).toBeUndefined();
+        expect(await meetingKeyFragmentOf({ uid: "m2", mailboxUid: "mb", keyProtected: true } as any)).toBeUndefined();
+        // Known-unprotected meetings are remembered whatever the lock: there is no key to keep.
+        getUnlockedKeys.mockReturnValue(undefined);
+        rememberMeetingKey("plain", null, "mb");
+        getVideoMeeting.mockClear();
+        expect(await meetingLinkSecrets({ videoMeetingUid: "plain", attendees: [{ address: "b@example.org" }] })).toBeUndefined();
+        expect(getVideoMeeting).not.toHaveBeenCalled();
+    });
+
     it("moves a protected meeting's key expiry to follow its event's new end, best effort", async () => {
         const end = new Date(Date.now() + 86_400_000);
         const expiry = meetingKeyExpiry(end).toISOString();

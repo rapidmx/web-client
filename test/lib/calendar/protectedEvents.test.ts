@@ -32,11 +32,14 @@ describe("protectedEvents", () => {
             startDate: "s",
             invitationContent: { title: "Board meeting", location: "Room 5", description: "Agenda", descriptionHtml: undefined },
         });
-        // A cleared field is a change, and leaves it out of the invitation.
-        expect(protectedEventWrite(openedEvent, { uid: "e1", version: 1, location: null })).toEqual({
+        // A cleared field is a change, named as cleared (the server applies an empty sealed field only then), and leaves it out of the
+        // invitation. One that isn't sealed needs no naming.
+        expect(protectedEventWrite({ ...openedEvent, descriptionHtml: "<p>Agenda</p>" }, { uid: "e1", version: 1, location: null, descriptionHtml: null })).toEqual({
             uid: "e1",
             version: 1,
             location: null,
+            descriptionHtml: null,
+            clearedFields: ["location"],
             invitationContent: { title: "Board meeting", location: undefined, description: "Agenda", descriptionHtml: undefined },
         });
     });
@@ -47,6 +50,8 @@ describe("protectedEvents", () => {
             version: 1,
             startDate: "s",
         });
+        // Nor clears one: a device that couldn't open it doesn't know what it holds.
+        expect(protectedEventWrite(lockedEvent, { uid: "e1", version: 1, title: "" })).toEqual({ uid: "e1", version: 1, title: "" });
         expect(invitationContentOf(lockedEvent)).toBeUndefined();
         expect(invitationContentOf({ ...openedEvent, sealedFields: undefined })).toBeUndefined();
         expect(invitationContentOf({ ...openedEvent, title: "" })).toBeUndefined();

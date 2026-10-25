@@ -13,7 +13,19 @@ import {
     respondToMessageInvite,
     type MessageInvite,
 } from "../../../lib/calendar/inviteApi.js";
-import { clearSealedInvites, rememberSealedInvite, sealedInviteCalendar } from "../../../lib/calendar/sealedInvites.js";
+import { clearSealedInvites, onSealedInvitesForgotten, rememberSealedInvite, sealedInviteCalendar } from "../../../lib/calendar/sealedInvites.js";
+
+const { getUnlockedKeys, keyListeners } = vi.hoisted(() => ({
+    getUnlockedKeys: vi.fn((): unknown => ({ zeroAccessKeys: [{}] })),
+    keyListeners: [] as ((event: { mailboxUid: string; state: "locked" | "unlocked" }) => void)[],
+}));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
+    getUnlockedKeys,
+    subscribeKeySession: (listener: (event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) => {
+        keyListeners.push(listener);
+        return () => undefined;
+    },
+}));
 
 const invite: MessageInvite = {
     method: "REQUEST",
@@ -189,7 +201,7 @@ describe("a zero-access message's invitation (the calendar file decrypted here g
     });
 
     it("reads it with POST .../view, and sends the file with every answer", async () => {
-        rememberSealedInvite("m1", "ICS");
+        rememberSealedInvite("m1", "ICS", "mb1");
         const fetchMock = mockFetch(() => jsonResponse(200, invite));
         const body = (i: number) => JSON.parse(fetchMock.mock.calls[i][1].body);
 
@@ -217,10 +229,10 @@ describe("a zero-access message's invitation (the calendar file decrypted here g
 
     it("keeps only the most recently read messages' files, and forgets them all on clear", () => {
         for (let i = 0; i <= 100; i++) {
-            rememberSealedInvite(`m${i}`, `ICS${i}`);
+            rememberSealedInvite(`m${i}`, `ICS${i}`, "mb1");
         }
-        rememberSealedInvite("m1", "again");
-        rememberSealedInvite("m101", "ICS101");
+        rememberSealedInvite("m1", "again", "mb1");
+        rememberSealedInvite("m101", "ICS101", "mb1");
 
         expect(sealedInviteCalendar("m0")).toBeUndefined();
         expect(sealedInviteCalendar("m1")).toBe("again");
@@ -228,5 +240,34 @@ describe("a zero-access message's invitation (the calendar file decrypted here g
         expect(sealedInviteCalendar("m101")).toBe("ICS101");
         clearSealedInvites();
         expect(sealedInviteCalendar("m1")).toBeUndefined();
+    });
+
+    it("never sends or keeps a file past its mailbox's lock, telling who listens which messages' files went", async () => {
+        const forgotten = vi.fn();
+        const off = onSealedInvitesForgotten(forgotten);
+        rememberSealedInvite("m1", "ICS", "mb1");
+        rememberSealedInvite("m2", "ICS2", "mb2");
+        // One subscription, made with the first file.
+        expect(keyListeners).toHaveLength(1);
+
+        // Locked (the idle timeout): not sent, even before the lock's event has run.
+        getUnlockedKeys.mockReturnValue(undefined);
+        expect(sealedInviteCalendar("m1")).toBeUndefined();
+        const fetchMock = mockFetch(() => jsonResponse(200, invite));
+        await getMessageInvite("m1");
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/mail/calendar-events/invite/m1");
+        // A pane still drawing what it decrypted before the lock doesn't put it back.
+        rememberSealedInvite("m3", "ICS3", "mb1");
+
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [{}] });
+        keyListeners[0]({ mailboxUid: "mb1", state: "unlocked" });
+        keyListeners[0]({ mailboxUid: "mb3", state: "locked" });
+        expect(forgotten).not.toHaveBeenCalled();
+        keyListeners[0]({ mailboxUid: "mb1", state: "locked" });
+        expect(forgotten).toHaveBeenCalledExactlyOnceWith(["m1"]);
+        expect(sealedInviteCalendar("m1")).toBeUndefined();
+        expect(sealedInviteCalendar("m3")).toBeUndefined();
+        expect(sealedInviteCalendar("m2")).toBe("ICS2");
+        off();
     });
 });

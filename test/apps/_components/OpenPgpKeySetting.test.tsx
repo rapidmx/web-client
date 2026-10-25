@@ -77,6 +77,7 @@ describe("OpenPgpKeySetting", () => {
         const certificate = { certificate: true };
         readPublicKey.mockResolvedValue(certificate);
         armorPublicKey.mockReturnValue("-----BEGIN PGP PUBLIC KEY BLOCK-----");
+        const timeout = vi.spyOn(globalThis, "setTimeout");
         render(<OpenPgpKeySetting mailbox={MAILBOX} canManage />);
 
         await user.click(screen.getByRole("button", { name: "Download public key" }));
@@ -85,7 +86,11 @@ describe("OpenPgpKeySetting", () => {
         expect(readPublicKey).toHaveBeenCalledWith("cGdw");
         expect(armorPublicKey).toHaveBeenCalledWith(certificate);
         expect((click.mock.instances[0] as HTMLAnchorElement).download).toBe("alice@example.com-openpgp-public.asc");
+        expect(revokeObjectURL).not.toHaveBeenCalled();
+        const revoke = timeout.mock.calls.find(([, ms]) => ms === 60_000);
+        (revoke![0] as () => void)();
         expect(revokeObjectURL).toHaveBeenCalledWith("blob:key");
+        timeout.mockRestore();
     });
 
     it("downloads nothing when the stored certificate can't be read", async () => {

@@ -11,6 +11,7 @@ import ContactsPageBase from "../../../apps/www/contacts/index.js";
 import { latestRouter, withTestRouter } from "../routerTestUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import { createApiClient } from "../../../lib/util/api.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const ContactsPage = withTestRouter(ContactsPageBase);
@@ -1251,6 +1252,47 @@ describe("ContactsPage — sidebar views, sorting, and toolbar bulk actions", ()
         );
         await waitFor(() => expect(clearPinnedSignerCache).toHaveBeenCalled());
         promptSpy.mockRestore();
+    });
+
+    it("toolbar Add category leaves a protected contact that won't open (locked) as it is, rather than saving its placeholder categories", async () => {
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("VIP");
+        const sealedJane = { ...jane, categories: [], sealedFields: { categories: "x" } };
+        const fetchMock = mockShellAndContactsWithLists([sealedJane, { ...sealedJane, uid: "c9", displayName: "Jan Two" }], [list]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+
+        await screen.findByText("Jane Doe");
+        await user.click(screen.getByLabelText("Select Jane Doe"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add category"));
+        expect(await screen.findByText(/A contact is protected and can't be changed while your mailbox is locked/)).toBeInTheDocument();
+
+        await user.click(screen.getByLabelText("Select Jan Two"));
+        await user.click(within(screen.getByRole("toolbar")).getByText("Add category"));
+        expect(await screen.findByText(/2 contacts are protected and can't be changed/)).toBeInTheDocument();
+        expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PUT")).toBe(false);
+        promptSpy.mockRestore();
+    });
+
+    it("reads its lists again when the mailbox locks, so nothing opened with its keys stays on screen", async () => {
+        const fetchMock = mockShellAndContactsWithLists([jane], [list]);
+        const user = userEvent.setup();
+        render(<ContactsPage userUid="u1" />);
+        await screen.findByText("Jane Doe");
+        await user.click(screen.getByText("Deleted"));
+        await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("deleted=true"))).toBe(true));
+        const reads = () => fetchMock.mock.calls.filter(([url, init]) => String(url).startsWith("/api/mail/contacts?") && ((init as RequestInit)?.method ?? "GET") === "GET").length;
+        const deletedReads = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("deleted=true")).length;
+        const [before, deletedBefore] = [reads(), deletedReads()];
+
+        // Another mailbox locking changes nothing here.
+        installSharedSession("mb-other", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb-other"));
+        destroyUnlockedKeys("mb-other");
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        expect(reads()).toBe(before);
+
+        destroyUnlockedKeys("mb1");
+        await waitFor(() => expect(reads()).toBeGreaterThan(before));
+        await waitFor(() => expect(deletedReads()).toBeGreaterThan(deletedBefore));
     });
 
     it("toolbar Add category does nothing when the prompt is cancelled or left blank.", async () => {

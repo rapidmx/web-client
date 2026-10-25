@@ -47,6 +47,7 @@ import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { notify } from "../../shared/notifications/store.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
+import { useKeysLocked } from "../../shared/zeroAccess/useKeysLocked.js";
 
 /** The published model class name of a contact on either database (`ContactMongo`, `ContactSQL`) - not a `ContactList`'s. */
 const CONTACT_MODEL = /^Contact(Mongo|SQL)$/;
@@ -157,6 +158,16 @@ function ContactsContent({ userUid }: { userUid?: string }) {
     useEffect(() => {
         void reload();
     }, [folderUid]);
+
+    // The lists hold protected contacts opened with the mailbox's keys: its lock takes them off screen, read again with their placeholders (the
+    // contacts, the suggested ones and the Deleted view). An open contact's pane and form drop what they opened themselves (`useOpenedRecord`).
+    const [lockCount, setLockCount] = useState(0);
+    useKeysLocked((locked) => {
+        if (locked === mailboxUid) {
+            void reload();
+            setLockCount((count) => count + 1);
+        }
+    });
 
     /** Reads the Suggested Contacts folder's contacts. A failure leaves the list as it was. */
     function loadSuggested(suggestedUid: string): Promise<void> {
@@ -278,8 +289,8 @@ function ContactsContent({ userUid }: { userUid?: string }) {
             .catch((err) => setDeletedError(err instanceof ApiRequestError ? err.message : "Could not load deleted contacts."))
             .finally(() => setDeletedLoading(false));
         // Re-fetches every time the Deleted view is (re-)selected, matching this page's own `reload()`
-        // convention elsewhere rather than caching a possibly-stale list across visits.
-    }, [view, folderUid]);
+        // convention elsewhere rather than caching a possibly-stale list across visits - and when the mailbox locks.
+    }, [view, folderUid, lockCount]);
 
     const viewFiltered = useMemo(() => {
         switch (view.type) {
@@ -474,15 +485,30 @@ function ContactsContent({ userUid }: { userUid?: string }) {
         if (!category?.trim()) {
             return;
         }
-        for (const contact of checkedContacts) {
-            const categories = Array.from(new Set([...(contact.categories ?? []), category.trim()]));
+        let locked = 0;
+        for (const listed of checkedContacts) {
             try {
+                // A protected one's categories are added to as opened: one that won't open here (the mailbox is locked) shows a placeholder
+                // (none), and saving that plus the new one would replace its real categories for good. It is left as it is.
+                const contact = await openSealedRecord(listed);
+                if (isProtectedRecord(contact) && !isOpenedRecord(contact)) {
+                    locked++;
+                    continue;
+                }
+                const categories = Array.from(new Set([...(contact.categories ?? []), category.trim()]));
                 // Only the changed field - sending the whole fetched contact back includes server-managed
                 // fields restapi rejects, and would overwrite any concurrent edit to the other fields.
                 await updateContact({ uid: contact.uid, version: contact.version, categories }, client);
             } catch (err) {
                 notifyApiError(err, "Couldn't update some of the contacts");
             }
+        }
+        if (locked > 0) {
+            notify({
+                kind: "warning",
+                title: "Some contacts weren't categorized",
+                message: `${locked === 1 ? "A contact is" : `${locked} contacts are`} protected and can't be changed while your mailbox is locked. Unlock it, then add the category again.`,
+            });
         }
         clearPinnedSignerCache();
         await reload();

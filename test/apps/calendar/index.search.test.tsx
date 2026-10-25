@@ -3,12 +3,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
@@ -214,6 +215,35 @@ describe("CalendarPage search", () => {
         finish!();
         await Promise.resolve();
         openSealedRecord.mockImplementation(actual);
+    });
+
+    it("reads its events again when a mailbox of theirs locks, closing the card of a protected one", async () => {
+        const sealedEvent = calendarEvent({ uid: "e9", title: "Board", startDate: "2026-06-16T10:00:00.000Z", endDate: "2026-06-16T11:00:00.000Z", sealedFields: { title: "c" } });
+        const fetchMock = mockShellAndEvents([standup, sealedEvent]);
+        const reads = () => fetchMock.mock.calls.filter(([url, init]) => String(url).startsWith("/api/mail/calendar-events") && ((init as RequestInit)?.method ?? "GET") === "GET").length;
+        const { user } = await openPage();
+        const lock = (mailboxUid: string) => {
+            installSharedSession(mailboxUid, { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration(mailboxUid));
+            act(() => destroyUnlockedKeys(mailboxUid));
+        };
+
+        // A plain event's card stays open; the events are read again.
+        await user.click(screen.getByText(/Standup/));
+        await screen.findByRole("dialog", { name: "Event details" });
+        const before = reads();
+        lock("mb-other");
+        expect(reads()).toBe(before);
+        lock("mb1");
+        await waitFor(() => expect(reads()).toBe(before + 1));
+        expect(screen.getByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Event details" })).not.toBeInTheDocument());
+
+        // A protected one's closes.
+        await user.click(await screen.findByText(/Board/));
+        await screen.findByRole("dialog", { name: "Event details" });
+        lock("mb1");
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Event details" })).not.toBeInTheDocument());
     });
 
     it("says there are no matches and leaves the view alone", async () => {

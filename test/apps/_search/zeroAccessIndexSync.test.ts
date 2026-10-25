@@ -253,6 +253,53 @@ describe("syncZeroAccessIndex", () => {
         expect(rpc.moveLocalEntity).toHaveBeenCalledTimes(MAX_TAIL_LOOKUPS);
     });
 
+    it("asks which live-tail rows are recorded in batches, only until it has as many as a pass looks up", async () => {
+        // A backlog's tail (a whole mailbox's, on a new device) is more than one SQL statement may bind.
+        api.listSearchIndexEntries.mockResolvedValue({
+            entries: await Promise.all(Array.from({ length: 700 }, (_, i) => sealEntry(`e${i}`, "2026-W43", doc(`m${i}`), key.certDer))),
+        });
+        // The first batch is all recorded.
+        rpc.getIndexedVersions.mockImplementation(async (_mb: string, uids: string[]) => Object.fromEntries(uids.filter((uid) => Number(uid.slice(1)) < 200).map((uid) => [uid, "1:inbox"])));
+
+        const result = await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+
+        expect(result.entriesImported).toBe(700);
+        const asked: string[][] = rpc.getIndexedVersions.mock.calls.map(([, uids]) => uids);
+        expect(asked.map((uids) => uids.length)).toEqual([200, 200, 200, 100]);
+        expect(asked.flat()).toEqual(Array.from({ length: 700 }, (_, i) => `m${i}`));
+
+        // None recorded: 600 unrecorded after three batches is more than a pass looks up, so the fourth isn't asked.
+        rpc.getIndexedVersions.mockReset().mockResolvedValue({});
+        await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+        expect(rpc.getIndexedVersions).toHaveBeenCalledTimes(3);
+    });
+
+    it("forgets what it imported once the local index is destroyed, even after a build filled the new one first", async () => {
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [segment("2026-W40", 1, "e40")], weeks: [] });
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([doc("m40")], key.certDer));
+        expect((await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] })).segmentsImported).toBe(1);
+
+        // The index is destroyed on a lock; the next build decrypts end-to-end mail into the new one, so it isn't empty.
+        forgetZeroAccessSync("mb");
+        rpc.getLocalCoverage.mockResolvedValue({ indexedCount: 1 });
+        expect((await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] })).segmentsImported).toBe(1);
+    });
+
+    it("writes nothing back from a pass that was under way when the local index was destroyed", async () => {
+        api.getSearchIndexManifest.mockResolvedValue({ mailboxUid: "mb", segments: [segment("2026-W40", 1, "e40")], weeks: [] });
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([doc("m40")], key.certDer));
+        // Destroyed (a lock) while the pass reads the live tail.
+        api.listSearchIndexEntries.mockImplementation(async () => {
+            forgetZeroAccessSync("mb");
+            return { entries: [] };
+        });
+
+        const result = await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+
+        expect(result.segmentsImported).toBe(1);
+        expect(storage.has("rapidmx:za-index-sync:mb")).toBe(false);
+    });
+
     it("keeps at most so many messages' metadata per mailbox, dropping the oldest", async () => {
         for (let i = 0; i <= MAX_REMEMBERED_METADATA; i++) {
             rememberZeroAccessMetadata("big", `m${i}`, { folderUid: "inbox", entityVersion: "1:inbox", flags: ",," });

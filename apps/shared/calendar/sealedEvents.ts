@@ -66,6 +66,10 @@ async function openFields(event: CalendarEvent): Promise<Partial<CalendarEvent> 
             description: text(fields.description) ?? null,
             descriptionHtml: text(fields.descriptionHtml) ?? null,
         };
+        // The mailbox locked while this was opened: the lock's clear has already run, so it is neither kept nor shown.
+        if (!getUnlockedKeys(event.mailboxUid)) {
+            return undefined;
+        }
         opened.set(sealed, result);
         return result;
     } catch {

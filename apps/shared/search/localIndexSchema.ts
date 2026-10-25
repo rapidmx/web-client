@@ -131,7 +131,8 @@ export function messageRowFlags(message: { flags: object }): string {
 
 /** `entity_uid` upsert - `ON CONFLICT` (SQLite's UPSERT syntax) rather than a separate delete-then-insert,
  * so re-indexing an already-present message (a flag changed, a folder move) updates it in place and the
- * `entities_au` trigger keeps `entities_fts` in sync automatically. */
+ * `entities_au` trigger keeps `entities_fts` in sync automatically. A row written without a folder, flags or version (a zero-access
+ * document, which carries none) keeps the ones recorded: re-importing it must not make it look unrecorded again. */
 export const UPSERT_ENTITY_SQL = `
 INSERT INTO entities (entity_type, entity_uid, mailbox_uid, folder_uid, date_for_sort, participants, flags, has_attachments, subject, body, attachment_text, byte_size, entity_version)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -139,7 +140,7 @@ ON CONFLICT(entity_uid) DO UPDATE SET
     folder_uid = COALESCE(excluded.folder_uid, entities.folder_uid), date_for_sort = excluded.date_for_sort, participants = excluded.participants,
     flags = CASE WHEN excluded.flags = '' THEN entities.flags ELSE excluded.flags END, has_attachments = excluded.has_attachments, subject = excluded.subject,
     body = excluded.body, attachment_text = excluded.attachment_text, byte_size = excluded.byte_size,
-    entity_version = excluded.entity_version
+    entity_version = COALESCE(excluded.entity_version, entities.entity_version)
 `;
 
 /** Bind values for `UPSERT_ENTITY_SQL`, in column order - kept alongside it so the two can never drift

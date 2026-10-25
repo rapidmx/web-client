@@ -66,6 +66,10 @@ function remember(uid: string, mailboxUid: string, fragment: string | null): voi
             }
         });
     }
+    // A key opened or minted across an await the mailbox locked during: the lock's clear has already run, so it isn't kept.
+    if (fragment !== null && !getUnlockedKeys(mailboxUid)) {
+        return;
+    }
     fragments.set(uid, { mailboxUid, fragment });
 }
 
@@ -141,6 +145,10 @@ export async function meetingKeyFragmentOf(meeting: VideoMeetingDetail & Protect
     }
     try {
         const fragment = meetingKeyFragment(await decryptEnvelopedDataWithKeys(fromBase64(wrap.cms), keys));
+        // Locked while it was opened: neither kept nor handed out.
+        if (!getUnlockedKeys(meeting.mailboxUid)) {
+            return undefined;
+        }
         remember(meeting.uid, meeting.mailboxUid, fragment);
         return fragment;
     } catch {

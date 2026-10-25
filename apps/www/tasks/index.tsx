@@ -37,6 +37,7 @@ import { useShortcutProps } from "../../shared/keyboard/useShortcutProps.js";
 import { notifyApiError } from "../../shared/notifications/apiErrors.js";
 import { changedItemOf, useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import ProtectedMark from "../../shared/zeroAccess/ProtectedMark.js";
+import { useKeysLocked } from "../../shared/zeroAccess/useKeysLocked.js";
 import { openSealedRecord, openSealedRecords } from "../../../lib/zeroAccess/sealedRecords.js";
 
 /** The published model class name of a task on either database (`TaskMongo`, `TaskSQL`) - not a `TaskList`'s. */
@@ -156,6 +157,13 @@ function TasksContent() {
     useEffect(() => {
         void reload();
     }, [folderUid]);
+
+    // The list holds protected tasks opened with the mailbox's keys: its lock takes them off screen, read again with their placeholders.
+    useKeysLocked((locked) => {
+        if (locked === mailboxUid) {
+            void reload();
+        }
+    });
 
     // A task created, changed or deleted anywhere - another tab, a phone over ActiveSync - is announced on its folder's channel. It is fetched again by its
     // uid and replaces (or joins) the list while it is still in this folder; one that is gone (a delete, a 404, or moved to another folder) leaves it. A

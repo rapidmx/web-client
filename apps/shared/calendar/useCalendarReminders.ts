@@ -40,7 +40,8 @@ export interface CalendarAlarms {
  * with the bell again - after exactly `SNOOZE_MS`. A snooze is this tab's own `setTimeout`, cleared on unmount or sign-out; like the alarm itself (the
  * push event is never replayed), it does not survive the tab closing.
  *
- * With pop-ups turned off (`getNotificationsEnabled()`) no dialog is shown and nothing is heard: the alarm is only recorded in "Recent notifications".
+ * With pop-ups turned off (`getNotificationsEnabled()`) no dialog is shown and nothing is heard: the alarm is only recorded in "Recent notifications"
+ * - a protected event's under its placeholder title, never the opened one (the history is kept in `sessionStorage`, past a lock).
  */
 export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersOptions): CalendarAlarms {
     const [queue, setQueue] = useState<CalendarReminderNotice[]>([]);
@@ -51,8 +52,13 @@ export function useCalendarReminders({ userUid, enabled }: UseCalendarRemindersO
 
     const present = useCallback((notice: CalendarReminderNotice) => {
         if (!getNotificationsEnabled()) {
-            // Off: only the history keeps it.
-            notify({ id: reminderNotificationId(notice.eventUid, notice.startDate), kind: "calendar", title: notice.title, message: reminderMessage(notice.startDate) });
+            // Off: only the history keeps it - with a protected event's placeholder title, since the history is stored in sessionStorage.
+            notify({
+                id: reminderNotificationId(notice.eventUid, notice.startDate),
+                kind: "calendar",
+                title: notice.sealedTitle ?? notice.title,
+                message: reminderMessage(notice.startDate),
+            });
             return;
         }
         const id = reminderNotificationId(notice.eventUid, notice.startDate);

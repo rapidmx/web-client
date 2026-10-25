@@ -22,6 +22,9 @@ export interface CalendarReminderNotice {
     location?: string | null;
     /** The event is of a calendar zero-access encryption protects: `title` and `location` are placeholders (`openedReminder()`). */
     protected?: boolean;
+    /** Set by `openedReminder()` on a protected notice it opened: the placeholder title the push carried, for anything recorded beyond
+     * this tab's memory (the notification history is kept in `sessionStorage` and outlives a mailbox lock). */
+    sealedTitle?: string;
 }
 
 /** `notice` with a protected event's real title and location, read from the event itself (opened with the mailbox's keys); `notice` as it
@@ -32,7 +35,7 @@ export async function openedReminder(notice: CalendarReminderNotice): Promise<Ca
     }
     try {
         const event = await getCalendarEvent(notice.eventUid);
-        return { ...notice, title: event.title, location: event.location ?? null };
+        return { ...notice, title: event.title, location: event.location ?? null, sealedTitle: notice.title };
     } catch {
         return notice;
     }

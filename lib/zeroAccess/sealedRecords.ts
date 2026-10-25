@@ -56,7 +56,12 @@ async function openRecord<T extends SealedRecord>(record: T, only?: readonly str
             }
             if (!opened.has(sealed)) {
                 const { decryptEnvelopedDataWithKeys } = await import("../crypto/smime.js");
-                opened.set(sealed, JSON.parse(new TextDecoder().decode(await decryptEnvelopedDataWithKeys(fromBase64(sealed), keys))));
+                const value: unknown = JSON.parse(new TextDecoder().decode(await decryptEnvelopedDataWithKeys(fromBase64(sealed), keys)));
+                // The mailbox locked while this was opened: the lock's clear has already run, so nothing is kept or shown.
+                if (!getUnlockedKeys(record.mailboxUid)) {
+                    return undefined;
+                }
+                opened.set(sealed, value);
             }
             values[name] = opened.get(sealed);
         }
@@ -101,10 +106,45 @@ export async function openSealedBytes(mailboxUid: string, der: Uint8Array): Prom
     }
     try {
         const { decryptEnvelopedDataWithKeys } = await import("../crypto/smime.js");
-        return await decryptEnvelopedDataWithKeys(der, keys);
+        const bytes = await decryptEnvelopedDataWithKeys(der, keys);
+        // Locked while it was opened: not handed out.
+        return getUnlockedKeys(mailboxUid) ? bytes : undefined;
     } catch {
         return undefined;
     }
+}
+
+/** A field's value for comparing what a write sends with what was shown: every empty form (`null`, `undefined`, `""`, `[]`) is one. */
+function comparable(value: unknown): string {
+    return value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0) ? "" : JSON.stringify(value);
+}
+
+/**
+ * `input` as written to `shown` - the record the edit started from, as this device showed it: unchanged when `shown` isn't protected.
+ * Otherwise without the protected fields (those `shown.sealedFields` names) whose values are what `shown` has: an opened record's write
+ * sends only what changed, and a placeholder a record that couldn't be opened showed is never sent back as its value. A field of an opened
+ * record that held a value and is emptied is named in `clearedFields`: restapi applies an empty value of a sealed field as a clear only
+ * then (`ZeroAccessRouteSealing.takeClearedFields()`), since an empty placeholder sent back by a client that couldn't open the record would
+ * otherwise wipe the sealed value for good. `opened`: `shown` holds the real values (by default, whether it was opened here).
+ */
+export function protectedRecordWrite<T extends object>(shown: SealedRecord | undefined, input: T, opened: boolean = isOpenedRecord(shown)): T {
+    if (!isProtectedRecord(shown)) {
+        return input;
+    }
+    const changes: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+    const clearedFields: string[] = [];
+    for (const field of Object.keys(shown!.sealedFields!)) {
+        if (!(field in changes)) {
+            continue;
+        }
+        const value: string = comparable(changes[field]);
+        if (value === comparable((shown as unknown as Record<string, unknown>)[field])) {
+            delete changes[field];
+        } else if (value === "" && opened) {
+            clearedFields.push(field);
+        }
+    }
+    return (clearedFields.length > 0 ? { ...changes, clearedFields } : changes) as T;
 }
 
 /** `openSealedRecords()` for one record. */

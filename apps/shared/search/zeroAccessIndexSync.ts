@@ -41,6 +41,9 @@ import { clientPlatform, isConstrainedConnection, type ClientPlatform } from "..
 import { getMessage } from "../../../lib/mail/mailApi.js";
 import { getIndexedVersions, getLocalCoverage, indexLocalEntities, moveLocalEntity } from "./localIndexRpcClient.js";
 import { type LocalIndexEntity, messageRowFlags, messageRowVersion } from "./localIndexSchema.js";
+import { forgetZeroAccessSync, zeroAccessSyncEpoch, zeroAccessSyncStateKey } from "./zeroAccessSyncState.js";
+
+export { forgetZeroAccessSync };
 
 /** The segment format this client writes and reads. */
 export const SEGMENT_SCHEMA_VERSION = 1;
@@ -110,11 +113,9 @@ export interface ZeroAccessSyncResult {
     unreadable: number;
 }
 
-const stateKey = (mailboxUid: string): string => `rapidmx:za-index-sync:${mailboxUid}`;
-
 function loadState(mailboxUid: string): SyncState {
     try {
-        const raw = localStorage.getItem(stateKey(mailboxUid));
+        const raw = localStorage.getItem(zeroAccessSyncStateKey(mailboxUid));
         const parsed: unknown = raw ? JSON.parse(raw) : undefined;
         if (parsed && typeof parsed === "object" && typeof (parsed as SyncState).segments === "object") {
             return parsed as SyncState;
@@ -125,20 +126,16 @@ function loadState(mailboxUid: string): SyncState {
     return { segments: {} };
 }
 
-function saveState(mailboxUid: string, state: SyncState): void {
+/** Remembers `state` - unless the mailbox's local index was destroyed since the pass began (`epoch`, `zeroAccessSyncEpoch()` then): what
+ * the pass imported went with it, and a new index must not be taken for it. */
+function saveState(mailboxUid: string, state: SyncState, epoch: string): void {
+    if (zeroAccessSyncEpoch(mailboxUid) !== epoch) {
+        return;
+    }
     try {
-        localStorage.setItem(stateKey(mailboxUid), JSON.stringify(state));
+        localStorage.setItem(zeroAccessSyncStateKey(mailboxUid), JSON.stringify(state));
     } catch {
         // Not remembered: the next pass imports again, which is idempotent (entities are upserted).
-    }
-}
-
-/** Forgets what a pass remembered for `mailboxUid` (e.g. when its local index is destroyed). */
-export function forgetZeroAccessSync(mailboxUid: string): void {
-    try {
-        localStorage.removeItem(stateKey(mailboxUid));
-    } catch {
-        // Nothing to forget.
     }
 }
 
@@ -388,6 +385,7 @@ export async function importClientSegments(
     if (!keys?.length) {
         return 0;
     }
+    const epoch: string = zeroAccessSyncEpoch(mailboxUid);
     const segments: IndexSegment[] = (manifest ?? (await getSearchIndexManifest(mailboxUid, client))).segments.filter((segment) => segment.origin === "client");
     const state: SyncState = await currentState(mailboxUid);
     let imported = 0;
@@ -408,7 +406,7 @@ export async function importClientSegments(
             );
         }
         state.segments[key] = segment.etag;
-        saveState(mailboxUid, state);
+        saveState(mailboxUid, state, epoch);
         imported++;
     }
     return imported;
@@ -436,6 +434,7 @@ export async function uploadClientDocuments(mailboxUid: string, unlocked: Unlock
         }
         week.push(clientDocument(entity));
     }
+    const epoch: string = zeroAccessSyncEpoch(mailboxUid);
     const state: SyncState = loadState(mailboxUid);
     let written = 0;
     let manifest: SegmentManifest | undefined;
@@ -470,7 +469,7 @@ export async function uploadClientDocuments(mailboxUid: string, unlocked: Unlock
                 // This device already holds every document of the new generation only if it held the previous one.
                 if (current && state.segments[`${weekId}:client`] === current.etag) {
                     state.segments[`${weekId}:client`] = stored.etag;
-                    saveState(mailboxUid, state);
+                    saveState(mailboxUid, state, epoch);
                 }
                 written++;
                 break;
@@ -524,6 +523,7 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
     if (!keys?.length) {
         return result;
     }
+    const epoch: string = zeroAccessSyncEpoch(mailboxUid);
     const manifest = await getSearchIndexManifest(mailboxUid, client);
     let state: SyncState = await currentState(mailboxUid);
 
@@ -542,11 +542,11 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
         await importDocuments(mailboxUid, docs);
         state.segments[key] = segment.etag;
         result.segmentsImported++;
-        saveState(mailboxUid, state);
+        saveState(mailboxUid, state, epoch);
     }
 
     // End-to-end mail other devices indexed.
-    saveState(mailboxUid, state);
+    saveState(mailboxUid, state, epoch);
     result.clientSegmentsImported = await importClientSegments(mailboxUid, unlocked, client, { manifest });
     state = loadState(mailboxUid);
 
@@ -555,15 +555,22 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
     const since = state.tailSince ? new Date(new Date(state.tailSince).getTime() - TAIL_OVERLAP_MS).toISOString() : undefined;
     const tail = await openEntries(await listAllEntries(mailboxUid, since ? { since } : {}, client), keys);
     // Rows nothing has recorded a folder and flags for: not on this device with a version yet (the builder's mark), nor remembered by it.
+    // Asked in batches - a backlog's tail can be every message of the mailbox, past what one SQL statement may bind - and only until there
+    // are as many as a pass looks up.
     const tailUids: string[] = [...new Set(tail.docs.map((doc) => doc.messageUid))];
-    const recorded: Record<string, string> = tailUids.length > 0 ? await getIndexedVersions(mailboxUid, tailUids) : {};
-    const unrecorded: string[] = tailUids.filter((uid) => recorded[uid] === undefined && !rememberedMetadata.get(mailboxUid)?.has(uid));
+    const remembered = rememberedMetadata.get(mailboxUid);
+    const unrecorded: string[] = [];
+    for (let i = 0; i < tailUids.length && unrecorded.length < MAX_TAIL_LOOKUPS; i += IMPORT_BATCH) {
+        const batch: string[] = tailUids.slice(i, i + IMPORT_BATCH);
+        const recorded: Record<string, string> = await getIndexedVersions(mailboxUid, batch);
+        unrecorded.push(...batch.filter((uid) => recorded[uid] === undefined && !remembered?.has(uid)));
+    }
     await importDocuments(mailboxUid, tail.docs);
     await recordTailMetadata(mailboxUid, unrecorded, client);
     result.entriesImported += tail.docs.length;
     result.unreadable += tail.unreadable;
     state.tailSince = tailStart;
-    saveState(mailboxUid, state);
+    saveState(mailboxUid, state, epoch);
 
     // Compaction of closed weeks.
     const active = keys[0];
@@ -599,7 +606,7 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
             // This device already holds every document of the new generation.
             await importDocuments(mailboxUid, pending.docs);
             state.segments[`${stored.weekId}:${stored.origin}`] = stored.etag;
-            saveState(mailboxUid, state);
+            saveState(mailboxUid, state, epoch);
             result.weeksCompacted++;
         } catch (err) {
             // Another device compacted the week first: the next pass imports its generation.

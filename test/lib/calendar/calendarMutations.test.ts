@@ -433,6 +433,35 @@ describe("moveOccurrence", () => {
     });
 });
 
+describe("rescheduling an event with a video meeting by drag or resize", () => {
+    it("moves the protected meeting's key expiry to an hour after the new end", async () => {
+        const linked = occurrence({ recurrenceRule: undefined, isRecurringOccurrence: false, occurrenceKey: "e1", videoMeetingUid: "vm1" });
+        const fetchMock = mockFetch((url, init) => {
+            if (url === "/api/mail/calendar-events/e1" && init?.method === "PUT") return jsonResponse(200, { ...linked, ...JSON.parse(init.body as string) });
+            if (url === "/api/mail/video-meetings/vm1" && (init?.method ?? "GET") === "GET") return jsonResponse(200, { uid: "vm1", keyProtected: true, keyExpiresAt: "2026-06-03T16:30:00.000Z" });
+            if (url === "/api/mail/video-meetings/vm1" && init?.method === "PUT") return jsonResponse(200, { uid: "vm1" });
+            throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+        });
+        const keyExpiries = () =>
+            fetchMock.mock.calls.filter(([url, init]) => url === "/api/mail/video-meetings/vm1" && init?.method === "PUT").map(([, init]) => JSON.parse(init!.body as string));
+
+        // Monday's meeting dragged four days on: the key now lasts until an hour after Friday's end.
+        await moveOccurrence(linked, 4 * 24 * 60 * 60_000);
+        expect(keyExpiries()).toEqual([{ keyExpiresAt: "2026-06-07T16:30:00.000Z" }]);
+
+        await resizeOccurrenceEnd(linked, new Date("2026-06-03T18:00:00.000Z"));
+        expect(keyExpiries()[1]).toEqual({ keyExpiresAt: "2026-06-03T19:00:00.000Z" });
+    });
+
+    it("asks nothing about a meeting for an event without one", async () => {
+        const nonRecurring = occurrence({ recurrenceRule: undefined, isRecurringOccurrence: false, occurrenceKey: "e1" });
+        const fetchMock = mockFetch(() => jsonResponse(200, nonRecurring));
+        await moveOccurrence(nonRecurring, 60_000);
+        await resizeOccurrenceEnd(nonRecurring, new Date("2026-06-03T18:00:00.000Z"));
+        expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("video-meetings"))).toBe(true);
+    });
+});
+
 describe("resizeOccurrenceEnd", () => {
     it("resizes a non-recurring event's end time, keeping start fixed, via a plain PUT", async () => {
         const nonRecurring = occurrence({ recurrenceRule: undefined, isRecurringOccurrence: false, occurrenceKey: "e1" });

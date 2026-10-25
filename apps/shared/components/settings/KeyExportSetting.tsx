@@ -20,6 +20,9 @@ export interface KeyExportSettingProps {
 
 const INPUT_CLASS = "w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface";
 
+/** How long the file's object URL is kept, since some browsers (WebKit, older Firefox) still read it after the click returns. */
+const DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
 /** Hands `bytes` to the browser as a file download. */
 function saveFile(bytes: Uint8Array, filename: string): void {
     const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/x-pkcs12" }));
@@ -29,7 +32,7 @@ function saveFile(bytes: Uint8Array, filename: string): void {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
 }
 
 /**

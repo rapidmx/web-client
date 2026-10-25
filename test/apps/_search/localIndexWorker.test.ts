@@ -266,6 +266,9 @@ describe("localIndexWorker", () => {
             m2: "4:inbox",
         });
         await expect(call("indexedVersions", { mailboxUid: "mb1", entityUids: [] })).resolves.toEqual({});
+        // More uids than one SQL statement may bind (a zero-access backlog's whole tail): asked in batches.
+        const many = Array.from({ length: 40_000 }, (_, i) => `absent-${i}`);
+        await expect(call("indexedVersions", { mailboxUid: "mb1", entityUids: [...many, "m2"] })).resolves.toEqual({ m2: "4:inbox" });
 
         await call("moveEntity", { mailboxUid: "mb1", entityUid: "m1", folderUid: "archive" });
         const inArchive = await call<{ hits: { entityUid: string }[] }>("search", {
@@ -290,6 +293,8 @@ describe("localIndexWorker", () => {
 
         // A zero-access import knows neither the folder nor the flags.
         await call("indexEntities", { mailboxUid: "mb1", entities: [entity("m1", { folderUid: undefined, flags: "", entityVersion: undefined })] });
+        // Nor the version: the one recorded stays, so the row isn't taken as unrecorded and looked up again.
+        await expect(call("indexedVersions", { mailboxUid: "mb1", entityUids: ["m1"] })).resolves.toEqual({ m1: "7:archive" });
         const hits = await call<{ hits: { entityUid: string }[] }>("search", { mailboxUid: "mb1", parsed: { text: "budget", folderUid: "archive", flags: ["read"] }, limit: 10 });
         expect(hits.hits.map((h) => h.entityUid)).toEqual(["m1"]);
 

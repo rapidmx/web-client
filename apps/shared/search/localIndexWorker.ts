@@ -651,23 +651,27 @@ async function moveEntity(connection: OpenConnection, entityUid: string, folderU
     }
 }
 
+/** How many uids one `indexedVersions()` statement binds. */
+export const INDEXED_VERSIONS_BATCH = 500;
+
 /** `entity_version` for whichever of `entityUids` are already indexed - one batched query per builder page,
  * so a rebuild can skip re-fetching/decrypting unchanged messages. */
 async function indexedVersions(connection: OpenConnection, entityUids: string[]): Promise<Record<string, string>> {
     const versions: Record<string, string> = {};
-    if (entityUids.length === 0) {
-        return versions;
-    }
-    const placeholders = entityUids.map(() => "?").join(", ");
-    for await (const stmt of connection.sqlite3.statements(
-        connection.db,
-        `SELECT entity_uid, entity_version FROM entities WHERE entity_uid IN (${placeholders})`,
-    )) {
-        connection.sqlite3.bind_collection(stmt, entityUids);
-        while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
-            const version = connection.sqlite3.column(stmt, 1) as string | null;
-            if (version !== null) {
-                versions[connection.sqlite3.column(stmt, 0) as string] = version;
+    // In statements of at most `INDEXED_VERSIONS_BATCH` uids: SQLite refuses one binding more than its variable limit (32766 here).
+    for (let i = 0; i < entityUids.length; i += INDEXED_VERSIONS_BATCH) {
+        const batch: string[] = entityUids.slice(i, i + INDEXED_VERSIONS_BATCH);
+        const placeholders = batch.map(() => "?").join(", ");
+        for await (const stmt of connection.sqlite3.statements(
+            connection.db,
+            `SELECT entity_uid, entity_version FROM entities WHERE entity_uid IN (${placeholders})`,
+        )) {
+            connection.sqlite3.bind_collection(stmt, batch);
+            while ((await connection.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
+                const version = connection.sqlite3.column(stmt, 1) as string | null;
+                if (version !== null) {
+                    versions[connection.sqlite3.column(stmt, 0) as string] = version;
+                }
             }
         }
     }

@@ -14,7 +14,9 @@ x509.cryptoProvider.set(crypto);
 const { getUnlockedKeys, keySessionListeners } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn(), keySessionListeners: [] as ((event: any) => void)[] }));
 vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys, subscribeKeySession: (listener: (event: any) => void) => keySessionListeners.push(listener) }));
 
-const { clearSealedRecords, isOpenedRecord, isProtectedRecord, openSealedBytes, openSealedRecord, openSealedRecords } = await import("../../../lib/zeroAccess/sealedRecords.js");
+const { clearSealedRecords, isOpenedRecord, isProtectedRecord, openSealedBytes, openSealedRecord, openSealedRecords, protectedRecordWrite } = await import(
+    "../../../lib/zeroAccess/sealedRecords.js"
+);
 
 async function zeroAccessKey() {
     const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -106,5 +108,64 @@ describe("sealedRecords", () => {
         expect(await openSealedBytes("mb", der)).toBeUndefined();
         getUnlockedKeys.mockReturnValue(undefined);
         expect(await openSealedBytes("mb", der)).toBeUndefined();
+        // Locked while it was being opened: nothing handed out.
+        getUnlockedKeys.mockReturnValueOnce({ zeroAccessKeys: [key] }).mockReturnValue(undefined);
+        expect(await openSealedBytes("mb", der)).toBeUndefined();
+    });
+
+    it("writes only the protected fields that changed from what was shown, never a placeholder echoed back", async () => {
+        const input = { uid: "c1", displayName: "Jane", givenName: null, notes: "New", phones: [], categories: ["a"], favorite: true };
+        // Not protected: as it is.
+        expect(protectedRecordWrite({ mailboxUid: "mb" }, input)).toBe(input);
+        expect(protectedRecordWrite(undefined, input)).toBe(input);
+
+        // A record that couldn't be opened shows placeholders: echoing them (empty ones included) sends nothing for those fields.
+        const placeholders = {
+            mailboxUid: "mb",
+            displayName: "Jane",
+            givenName: undefined,
+            notes: null,
+            phones: [],
+            categories: [],
+            // `company` is sealed but the write leaves it alone.
+            sealedFields: { displayName: "s", givenName: "s", notes: "s", phones: "s", categories: "s", company: "s" },
+        };
+        expect(protectedRecordWrite(placeholders, input)).toEqual({ uid: "c1", notes: "New", categories: ["a"], favorite: true });
+
+        // An opened one: what was cleared or changed goes, what is as it was doesn't. A field it held that is emptied is named as cleared:
+        // the server applies an empty sealed value only then.
+        const key = await zeroAccessKey();
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });
+        const opened = await openSealedRecord({
+            ...placeholders,
+            sealedFields: {
+                displayName: await seal("Jane", key.certDer),
+                givenName: await seal("Jane", key.certDer),
+                notes: await seal("Old", key.certDer),
+                phones: await seal([{ phoneNumber: "1" }], key.certDer),
+                categories: await seal(["a"], key.certDer),
+            },
+        });
+        expect(isOpenedRecord(opened)).toBe(true);
+        expect(protectedRecordWrite(opened, { ...input, phones: [{ phoneNumber: "1" }], givenName: "" })).toEqual({
+            uid: "c1",
+            givenName: "",
+            notes: "New",
+            favorite: true,
+            clearedFields: ["givenName"],
+        });
+    });
+
+    it("keeps nothing it opened across a lock that came while it was opening, showing the placeholder", async () => {
+        const key = await zeroAccessKey();
+        const record = { mailboxUid: "mb", title: "[...]", sealedFields: { title: await seal("Secret", key.certDer) } };
+        // Unlocked when the open starts, locked by the time the decryption is done (the lock's clear has already run).
+        getUnlockedKeys.mockReturnValueOnce({ zeroAccessKeys: [key] }).mockReturnValue(undefined);
+        const shown = await openSealedRecord(record);
+        expect(shown.title).toBe("[...]");
+        expect(isOpenedRecord(shown)).toBe(false);
+        // Unlocked again with another key: only a value that was kept would open.
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await zeroAccessKey()] });
+        expect((await openSealedRecord(record)).title).toBe("[...]");
     });
 });

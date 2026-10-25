@@ -5,12 +5,12 @@
 /**
  * Recipient suggestions that include contacts zero-access encryption protects. Their names are sealed (restapi `specs/search.md` §3 *What
  * It Covers*), so the server's contact search finds them only by address; this matches their opened names on the device and puts them
- * first. Names are opened only - never the rest of a contact - and kept for ten minutes, and only while the mailbox is unlocked: a search
- * of a locked mailbox forgets them. Reading them never holds up the server's suggestions: what isn't read by the time those arrive (plus
+ * first. Names are opened only - never the rest of a contact - and kept for ten minutes, and only while the mailbox is unlocked: its lock
+ * (and signing out) forgets them, as does a search that finds it locked. Reading them never holds up the server's suggestions: what isn't read by the time those arrive (plus
  * `PROTECTED_NAMES_WAIT_MS`) is left to the next keystroke.
  */
 import { type Contact, listContacts, PINNED_FINGERPRINT_PAGE_SIZE } from "../../../../../lib/contacts/contactsApi.js";
-import { getUnlockedKeys } from "../../../../../lib/crypto/keySession.js";
+import { getUnlockedKeys, subscribeKeySession } from "../../../../../lib/crypto/keySession.js";
 import {
     type ContactSuggestionOptions,
     fetchRecipientSuggestions,
@@ -21,6 +21,7 @@ import {
 import { listFolders } from "../../../../../lib/mail/mailApi.js";
 import type { ApiClient } from "../../../../../lib/util/api.js";
 import { isProtectedRecord, openSealedRecords } from "../../../../../lib/zeroAccess/sealedRecords.js";
+import { onSigningOut } from "./composeFlushRegistry.js";
 
 /** How long a mailbox's protected contact names are kept: reading them is a crawl of the whole address book. */
 export const PROTECTED_NAMES_TTL_MS = 10 * 60_000;
@@ -33,9 +34,26 @@ const MAX_PAGES = 20;
 
 const cache = new Map<string, { loadedAt: number; contacts: Promise<Contact[]> }>();
 
-/** Forgets every mailbox's names (a mailbox locking, or the test seam). */
+/** Forgets every mailbox's names (signing out, or the test seam). */
 export function clearProtectedContactNames(): void {
     cache.clear();
+}
+
+onSigningOut(clearProtectedContactNames);
+
+let watchingKeys = false;
+
+/** A mailbox's names go the moment it locks, so nothing opened outlives its key session. Subscribed with the first crawl, not on import. */
+function forgetOnLock(): void {
+    if (watchingKeys) {
+        return;
+    }
+    watchingKeys = true;
+    subscribeKeySession(({ mailboxUid, state }) => {
+        if (state === "locked") {
+            cache.delete(mailboxUid);
+        }
+    });
 }
 
 /** `mailboxUid`'s protected contacts with their names opened. */
@@ -61,6 +79,7 @@ async function loadProtectedContacts(mailboxUid: string, client: ApiClient | und
 function protectedContacts(mailboxUid: string, client: ApiClient | undefined): Promise<Contact[]> {
     let entry = cache.get(mailboxUid);
     if (!entry || Date.now() - entry.loadedAt > PROTECTED_NAMES_TTL_MS) {
+        forgetOnLock();
         const created = { loadedAt: Date.now(), contacts: loadProtectedContacts(mailboxUid, client) };
         created.contacts.catch(() => cache.delete(mailboxUid));
         cache.set(mailboxUid, created);

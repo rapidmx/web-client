@@ -26,6 +26,8 @@ import { useApiClient } from "../../../lib/util/apiClientContext.js";
 import useIsMobile from "../../../lib/util/useIsMobile.js";
 import { CalendarEvent, fullyOpenedEvent, getCalendarEvent, listCalendarEvents } from "../../../lib/calendar/calendarApi.js";
 import { isOpenedRecord, isProtectedRecord } from "../../../lib/zeroAccess/sealedRecords.js";
+import { isSealedRecord } from "../../../lib/zeroAccess/sealedMoves.js";
+import { useKeysLocked } from "../../shared/zeroAccess/useKeysLocked.js";
 import { openSealedEvent, openSealedEvents } from "../../shared/calendar/sealedEvents.js";
 import { useFolderLiveUpdates } from "../../shared/live/useFolderLiveUpdates.js";
 import { moveOccurrence, resizeOccurrenceEnd } from "../../../lib/calendar/calendarMutations.js";
@@ -411,6 +413,17 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
         };
     }, [events, searching]);
     const searchedEvents = searchable?.from === events ? searchable.events : events;
+
+    // The calendar holds protected events opened with their mailboxes' keys: a lock of one takes them off screen - read again with their
+    // placeholders, the search's fully opened copies dropped, and an open card or form of a protected event closed.
+    useKeysLocked((locked) => {
+        if (!events.some((event) => event.mailboxUid === locked)) {
+            return;
+        }
+        reload();
+        setSearchable(null);
+        setModal((current) => (current?.occurrence && isSealedRecord(current.occurrence) ? null : current));
+    });
     const matches = useMemo(() => {
         const found = searching ? searchOccurrences(searchedEvents, query) : [];
         const today = new Date();

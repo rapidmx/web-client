@@ -60,6 +60,7 @@ import type {
 } from "./localIndexWorker.js";
 import type { LocalIndexEntity } from "./localIndexSchema.js";
 import { removeLocalIndexDirectories, removeLocalIndexDirectory } from "./localIndexStorage.js";
+import { forgetAllZeroAccessSync, forgetZeroAccessSync } from "./zeroAccessSyncState.js";
 import type { LocalIndexTransport, PruneLocalEntitiesOptions, SetLocalIndexBuildingCompletion } from "./localIndexTransport.js";
 
 let worker: Worker | undefined;
@@ -462,12 +463,15 @@ export function setLocalIndexBuilding(mailboxUid: string, building: boolean, com
  * resolves `false` when the index could not be removed - see the current transport's own doc comment for what
  * that means for it (the Worker transport also logs why, and retries on the next page load). */
 export function destroyLocalIndex(mailboxUid: string): Promise<boolean> {
+    // What zero-access sync passes remembered importing into it goes with it, whatever the transport.
+    forgetZeroAccessSync(mailboxUid);
     return currentTransport.destroy(mailboxUid);
 }
 
 /** Destroys **every** local index this transport knows of - not just the mailboxes this session opened - e.g.
  * on sign-out. Never rejects. Resolves `true` only if everything was removed within `timeoutMs`. */
 export function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS): Promise<boolean> {
+    forgetAllZeroAccessSync();
     return currentTransport.destroyAll(timeoutMs);
 }
 

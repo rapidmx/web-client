@@ -19,7 +19,7 @@ import { type EndToEndFormat, isOpenPgpKey, keyFormat, OPENPGP_KEY_TYPE, type Pu
 import { ApiRequestError } from "../../../../lib/util/api.js";
 import ProtectedMark from "../../zeroAccess/ProtectedMark.js";
 import { useOpenedRecord } from "../../zeroAccess/useOpenedRecord.js";
-import { isProtectedRecord, openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
+import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
 
 /** Groups a hex fingerprint into 4-character blocks (`ab12 cd34 ...`) for out-of-band verification -
  * the spec's own use case ("compare this over the phone") is materially easier with a grouped string
@@ -63,14 +63,26 @@ export interface ContactDetailPaneProps {
  */
 /** The pane for `props.contact` with all its protected details opened (a list hands over a contact with only what it shows opened). */
 export default function ContactDetailPane(props: ContactDetailPaneProps) {
-    const { record } = useOpenedRecord(props.contact);
+    const { record, ready } = useOpenedRecord(props.contact);
     const { onChanged } = props;
     // The server answers a change with the protected details sealed: what goes back to the list is opened again.
     const openedOnChanged = onChanged && ((changed: Contact) => void openSealedRecord(changed).then(onChanged));
-    return <ContactDetailPaneView {...props} contact={record!} onChanged={openedOnChanged} />;
+    // A protected contact that can't be opened here shows placeholders: an edit would save them over the real details.
+    const editLocked = ready && isProtectedRecord(record) && !isOpenedRecord(record);
+    return <ContactDetailPaneView {...props} contact={record!} onChanged={openedOnChanged} editLocked={editLocked} />;
 }
 
-function ContactDetailPaneView({ contact, onEdit, onDelete, canWrite = true, backHref, onKeysChanged, onChanged, canResolveKeys }: ContactDetailPaneProps) {
+function ContactDetailPaneView({
+    contact,
+    onEdit,
+    onDelete,
+    canWrite = true,
+    backHref,
+    onKeysChanged,
+    onChanged,
+    canResolveKeys,
+    editLocked,
+}: ContactDetailPaneProps & { editLocked: boolean }) {
     const client = useApiClient();
     // The outcome of the last key decision, kept per contact so selecting another contact doesn't carry it over.
     const [keyNotice, setKeyNotice] = useState<{ contactUid: string; text: string } | null>(null);
@@ -151,7 +163,14 @@ function ContactDetailPaneView({ contact, onEdit, onDelete, canWrite = true, bac
                             </>
                         ) : (
                             <>
-                                <Button type="button" variant="secondary" className="!w-auto" onClick={onEdit}>
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="!w-auto"
+                                    onClick={onEdit}
+                                    disabled={editLocked}
+                                    title={editLocked ? "This contact is protected: unlock your mailbox to edit it" : undefined}
+                                >
                                     Edit
                                 </Button>
                                 <Button type="button" variant="secondary" className="!w-auto text-danger" onClick={() => setConfirmingDeleteUid(contact.uid)}>
@@ -162,6 +181,12 @@ function ContactDetailPaneView({ contact, onEdit, onDelete, canWrite = true, bac
                     </div>
                 )}
             </div>
+
+            {editLocked && canWrite && (
+                <p role="status" className="text-sm text-text-muted">
+                    This contact is protected and can&rsquo;t be edited while your mailbox is locked. Unlock it to edit.
+                </p>
+            )}
 
             <div className="bg-surface border border-border rounded-md p-6 flex flex-col gap-4 text-sm">
                 {contact.emails.length > 0 && (

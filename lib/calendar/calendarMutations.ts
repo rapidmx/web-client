@@ -26,10 +26,11 @@ import {
     listCalendarEvents,
     updateCalendarEvent,
 } from "./calendarApi.js";
-import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "./recurrence.js";
+import { CalendarOccurrence, fromEventWallClock, seriesEndDate, toEventWallClock } from "./recurrence.js";
 import { ApiClient } from "../util/api.js";
 import { KeysLockedError } from "../crypto/masterKey.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../zeroAccess/sealedRecords.js";
+import { followMeetingKeyExpiry } from "../videoconf/protectedMeetings.js";
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
@@ -229,14 +230,22 @@ export function deleteEventOccurrence(occurrence: CalendarOccurrence, client?: A
  * drag behavior, which never silently reschedules an entire series from a single dragged instance;
  * moving the whole series is only ever done explicitly, via the event modal's "entire series" option.
  */
+/** Saves new times of non-recurring `occurrence`, then moves its video meeting's key expiry to follow the new end: a protected meeting's key is
+ * discarded an hour after the end it was made for, so a meeting dragged later couldn't be joined. Best effort - it never fails the move. */
+async function reschedule(occurrence: CalendarOccurrence, times: { startDate?: string; endDate: string }, client: ApiClient | undefined): Promise<CalendarEvent> {
+    const saved = await updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...times }, client, occurrence);
+    if (saved.videoMeetingUid) {
+        await followMeetingKeyExpiry(saved.videoMeetingUid, seriesEndDate(saved), client);
+    }
+    return saved;
+}
+
 export function moveOccurrence(occurrence: CalendarOccurrence, deltaMs: number, client?: ApiClient): Promise<CalendarEvent> {
     const fields = {
         startDate: new Date(new Date(occurrence.startDate).getTime() + deltaMs).toISOString(),
         endDate: new Date(new Date(occurrence.endDate).getTime() + deltaMs).toISOString(),
     };
-    return occurrence.isRecurringOccurrence
-        ? detachOccurrence(occurrence, fields, client)
-        : updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, ...fields }, client, occurrence);
+    return occurrence.isRecurringOccurrence ? detachOccurrence(occurrence, fields, client) : reschedule(occurrence, fields, client);
 }
 
 /**
@@ -248,7 +257,5 @@ export function resizeOccurrenceEnd(occurrence: CalendarOccurrence, newEndDate: 
     const start = new Date(occurrence.startDate);
     const minEnd = new Date(start.getTime() + 15 * 60_000);
     const endDate = (newEndDate.getTime() > minEnd.getTime() ? newEndDate : minEnd).toISOString();
-    return occurrence.isRecurringOccurrence
-        ? detachOccurrence(occurrence, { endDate }, client)
-        : updateCalendarEvent({ uid: occurrence.uid, version: occurrence.version, endDate }, client, occurrence);
+    return occurrence.isRecurringOccurrence ? detachOccurrence(occurrence, { endDate }, client) : reschedule(occurrence, { endDate }, client);
 }

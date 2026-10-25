@@ -22,6 +22,9 @@ export interface OpenPgpKeySettingProps {
 
 const INPUT_CLASS = "w-full text-sm border border-border rounded-sm py-1.5 px-2 bg-surface";
 
+/** How long a download's object URL is kept, since some browsers (WebKit, older Firefox) still read it after the click returns. */
+const DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
 /** Hands `text` to the browser as a file download. */
 function saveText(text: string, filename: string): void {
     const url = URL.createObjectURL(new Blob([text], { type: "application/pgp-keys" }));
@@ -31,7 +34,7 @@ function saveText(text: string, filename: string): void {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
 }
 
 /** `preference` advertising `format` - S/MIME is the default, so it is advertised by saying nothing. */

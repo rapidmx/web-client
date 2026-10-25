@@ -424,6 +424,20 @@ describe("ContactDetailPane: zero-access protection", () => {
         expect(screen.getByText(/Its email addresses aren.t - the server needs them to deliver mail and to find this contact.s encryption keys/)).toBeInTheDocument();
     });
 
+    it("offers no Edit of a protected contact that can't be opened here (its mailbox is locked), saying to unlock", async () => {
+        const contact = contactFixture({ displayName: "jane@example.com", sealedFields: { displayName: "c2VhbGVk", notes: "c2VhbGVk" } });
+        const onEdit = vi.fn();
+        const { unmount } = render(<ContactDetailPane contact={contact} onEdit={onEdit} onDelete={vi.fn()} />);
+
+        expect(await screen.findByText(/can.t be edited while your mailbox is locked/)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+        unmount();
+        // Read-only: no Edit at all, nothing to say about it.
+        render(<ContactDetailPane contact={contact} onEdit={onEdit} onDelete={vi.fn()} canWrite={false} />);
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument());
+        expect(screen.queryByText(/can.t be edited while your mailbox is locked/)).not.toBeInTheDocument();
+    });
+
     it("says nothing about protection for a contact that isn't protected", () => {
         render(<ContactDetailPane contact={contactFixture({ keys: [key("encrypt", "eeee2222")] })} onEdit={vi.fn()} onDelete={vi.fn()} />);
         expect(screen.queryByRole("img", { name: "Protected by zero-access encryption" })).not.toBeInTheDocument();

@@ -52,6 +52,7 @@ describe("KeyExportSetting", () => {
         const user = userEvent.setup();
         exportKeysAsPkcs12.mockResolvedValue({ pkcs12: new Uint8Array([1, 2]), keys: [] });
         const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+        const timeout = vi.spyOn(globalThis, "setTimeout");
         render(<KeyExportSetting mailbox={MAILBOX} canManage />);
 
         await fillForm(user);
@@ -71,7 +72,12 @@ describe("KeyExportSetting", () => {
             undefined,
         );
         expect(createObjectURL).toHaveBeenCalled();
+        // The URL outlives the click: WebKit and older Firefox still read it after click() returns.
+        expect(revokeObjectURL).not.toHaveBeenCalled();
+        const revoke = timeout.mock.calls.find(([, ms]) => ms === 60_000);
+        (revoke![0] as () => void)();
         expect(revokeObjectURL).toHaveBeenCalledWith("blob:p12");
+        timeout.mockRestore();
         expect(screen.getByRole("button", { name: /Export keys/ })).toBeTruthy();
         click.mockRestore();
     });

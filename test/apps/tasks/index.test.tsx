@@ -12,6 +12,7 @@ import TasksPageBase from "../../../apps/www/tasks/index.js";
 import { latestRouter, withTestRouter } from "../routerTestUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import { createApiClient } from "../../../lib/util/api.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const TasksPage = withTestRouter(TasksPageBase);
@@ -143,6 +144,22 @@ describe("TasksPage", () => {
 
         await user.click(screen.getByRole("checkbox", { name: /Mark "Opened t-sealed" as complete/ }));
         await waitFor(() => expect(screen.getByRole("checkbox", { name: /Mark "Opened t-sealed" as not complete/ })).toBeInTheDocument());
+    });
+
+    it("reads its tasks again when the mailbox locks, so nothing opened with its keys stays on screen", async () => {
+        const fetchMock = mockShellAndTasks([noDueDateTask]);
+        render(<TasksPage userUid="u1" />);
+        await screen.findByText(noDueDateTask.title);
+        const reads = () => fetchMock.mock.calls.filter(([url, init]) => String(url).startsWith("/api/mail/tasks?") && ((init as RequestInit)?.method ?? "GET") === "GET").length;
+        const before = reads();
+
+        installSharedSession("mb-other", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb-other"));
+        destroyUnlockedKeys("mb-other");
+        expect(reads()).toBe(before);
+
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        act(() => destroyUnlockedKeys("mb1"));
+        await waitFor(() => expect(reads()).toBe(before + 1));
     });
 
     it("passes the server's plugin nav through to the app rail", async () => {

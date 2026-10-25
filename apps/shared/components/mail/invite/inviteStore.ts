@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { useCallback, useEffect, useReducer } from "react";
 import { MessageInvite, getMessageInvite } from "../../../../../lib/calendar/inviteApi.js";
-import { clearSealedInvites, sealedInviteCalendar } from "../../../../../lib/calendar/sealedInvites.js";
+import { clearSealedInvites, onSealedInvitesForgotten, sealedInviteCalendar } from "../../../../../lib/calendar/sealedInvites.js";
 import { onSigningOut } from "../compose/composeFlushRegistry.js";
 import { ApiClient } from "../../../../../lib/util/api.js";
 import { useApiClient } from "../../../../../lib/util/apiClientContext.js";
@@ -126,3 +126,13 @@ export function useMessageInvite(uid: string, enabled = true): { invite: Message
 }
 
 onSigningOut(clearSealedInvites);
+onSigningOut(clearInviteCache);
+// What the server read from a zero-access message's decrypted calendar file (its summary, description) goes with the file when the mailbox
+// locks: mounted cards, chips and popovers draw nothing until it is read again.
+onSealedInvitesForgotten((uids) => {
+    for (const uid of uids) {
+        if (entries.delete(uid)) {
+            notify(uid);
+        }
+    }
+});

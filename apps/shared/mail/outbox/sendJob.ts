@@ -330,7 +330,10 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
                 failure: partial
                     ? { ...failure, partial, message: `Only some of its recipients ${request.scheduledSendTime ? "will get it" : "were sent it"} - the copy for the others didn't go. ${failure.message}` }
                     : failure,
-                pendingCopies: copies.slice(index),
+                // Nothing went of a single copy: a retry decides and assembles again from the request, like the first attempt (the stored
+                // draft may have been opened and autosaved plain since). Several copies are kept even when none went, so a mixed-format
+                // retry doesn't create another OpenPGP draft.
+                pendingCopies: partial || copies.length > 1 ? copies.slice(index) : undefined,
             };
         }
     }
@@ -429,9 +432,11 @@ export function openDraftFromRequest(request: SendRequest): boolean {
             encryptRequested: request.encryptRequested,
         },
     });
-    // Being edited again, it is no longer a message on its way in the conversation.
+    // Being edited again, it is no longer a message on its way in the conversation - and the failure's Retry, wherever it was clicked
+    // from, must not hand over the draft the window is now editing (and autosaving).
     if (opened) {
         forgetOutgoing(request.draft.uid);
+        dismiss(failureNotificationId(request.draft.uid));
     }
     return opened;
 }

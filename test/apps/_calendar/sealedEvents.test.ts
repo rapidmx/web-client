@@ -99,6 +99,17 @@ describe("openSealedEvents", () => {
         expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
     });
 
+    it("keeps nothing it opened across a lock that came while it was opening, showing the placeholder", async () => {
+        const key = await zeroAccessKey();
+        const sealed = await seal({ title: "Secret" }, key.certDer);
+        // Unlocked when the open starts, locked by the time the decryption is done (the lock's clear has already run).
+        getUnlockedKeys.mockReturnValueOnce({ zeroAccessKeys: [key] }).mockReturnValue(undefined);
+        expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
+        // Unlocked again with another key: only fields that were kept would open.
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await zeroAccessKey()] });
+        expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
+    });
+
     it("forgets what it opened on sign-out", async () => {
         const key = await zeroAccessKey();
         getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });

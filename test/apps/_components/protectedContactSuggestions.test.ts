@@ -5,7 +5,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { listFolders, listContacts, fetchRecipientSuggestions, openSealedRecords, getUnlockedKeys } = vi.hoisted(() => ({
+const { listFolders, listContacts, fetchRecipientSuggestions, openSealedRecords, getUnlockedKeys, keyListeners } = vi.hoisted(() => ({
+    keyListeners: [] as ((event: { mailboxUid: string; state: string }) => void)[],
     listFolders: vi.fn(),
     listContacts: vi.fn(),
     fetchRecipientSuggestions: vi.fn(),
@@ -25,7 +26,14 @@ vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>()),
     openSealedRecords,
 }));
-vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
+    getUnlockedKeys,
+    subscribeKeySession: (listener: (event: { mailboxUid: string; state: string }) => void) => {
+        keyListeners.push(listener);
+        return () => undefined;
+    },
+}));
+const { markSigningOut, clearSigningOut } = await import("../../../apps/shared/components/mail/compose/composeFlushRegistry.js");
 
 const { clearProtectedContactNames, fetchSuggestionsWithProtectedContacts, PROTECTED_NAMES_TTL_MS, PROTECTED_NAMES_WAIT_MS, searchProtectedContactNames } = await import(
     "../../../apps/shared/components/mail/compose/protectedContactSuggestions.js"
@@ -72,6 +80,31 @@ describe("protectedContactSuggestions", () => {
         expect(listContacts).toHaveBeenCalledTimes(2);
         await searchProtectedContactNames("mb1", "jane");
         expect(listContacts).toHaveBeenCalledTimes(3);
+    });
+
+    it("forgets a mailbox's opened names the moment it locks, and every mailbox's on signing out", async () => {
+        arrange();
+        await searchProtectedContactNames("mb1", "jane");
+        await searchProtectedContactNames("mb2", "jane");
+        expect(listContacts).toHaveBeenCalledTimes(2);
+        // One subscription, made with the first crawl.
+        expect(keyListeners).toHaveLength(1);
+
+        keyListeners[0]({ mailboxUid: "mb1", state: "unlocked" });
+        await searchProtectedContactNames("mb1", "jane");
+        expect(listContacts).toHaveBeenCalledTimes(2);
+
+        keyListeners[0]({ mailboxUid: "mb1", state: "locked" });
+        await searchProtectedContactNames("mb1", "jane");
+        await searchProtectedContactNames("mb2", "jane");
+        expect(listContacts).toHaveBeenCalledTimes(3);
+
+        markSigningOut();
+        clearSigningOut();
+        await searchProtectedContactNames("mb1", "jane");
+        await searchProtectedContactNames("mb2", "jane");
+        expect(listContacts).toHaveBeenCalledTimes(5);
+        expect(keyListeners).toHaveLength(1);
     });
 
     it("pages through a large contacts folder", async () => {

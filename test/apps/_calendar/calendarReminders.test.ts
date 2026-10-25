@@ -23,7 +23,7 @@ describe("openedReminder", () => {
     it("shows a protected event's real title and location, read from the event, and the placeholder when it can't be", async () => {
         const notice = { ...NOTICE, title: "Protected event", protected: true };
         getCalendarEvent.mockResolvedValueOnce({ title: "Board meeting", location: "Room 4" });
-        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4" });
+        expect(await openedReminder(notice)).toEqual({ ...notice, title: "Board meeting", location: "Room 4", sealedTitle: "Protected event" });
         expect(getCalendarEvent).toHaveBeenCalledWith("evt1");
         getCalendarEvent.mockRejectedValueOnce(new Error("offline"));
         expect(await openedReminder(notice)).toBe(notice);

@@ -6,6 +6,10 @@ import React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPushClient, resetPushClient } from "../../../lib/mail/pushClient.js";
+
+const { getCalendarEvent } = vi.hoisted(() => ({ getCalendarEvent: vi.fn() }));
+vi.mock("../../../lib/calendar/calendarApi.js", () => ({ getCalendarEvent }));
+
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { setNotificationsEnabled } from "../../../apps/shared/notifications/preferences.js";
 import { resetNotificationSounds } from "../../../apps/shared/notifications/sounds.js";
@@ -249,6 +253,22 @@ describe("useCalendarReminders", () => {
         expect(latest.current).toBeUndefined();
         expect(audio.oscillators).toBe(0);
         expect(getNotificationsSnapshot().history.some((entry) => entry.title === "Team sync")).toBe(true);
+    });
+
+    it("records a protected event's alarm in the history under its placeholder title, never the opened one, with pop-ups off", async () => {
+        setNotificationsEnabled(false);
+        getCalendarEvent.mockResolvedValueOnce({ title: "Board: acquisition", location: "Room 4" });
+        render(<Harness />);
+        connect();
+        await act(async () => {
+            socket().receive({ type: "CalendarEvent", action: "reminder", data: { ...NOTICE, title: "[...]", protected: true } });
+            await vi.advanceTimersByTimeAsync(0);
+        });
+
+        expect(getCalendarEvent).toHaveBeenCalledWith("evt1");
+        expect(getNotificationsSnapshot().history.some((entry) => entry.title === "[...]")).toBe(true);
+        expect(JSON.stringify(getNotificationsSnapshot().history)).not.toContain("acquisition");
+        expect(sessionStorage.getItem("rapidmx-notification-history") ?? "").not.toContain("acquisition");
     });
 
     it("does nothing without a signed-in user", async () => {

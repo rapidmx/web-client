@@ -28,7 +28,7 @@ import { useContactPhotoSrc } from "../../../../lib/contacts/useContactPhotoSrc.
 import { findWellKnownFolderUid } from "../../mail/findWellKnownFolderUid.js";
 import { clearPinnedSignerCache } from "../mail/pinnedSigners.js";
 import { useOpenedRecord } from "../../zeroAccess/useOpenedRecord.js";
-import { openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
+import { isOpenedRecord, isProtectedRecord, openSealedRecord, protectedRecordWrite } from "../../../../lib/zeroAccess/sealedRecords.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -54,11 +54,25 @@ const ADDRESS_KINDS: ContactAddressKind[] = ["home", "work", "other"];
  * mobile detail route's own edit mode (`apps/www/contacts/[uid].tsx`) — creation itself stays
  * desktop-and-mobile-inline (see that route's own doc comment on why "new" never gets a dedicated route).
  */
-/** The form for `props.contact` opened in full - its fields are read once, when it mounts, so it waits for a protected contact to open. */
+/** The form for `props.contact` opened in full - its fields are read once, when it mounts, so it waits for a protected contact to open. One
+ * that can't be opened here (the mailbox is locked, or this device has no key for it) is never edited: its form would hold placeholders,
+ * and saving them would replace - or clear for good - the real details. */
 export default function ContactForm(props: ContactFormProps) {
     const { record, ready } = useOpenedRecord(props.contact);
     if (!ready) {
         return <p className="text-sm text-text-muted">Opening this contact&hellip;</p>;
+    }
+    if (isProtectedRecord(record) && !isOpenedRecord(record)) {
+        return (
+            <div className="flex max-w-xl flex-col items-start gap-3 p-6">
+                <p role="status" className="text-sm">
+                    This contact is protected and can&rsquo;t be edited while your mailbox is locked. Unlock it to edit.
+                </p>
+                <Button type="button" variant="secondary" className="!w-auto" onClick={props.onCancel}>
+                    Back
+                </Button>
+            </div>
+        );
     }
     // The server answers a save with the protected details sealed: what goes back is opened again.
     const onSaved = (saved: Contact) => void openSealedRecord(saved).then(props.onSaved);
@@ -90,8 +104,8 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     // The contact as stored, once it has been saved and only the picture is left to do (that is a second request, which can fail on its own):
-    // a retry must not create the contact again or send the version it started from. `key` is the form's content that was saved.
-    const [stored, setStored] = useState<{ contact: Contact; key: string } | null>(null);
+    // a retry must not create the contact again or send the version it started from. `key` is the form's content that was saved, `input` its fields.
+    const [stored, setStored] = useState<{ contact: Contact; key: string; input?: object } | null>(null);
 
     function updateEmail(index: number, patch: Partial<ContactEmail>) {
         setEmails((prev) => prev.map((e, i) => (i === index ? { ...e, ...patch } : e)));
@@ -151,11 +165,14 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
                 // Stored exactly as it is now: only the picture is left.
                 saved = stored.contact;
             } else if (existing) {
+                // A protected contact's details go only when they changed from what the form was shown (or last saved): the server stores
+                // them sealed and can't tell an unchanged value from a new one.
+                const shown = contact && (stored?.input ? { ...contact, ...stored.input } : contact);
                 saved = await updateContact(
                     {
                         uid: existing.uid,
                         version: existing.version,
-                        ...(input as Omit<ContactPatch, "uid" | "version">),
+                        ...protectedRecordWrite(shown, input as Omit<ContactPatch, "uid" | "version">, isOpenedRecord(contact)),
                     },
                     client,
                 );
@@ -177,7 +194,7 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
                     client,
                 );
             }
-            setStored({ contact: saved, key });
+            setStored({ contact: saved, key, input });
             const changePhoto = async (current: Contact) => {
                 if (pickedPhoto) {
                     return uploadContactPhoto(current.uid, current.version, pickedPhoto, client);
@@ -193,7 +210,7 @@ function ContactFormView({ contact, mailboxUid, folderUid, mailboxes, onSaved, o
                     }
                     // A version that is stale means an earlier try had been applied after all (its answer never arrived): read the contact as it is and go again, once.
                     const current = await getContact(saved.uid, client);
-                    setStored({ contact: current, key });
+                    setStored({ contact: current, key, input });
                     saved = await changePhoto(current);
                 }
             } catch (err) {
