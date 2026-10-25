@@ -11,6 +11,7 @@ import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
 import { type InvitationContent, invitationContentOf, protectedEventWrite } from "./protectedEvents.js";
+import { meetingLinkSecrets } from "../videoconf/protectedMeetings.js";
 
 export type AttendeeRole = "required" | "optional" | "resource";
 export type AttendeeResponseStatus = "needsAction" | "accepted" | "declined" | "tentative";
@@ -254,11 +255,20 @@ export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
 }
 
 /** Saves `input`. `current` is the event as this device shows it: for an event of a protected calendar, the write then sends only the
- * content that changed, and the content the server invites with (`protectedEventWrite()`). */
+ * content that changed, and the content the server invites with (`protectedEventWrite()`). For an event whose video meeting is protected,
+ * every attendee's link key goes with it (`meetingLinkSecrets()`), for the server to add to their links in the invitations it sends. */
 export async function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient, current?: CalendarEvent): Promise<CalendarEvent> {
+    const body: Record<string, any> = protectedEventWrite(current, input);
+    const secrets = await meetingLinkSecrets(
+        { videoMeetingUid: input.videoMeetingUid ?? current?.videoMeetingUid, attendees: input.attendees ?? current?.attendees, organizer: current?.organizer ?? input.organizer },
+        client,
+    );
+    if (secrets) {
+        body.invitationContent = { ...(body.invitationContent ?? {}), meetingLinkSecrets: secrets };
+    }
     const updated = await withClient<CalendarEvent>(client, `/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
         method: "PUT",
-        body: JSON.stringify(protectedEventWrite(current, input)),
+        body: JSON.stringify(body),
     });
     return opened(updated);
 }

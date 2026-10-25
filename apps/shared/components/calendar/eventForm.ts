@@ -93,6 +93,8 @@ export interface EventFormController {
     /** `undefined` while it is being fetched, `null` once it is known there is none. */
     organizerJoinUrl: string | null | undefined;
     videoError: string | null;
+    /** Why the video meeting isn't protected end to end, when it isn't. */
+    videoNotice?: string | null;
 
     // The form as a whole.
     editScope: EditScope;

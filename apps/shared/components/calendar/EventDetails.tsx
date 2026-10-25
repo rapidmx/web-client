@@ -19,6 +19,7 @@ import { ApiRequestError } from "../../../../lib/util/api.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import { AttendeeResponseInput, guestPermissionsOf, respondToEvent, visibilityOf } from "../../../../lib/calendar/calendarApi.js";
 import { invitationContentOf } from "../../../../lib/calendar/protectedEvents.js";
+import { organizerJoinLink } from "../../../../lib/videoconf/protectedMeetings.js";
 import { htmlToPlainText } from "../../../../lib/calendar/eventDescription.js";
 import { deleteEventOccurrence, deleteEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { CalendarOccurrence, describeRecurrence } from "../../../../lib/calendar/recurrence.js";
@@ -110,7 +111,7 @@ export default function EventDetails({
         }
         let cancelled = false;
         void getVideoMeeting(videoMeetingUid, client)
-            .then((meeting) => meeting.organizerJoinUrl ?? null)
+            .then(organizerJoinLink)
             .catch(() => null)
             .then((url) => {
                 if (!cancelled) {

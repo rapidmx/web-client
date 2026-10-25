@@ -86,6 +86,7 @@ export function VideoConferencingRow({ c }: { c: EventFormController }) {
                     {c.videoError}
                 </p>
             )}
+            {c.videoNotice && <p className="text-xs text-text-muted mb-1">{c.videoNotice}</p>}
             {c.videoMeetingUid && (
                 <div className="flex items-center gap-3 mb-1">
                     <Button

@@ -13,6 +13,12 @@ import { addGuest, clickModify } from "./eventModalHelpers.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 
+const { protectMeeting } = vi.hoisted(() => ({ protectMeeting: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined) }));
+vi.mock("../../../lib/videoconf/protectedMeetings.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../lib/videoconf/protectedMeetings.js")>()),
+    protectMeeting,
+}));
+
 /** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
  * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
 function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
@@ -617,3 +623,51 @@ describe("EventModal video conferencing with an explicit ApiClient from context 
         expect(fetchMock).not.toHaveBeenCalled();
     });
 });
+
+describe("EventModal video conferencing with zero-access", () => {
+    const SECURED = {
+        protection: { meetingKey: { certificate: "Y2VydA==" }, keyExpiresAt: "2026-06-03T16:30:00.000Z", keyWraps: [], sealedFields: { title: "c2VhbGVk" } },
+        invitees: [{ email: "bob@example.com", sealedFields: { displayName: "c2VhbGVk" } }],
+        fragment: "k=the-meeting-key-for-everyone",
+    };
+
+    afterEach(() => {
+        protectMeeting.mockReset().mockResolvedValue(undefined);
+        vi.unstubAllGlobals();
+    });
+
+    it("protects the meeting, sends no readable title or names, keys the organizer's link and every invited attendee's", async () => {
+        protectMeeting.mockResolvedValue(SECURED);
+        const fetchMock = mockVideoFetch();
+        const user = userEvent.setup();
+        const openSpy = vi.fn();
+        vi.stubGlobal("open", openSpy);
+        renderModal(occurrence({ attendees: [{ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }] }));
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+
+        const join = await screen.findByRole("button", { name: "Join video call" });
+        await waitFor(() => expect(join).toBeEnabled());
+        const [create] = callsTo(fetchMock, "/api/mail/video-meetings", "POST");
+        const body = JSON.parse((create[1] as RequestInit).body as string);
+        expect(body.title).toBeUndefined();
+        expect(body.protection).toEqual(SECURED.protection);
+        expect(body.invitees).toEqual(SECURED.invitees);
+        expect(protectMeeting).toHaveBeenCalledWith("mb1", "Standup", [expect.objectContaining({ email: "bob@example.com" })], expect.any(Date));
+        const linked = callsTo(fetchMock, "/api/mail/calendar-events", "PUT").map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(linked.at(-1).invitationContent.meetingLinkSecrets).toEqual({ "bob@example.com": SECURED.fragment });
+        expect(screen.queryByText(/isn't end-to-end protected/)).toBeNull();
+        await user.click(join);
+        expect(openSpy).toHaveBeenCalledWith(`${JOIN_URL}#${SECURED.fragment}`, "_blank", "noopener,noreferrer");
+    });
+
+    it("says why a meeting isn't protected when the mailbox has no zero-access key unlocked", async () => {
+        mockVideoFetch();
+        const user = userEvent.setup();
+        renderModal(occurrence({ attendees: [{ address: "bob@example.com", role: "required", responseStatus: "needsAction", isOrganizer: false }] }));
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText(/isn't end-to-end protected because zero-access encryption is off/)).toBeInTheDocument();
+    });
+});
+

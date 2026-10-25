@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it } from "vitest";
 import { CalendarEvent } from "../../../lib/calendar/calendarApi.js";
-import { buildRRule, describeRecurrence, expandAllOccurrences, expandOccurrences, fromEventWallClock, toEventWallClock } from "../../../lib/calendar/recurrence.js";
+import { buildRRule, describeRecurrence, expandAllOccurrences, expandOccurrences, fromEventWallClock, seriesEndDate, toEventWallClock } from "../../../lib/calendar/recurrence.js";
 
 function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     return {
@@ -406,3 +406,25 @@ describe("hostile and ancient recurrence rules", () => {
         expect(starts(event({ startDate: "1600-01-01T15:00:00.000Z", endDate: "1600-01-01T15:30:00.000Z", recurrenceRule: rule({ count: 5 }) }))).toEqual([]);
     });
 });
+
+describe("seriesEndDate", () => {
+    const base = { startDate: "2026-06-01T09:00:00.000Z", endDate: "2026-06-01T09:30:00.000Z", timezone: "UTC" };
+
+    it("is a single event's own end", () => {
+        expect(seriesEndDate(event(base)).toISOString()).toBe("2026-06-01T09:30:00.000Z");
+    });
+
+    it("is the end of a series' last occurrence, by count or by date", () => {
+        expect(seriesEndDate(event({ ...base, recurrenceRule: { freq: "daily", interval: 1, count: 3, exceptions: [] } as any })).toISOString()).toBe("2026-06-03T09:30:00.000Z");
+        expect(seriesEndDate(event({ ...base, recurrenceRule: { freq: "weekly", interval: 1, until: "2026-06-15T09:00:00.000Z", exceptions: [] } as any })).toISOString()).toBe(
+            "2026-06-15T09:30:00.000Z",
+        );
+    });
+
+    it("is far ahead for a series without an end, and the event's own end when its rule yields nothing", () => {
+        expect(seriesEndDate(event({ ...base, recurrenceRule: { freq: "daily", interval: 1, exceptions: [] } as any })).valueOf()).toBe(8.64e15);
+        const allExcepted = event({ ...base, recurrenceRule: { freq: "daily", interval: 1, count: 1, exceptions: ["2026-06-01T09:00:00.000Z"] } as any });
+        expect(seriesEndDate(allExcepted).toISOString()).toBe("2026-06-01T09:30:00.000Z");
+    });
+});
+

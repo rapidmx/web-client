@@ -25,10 +25,11 @@ import {
 } from "../../../../lib/videoconf/videoMeetingsApi.js";
 import { detachOccurrence, saveEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { isProtectedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
+import { meetingKeyExpiry, organizerJoinLink, protectMeeting, rememberMeetingKey } from "../../../../lib/videoconf/protectedMeetings.js";
 import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
 import { deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
 import { Mailbox } from "../../../../lib/mail/mailApi.js";
-import { CalendarOccurrence, fromEventWallClock, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
+import { CalendarOccurrence, fromEventWallClock, seriesEndDate, toEventWallClock } from "../../../../lib/calendar/recurrence.js";
 import { addDaysToKey, allDayDateKey, allDayInstant, recurrenceUntilDateKey, recurrenceUntilInstant, startWeekdayCode } from "./allDay.js";
 import { joinMeetingUrl } from "../../calendar/calendarReminders.js";
 import EventExpandedForm from "./EventExpandedForm.js";
@@ -262,6 +263,8 @@ export default function EventEditor({
     // `undefined` while the link is still being fetched, `null` once it is known there is none to open.
     const [organizerJoinUrl, setOrganizerJoinUrl] = useState<string | null | undefined>(undefined);
     const [videoError, setVideoError] = useState<string | null>(null);
+    /** Why the meeting just made isn't protected end to end - shown beside the toggle, not as an error. */
+    const [videoNotice, setVideoNotice] = useState<string | null>(null);
     // The event as this modal last persisted it. Set only when a save got the event stored but could not
     // finish the video-conferencing step after it: the modal then stays open on that error, and the retry
     // must update *that* record (its uid and its new version), not re-create it or reuse the stale prop.
@@ -289,7 +292,7 @@ export default function EventEditor({
         }
         let cancelled = false;
         void getVideoMeeting(uid, client)
-            .then((meeting) => meeting.organizerJoinUrl ?? null)
+            .then(organizerJoinLink)
             .catch(() => null)
             .then((url) => {
                 if (!cancelled) {
@@ -454,20 +457,27 @@ export default function EventEditor({
                     return { event: saved, failed: true };
                 }
                 if (!mintedMeeting.current) {
+                    // Protected end to end when the organizer's mailbox has zero-access: its title and names sealed, its key in every link.
+                    const title = saved.title.slice(0, MAX_MEETING_TITLE_LENGTH);
+                    const secured = await protectMeeting(saved.mailboxUid, title, invitees, meetingKeyExpiry(seriesEndDate(saved)));
                     const result = await createVideoMeeting(
                         {
                             mailboxUid: saved.mailboxUid,
-                            // The meeting's title is stored readable: a protected event's real title never goes there.
-                            title: isProtectedRecord(saved) ? "Meeting" : saved.title.slice(0, MAX_MEETING_TITLE_LENGTH),
+                            ...(secured
+                                ? { protection: secured.protection, invitees: secured.invitees }
+                                : // Stored readable: a protected event's real title never goes there.
+                                  { title: isProtectedRecord(saved) ? "Meeting" : title, invitees }),
                             visibility: "private",
                             calendarEventUid: saved.uid,
                             startTime: saved.startDate,
                             endTime: saved.endDate,
-                            invitees,
                         },
                         client,
                     );
-                    mintedMeeting.current = { uid: result.meeting.uid, organizerJoinUrl: result.organizerJoinUrl ?? null };
+                    rememberMeetingKey(result.meeting.uid, secured?.fragment ?? null);
+                    setVideoNotice(secured ? null : "This meeting isn't end-to-end protected because zero-access encryption is off (or locked) for your mailbox.");
+                    const organizerUrl = result.organizerJoinUrl ?? null;
+                    mintedMeeting.current = { uid: result.meeting.uid, organizerJoinUrl: organizerUrl && secured ? `${organizerUrl}#${secured.fragment}` : organizerUrl };
                 }
                 const meeting = mintedMeeting.current;
                 const patched = await updateCalendarEvent(
@@ -691,6 +701,7 @@ export default function EventEditor({
         joinUrl,
         organizerJoinUrl,
         videoError,
+        videoNotice,
         editScope,
         setEditScope,
         showEditScope: !!occurrence?.isRecurringOccurrence,

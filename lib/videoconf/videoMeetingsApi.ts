@@ -21,6 +21,7 @@
  * `apiFetch<T>()` call (see `crypto/signingProviderApi.ts`'s own note on the same choice).
  */
 
+import type { MeetingProtectionInput } from "./protectedMeetings.js";
 import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 
@@ -47,6 +48,11 @@ export interface VideoMeeting {
      * (its oldest non-cancelled public meeting - see that app's own doc comment) out of `listVideoMeetings()`'s
      * results. */
     dateCreated: string;
+    /** Protected end to end (meet-plugin `specs/meeting_privacy.md`): `title` is `"Meeting"`, the real one sealed, and every link works
+     * only with the meeting key after `#` - see `protectedMeetings.ts`. */
+    keyProtected?: boolean | null;
+    /** A protected meeting's key, sealed to the organizer's zero-access certificate. */
+    keyWraps?: { mailboxUid: string; recipientFingerprint: string; kind: string; cms: string }[] | null;
 }
 
 /**
@@ -80,8 +86,9 @@ export interface VideoMeetingInviteeJoinInfo extends VideoMeetingInvitee {
 export interface CreateVideoMeetingInput {
     /** The mailbox that owns the meeting — the one whose ACL every later call on it is checked against. */
     mailboxUid: string;
-    /** Non-empty, at most 200 characters (the server rejects anything else with a 400). */
-    title: string;
+    /** Non-empty, at most 200 characters (the server rejects anything else with a 400). Omitted for a protected meeting, whose title is
+     * sealed in `protection`. */
+    title?: string;
     visibility: VideoMeetingVisibility;
     /** The `CalendarEvent` this meeting is being minted for, when there is one. */
     calendarEventUid?: string;
@@ -90,7 +97,9 @@ export interface CreateVideoMeetingInput {
     /** Required, and non-empty, for a `"private"` meeting — the server mints one personal join link per entry
      * and 400s a private meeting with none. Never send the organizer here: they reach their own meeting
      * through ownership (and `organizerJoinUrl`), not as a guest. */
-    invitees?: VideoMeetingInvitee[];
+    invitees?: (VideoMeetingInvitee | { email: string; sealedFields?: { displayName: string } })[];
+    /** Makes the meeting protected end to end - `protectMeeting()` in `protectedMeetings.ts`. */
+    protection?: MeetingProtectionInput;
 }
 
 export interface VideoMeetingCreateResult {

@@ -3950,3 +3950,20 @@ Not committed. Every new `client` is an optional trailing parameter; without one
 - Reminders: restapi flags a sealed event's reminder `protected: true`, and `openedReminder()` reads the event by uid for its real title and location (placeholder on failure).
 - A protected event's video meeting is titled "Meeting", because meet-plugin stores the title readable.
 - `ZERO_ACCESS_SUPPORTED_TYPES` now includes calendar. The device copy says phones don't notify attendees of their changes and Outlook doesn't send invitations.
+
+### 2026-10-24: Protected video meetings (per-meeting keys)
+- Spec: meet-plugin `specs/meeting_privacy.md`. JP's decision: every participant's link carries the meeting key (`#k=`), and the organizer keeps a wrap of it.
+- `lib/crypto/meetingKeys.ts` (shared with meet-plugin and booking-plugin):
+  - `generateMeetingKey(expiresAt)` makes a P-256 key with a self-signed cert, so the CMS code is reused.
+  - `meetingKeyFragment`/`readMeetingKeyFragment` build and read the `#k=` link key.
+  - `importMeetingKey(pkcs8, cert, meetingUid)` returns the CMS decryption key and the live AES key (HKDF of the private scalar, salted with the meeting uid).
+- `lib/videoconf/protectedMeetings.ts`:
+  - `protectMeeting()` returns undefined without an unlocked ZAE key. Otherwise it seals the title and names to [meeting cert, organizer ZAE cert] and wraps the pkcs8 to the organizer.
+  - `organizerJoinLink()` opens the wrap and appends the key to the organizer's link.
+  - `meetingLinkSecrets(event)` maps every non-organizer attendee to the fragment.
+  - `rememberMeetingKey(uid, fragment | null)` records a just-created meeting, `null` meaning unprotected, so its save doesn't fetch it.
+  - `meetingKeyExpiry(end)` is the end plus 1h, capped at 5y.
+- `updateCalendarEvent()` adds `invitationContent.meetingLinkSecrets` whenever the event has a protected video meeting.
+- EventEditor creates protected meetings (no readable title or names) and shows `videoNotice` when it can't.
+- EventDetails and EventEditor show `organizerJoinLink()`.
+- `seriesEndDate(event)` in `lib/calendar/recurrence.ts` gives the last occurrence's end, or far ahead for an endless series.

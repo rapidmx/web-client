@@ -334,3 +334,20 @@ export const WEEKDAY_LABELS: Record<WeekdayCode, string> = {
     SA: "Sat",
     SU: "Sun",
 };
+
+/** When `event`'s last occurrence ends: its own end, or a series' last occurrence's - far ahead for a series without an end. */
+export function seriesEndDate(event: CalendarEvent): Date {
+    const rule = event.recurrenceRule;
+    const end = new Date(event.endDate);
+    if (!rule) {
+        return end;
+    }
+    if (!rule.until && !rule.count) {
+        return new Date(8.64e15);
+    }
+    const duration = end.valueOf() - new Date(event.startDate).valueOf();
+    const horizon = new Date(rule.until ? new Date(rule.until).valueOf() + 86_400_000 : Date.now() + 5 * 365 * 86_400_000);
+    const occurrences = expandOccurrences(event, new Date(event.startDate), horizon);
+    const last = occurrences[occurrences.length - 1];
+    return last ? new Date(new Date(last.startDate).valueOf() + duration) : end;
+}
