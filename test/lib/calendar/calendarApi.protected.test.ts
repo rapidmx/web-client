@@ -65,6 +65,30 @@ describe("calendarApi and protected events", () => {
         expect(sealed.openSealedRecord).toHaveBeenCalledTimes(3);
     });
 
+    it("sends no invitation content nor link keys with a save that defers its invitations", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, event));
+        const keyed = { ...event, videoMeetingUid: "m1", attendees: [{ address: "bob@example.org" }] };
+        await updateCalendarEvent({ uid: "e1", version: 0, location: "Room 5", invitationContent: { defer: true } }, undefined, keyed);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ uid: "e1", version: 0, location: "Room 5", invitationContent: { defer: true } });
+    });
+
+    it("invites with the content given when the protected event couldn't be opened here, and with what it opened otherwise", async () => {
+        const given = { title: "Board meeting", location: "Video", description: "Agenda", descriptionHtml: "<p>Agenda</p>" };
+        sealed.openSealedRecord.mockImplementationOnce(async (record: any) => record);
+        const fetchMock = mockFetch(() => jsonResponse(200, event));
+        await updateCalendarEvent({ uid: "e1", version: 0, invitationContent: given }, undefined, event);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ uid: "e1", version: 0, invitationContent: given });
+
+        fetchMock.mockClear();
+        await updateCalendarEvent({ uid: "e1", version: 0, invitationContent: { ...given, title: "Stale" } }, undefined, event);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body).invitationContent.title).toBe("Board meeting");
+
+        // An event that isn't protected is invited with its own content.
+        fetchMock.mockClear();
+        await updateCalendarEvent({ uid: "e1", version: 0, invitationContent: given }, undefined, { ...event, sealedFields: undefined });
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ uid: "e1", version: 0 });
+    });
+
     it("leaves an event that is opened in full, or not protected, as it is", async () => {
         const opened = { ...event, opened: true };
         expect(await fullyOpenedEvent(opened)).toBe(opened);

@@ -241,6 +241,14 @@ export interface CalendarEventInput {
     guestsCanModify?: boolean;
     guestsCanInviteOthers?: boolean;
     guestsCanSeeGuestList?: boolean;
+    /**
+     * What the server sends a protected event's save-time invitations with (restapi `BaseCalendarEventRoute.takeInvitationContent()`).
+     * On a create, `{ defer: true }` holds them back for the save that follows - the event editor's, which attaches the video meeting and
+     * its link keys first - so attendees get one invitation, the one with the link. On an update, `{ defer: true }` sends none with this
+     * save either (they stay pending), and a content (`title`...) is what `updateCalendarEvent()` invites with when `current` couldn't be
+     * opened on this device - the content it opened wins otherwise.
+     */
+    invitationContent?: Partial<InvitationContent> & { defer?: boolean };
 }
 
 export async function createCalendarEvent(input: CalendarEventInput, client?: ApiClient): Promise<CalendarEvent> {
@@ -265,15 +273,25 @@ export interface UpdateCalendarEventInput extends Partial<CalendarEventInput> {
 }
 
 /** Saves `input`. `current` is the event as this device shows it: for an event of a protected calendar, the write then sends only the
- * content that changed, and the content the server invites with (`protectedEventWrite()`). For an event whose video meeting is protected,
+ * content that changed, and the content the server invites with (`protectedEventWrite()`; `input.invitationContent` when `current` isn't
+ * opened, none with `{ defer: true }`). For an event whose video meeting is protected,
  * every attendee's link key goes with it (`meetingLinkSecrets()`), for the server to add to their links in the invitations it sends. */
 export async function updateCalendarEvent(input: UpdateCalendarEventInput, client?: ApiClient, current?: CalendarEvent): Promise<CalendarEvent> {
     current = await fullyOpenedEvent(current);
-    const body: Record<string, any> = protectedEventWrite(current, input);
-    const secrets = await meetingLinkSecrets(
-        { videoMeetingUid: input.videoMeetingUid ?? current?.videoMeetingUid, attendees: input.attendees ?? current?.attendees, organizer: current?.organizer ?? input.organizer },
-        client,
-    );
+    const { invitationContent: given, ...changes } = input;
+    const body: Record<string, any> = protectedEventWrite(current, changes);
+    if (given?.defer) {
+        body.invitationContent = { defer: true };
+    } else if (given?.title && !body.invitationContent && isProtectedRecord(current)) {
+        body.invitationContent = { title: given.title, location: given.location, description: given.description, descriptionHtml: given.descriptionHtml };
+    }
+    // A save that defers its invitations sends no link keys either: they go with the save that invites.
+    const secrets = given?.defer
+        ? undefined
+        : await meetingLinkSecrets(
+              { videoMeetingUid: input.videoMeetingUid ?? current?.videoMeetingUid, attendees: input.attendees ?? current?.attendees, organizer: current?.organizer ?? input.organizer },
+              client,
+          );
     if (secrets) {
         body.invitationContent = { ...(body.invitationContent ?? {}), meetingLinkSecrets: secrets };
     }

@@ -712,3 +712,146 @@ describe("EventModal video conferencing with zero-access", () => {
     });
 });
 
+
+describe("EventModal deferring a new event's invitations to the save that links its video meeting", () => {
+    /** A new event as a protected calendar stores it: its content sealed, which this (locked) device can't open. */
+    const SEALED_CREATED = { ...occurrence(), uid: "e-new", version: 0, title: "[...]", sealedFields: { title: "c2VhbGVk" } };
+    const putBodies = (fetchMock: ReturnType<typeof vi.fn>) =>
+        callsTo(fetchMock, "/api/mail/calendar-events", "PUT").map(([, init]) => JSON.parse((init as RequestInit).body as string));
+
+    async function createWithVideo(user: ReturnType<typeof userEvent.setup>, video = true) {
+        await user.type(screen.getByLabelText("Title"), "Standup");
+        await addGuest(user, "bob@example.com");
+        if (video) {
+            await user.click(screen.getByLabelText("Add video conferencing"));
+        }
+        await user.click(screen.getByRole("button", { name: "Save" }));
+    }
+
+    it("defers the create's invitations only when a video meeting is linked right after", async () => {
+        const fetchMock = mockVideoFetch();
+        const user = userEvent.setup();
+        const { onSaved, unmount } = renderModal(null);
+        await createWithVideo(user);
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(bodyOf(fetchMock, "/api/mail/calendar-events", "POST").invitationContent).toEqual({ defer: true });
+        unmount();
+
+        const plain = mockVideoFetch();
+        const second = renderModal(null);
+        await createWithVideo(user, false);
+        await waitFor(() => expect(second.onSaved).toHaveBeenCalled());
+        expect(bodyOf(plain, "/api/mail/calendar-events", "POST").invitationContent).toBeUndefined();
+        expect(callsTo(plain, "/api/mail/calendar-events", "PUT")).toHaveLength(0);
+    });
+
+    it("sends the deferred invitations' content with the save that links the meeting, for a protected event this device can't open", async () => {
+        const fetchMock = mockVideoFetch({ createEvent: () => jsonResponse(200, SEALED_CREATED), updateEvent: () => jsonResponse(200, { ...SEALED_CREATED, version: 1 }) });
+        const user = userEvent.setup();
+        const { onSaved, unmount } = renderModal(null);
+        await createWithVideo(user);
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(putBodies(fetchMock)).toEqual([
+            { uid: "e-new", version: 0, location: PLACEHOLDER, videoMeetingUid: "vm1", invitationContent: { title: "Standup", location: PLACEHOLDER } },
+        ]);
+        // Sent: closing the dialog sends nothing more.
+        unmount();
+        await Promise.resolve();
+        expect(putBodies(fetchMock)).toHaveLength(1);
+    });
+
+    it("sends the deferred invitations without the meeting when the dialog is closed after the meeting couldn't be made", async () => {
+        const fetchMock = mockVideoFetch({
+            createEvent: () => jsonResponse(200, SEALED_CREATED),
+            createMeeting: () => jsonResponse(503, { message: "The meeting service is unavailable." }),
+        });
+        const user = userEvent.setup();
+        const { unmount } = renderModal(null);
+        await createWithVideo(user);
+        expect(await screen.findByText("The meeting service is unavailable.")).toBeInTheDocument();
+        expect(putBodies(fetchMock)).toHaveLength(0);
+
+        unmount();
+        await waitFor(() => expect(putBodies(fetchMock)).toEqual([{ uid: "e-new", version: 0, invitationContent: { title: "Standup" } }]));
+    });
+
+    it("sends them before the calendar reloads when the full form's own close button closes it", async () => {
+        const fetchMock = mockVideoFetch({
+            createEvent: () => jsonResponse(200, SEALED_CREATED),
+            createMeeting: () => jsonResponse(503, { message: "The meeting service is unavailable." }),
+        });
+        const user = userEvent.setup();
+        const { onSaved } = renderModal(null);
+        await user.type(screen.getByLabelText("Title"), "Standup");
+        await user.click(screen.getByRole("button", { name: "More options" }));
+        await user.type(screen.getByLabelText("Location"), "Room 4");
+        await addGuest(user, "bob@example.com");
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        expect(await screen.findByText("The meeting service is unavailable.")).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(putBodies(fetchMock)).toEqual([{ uid: "e-new", version: 0, invitationContent: { title: "Standup", location: "Room 4" } }]);
+    });
+
+    it("leaves the invitations pending, without throwing, when that closing save fails", async () => {
+        const fetchMock = mockVideoFetch({
+            createEvent: () => jsonResponse(200, SEALED_CREATED),
+            createMeeting: () => jsonResponse(503, { message: "The meeting service is unavailable." }),
+            updateEvent: () => jsonResponse(500, { message: "nope" }),
+        });
+        const user = userEvent.setup();
+        const { unmount } = renderModal(null);
+        await createWithVideo(user);
+        expect(await screen.findByText("The meeting service is unavailable.")).toBeInTheDocument();
+        unmount();
+        await waitFor(() => expect(putBodies(fetchMock)).toHaveLength(1));
+    });
+
+    it("keeps deferring on a retry that links the meeting, which then sends them", async () => {
+        let meetingAttempts = 0;
+        const fetchMock = mockVideoFetch({
+            createEvent: () => jsonResponse(200, SEALED_CREATED),
+            updateEvent: () => jsonResponse(200, { ...SEALED_CREATED, version: putBodies(fetchMock).length }),
+            createMeeting: () =>
+                ++meetingAttempts === 1
+                    ? jsonResponse(503, { message: "The meeting service is unavailable." })
+                    : jsonResponse(200, { meeting: meetingFixture, organizerJoinUrl: JOIN_URL }),
+        });
+        const user = userEvent.setup();
+        const { onSaved, unmount } = renderModal(null);
+        await createWithVideo(user);
+        expect(await screen.findByText("The meeting service is unavailable.")).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        const [retry, linked] = putBodies(fetchMock);
+        expect(retry.invitationContent).toEqual({ defer: true });
+        expect(linked).toEqual(expect.objectContaining({ videoMeetingUid: "vm1", invitationContent: { title: "Standup", location: PLACEHOLDER } }));
+        unmount();
+        await Promise.resolve();
+        expect(putBodies(fetchMock)).toHaveLength(2);
+    });
+
+    it("sends them with a retry that no longer links a meeting", async () => {
+        const fetchMock = mockVideoFetch({
+            createEvent: () => jsonResponse(200, SEALED_CREATED),
+            updateEvent: () => jsonResponse(200, { ...SEALED_CREATED, version: 1 }),
+            createMeeting: () => jsonResponse(503, { message: "The meeting service is unavailable." }),
+        });
+        const user = userEvent.setup();
+        const { onSaved, unmount } = renderModal(null);
+        await createWithVideo(user);
+        expect(await screen.findByText("The meeting service is unavailable.")).toBeInTheDocument();
+
+        await user.click(screen.getByLabelText("Add video conferencing"));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(putBodies(fetchMock)).toHaveLength(1);
+        expect(putBodies(fetchMock)[0].invitationContent).toEqual({ title: "Standup" });
+        unmount();
+        await Promise.resolve();
+        expect(putBodies(fetchMock)).toHaveLength(1);
+    });
+});

@@ -26,6 +26,7 @@ import {
 } from "../../../../lib/videoconf/videoMeetingsApi.js";
 import { detachOccurrence, saveEventSeries } from "../../../../lib/calendar/calendarMutations.js";
 import { isProtectedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
+import type { InvitationContent } from "../../../../lib/calendar/protectedEvents.js";
 import { followMeetingKeyExpiry, meetingKeyExpiry, organizerJoinLink, protectMeeting, rememberMeetingKey } from "../../../../lib/videoconf/protectedMeetings.js";
 import { toDatetimeLocal } from "../../../../lib/util/dateInput.js";
 import { deviceTimeZone, timeZoneOptions } from "../../../../lib/util/timeZone.js";
@@ -58,6 +59,24 @@ const MAX_MEETING_TITLE_LENGTH = 200;
 /** `CalendarEventInput` fields as sent on save. `null` explicitly clears a field on an update - an
  * omitted (`undefined`) field is dropped by `JSON.stringify` and would leave the stored value in place. */
 type EventFields = { [K in keyof CalendarEventInput]?: CalendarEventInput[K] | null };
+
+/** Who a video meeting minted for an event with `guests` invites: every attendee with an address but the organizer. */
+function meetingInviteesOf(guests: Attendee[], organizerAddress: string): VideoMeetingInvitee[] {
+    const organizerAddressLower = organizerAddress.toLowerCase();
+    return guests
+        .filter((a) => !a.isOrganizer && !!a.address.trim() && a.address.trim().toLowerCase() !== organizerAddressLower)
+        .map((a) => ({ email: a.address.trim(), displayName: a.displayName }));
+}
+
+/** The content a save of `fields` invites with, for the server to send a protected event's invitations with. */
+function invitationContentOfFields(fields: EventFields): InvitationContent {
+    return {
+        title: fields.title as string,
+        location: fields.location || undefined,
+        description: fields.description || undefined,
+        descriptionHtml: fields.descriptionHtml || undefined,
+    };
+}
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 3_600_000;
@@ -270,12 +289,20 @@ export default function EventEditor({
     // finish the video-conferencing step after it: the modal then stays open on that error, and the retry
     // must update *that* record (its uid and its new version), not re-create it or reuse the stale prop.
     const [savedEvent, setSavedEvent] = useState<CalendarEvent | null>(null);
+    // `savedEvent` as of the last render, for sending deferred invitations when the dialog goes away (`flushDeferredInvitations()`).
+    const savedEventRef = useRef<CalendarEvent | null>(null);
+    savedEventRef.current = savedEvent;
     // Whether that stored record is a series saved with `toSeriesFields()`: its master's dates are not the form's (the occurrence's), so a retry
     // must not send them - the first save already applied any change of time.
     const savedAsSeries = useRef(false);
     // A meeting minted for this event whose link onto the event could not be saved. A retry reuses it rather than minting a second one,
     // which would send the invitees a second set of join links and leave this one orphaned.
     const mintedMeeting = useRef<{ uid: string; organizerJoinUrl: string | null } | null>(null);
+    // The content of a new event whose invitations its create deferred (`invitationContent: { defer: true }`) to the save that links its
+    // video meeting, so attendees get one invitation, with the link - until a save has sent them. That save carries this content too, for
+    // a protected event this device couldn't open; and should the meeting never be linked, a retry without video, or closing the dialog
+    // (`flushDeferredInvitations()`), sends them without it - best effort, since the dialog can also be left in ways that don't pass here.
+    const deferredInvitations = useRef<InvitationContent | null>(null);
     const [editScope, setEditScope] = useState<EditScope>("occurrence");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -455,10 +482,7 @@ export default function EventEditor({
         }
         try {
             if (videoEnabled) {
-                const organizerAddressLower = saved.organizer.address.toLowerCase();
-                const invitees: VideoMeetingInvitee[] = guests
-                    .filter((a) => !a.isOrganizer && !!a.address.trim() && a.address.trim().toLowerCase() !== organizerAddressLower)
-                    .map((a) => ({ email: a.address.trim(), displayName: a.displayName }));
+                const invitees: VideoMeetingInvitee[] = meetingInviteesOf(guests, saved.organizer.address);
                 if (invitees.length === 0) {
                     setVideoError("Add at least one attendee other than yourself to add video conferencing.");
                     return { event: saved, failed: true };
@@ -493,11 +517,14 @@ export default function EventEditor({
                         version: saved.version,
                         location: VIDEO_LOCATION_PLACEHOLDER,
                         videoMeetingUid: meeting.uid,
+                        // The invitations the create deferred go out with this save.
+                        ...(deferredInvitations.current ? { invitationContent: { ...deferredInvitations.current, location: VIDEO_LOCATION_PLACEHOLDER } } : {}),
                     },
                     client,
                     saved,
                 );
                 mintedMeeting.current = null;
+                deferredInvitations.current = null;
                 setVideoMeetingUid(meeting.uid);
                 setOrganizerJoinUrl(meeting.organizerJoinUrl);
                 update({ location: VIDEO_LOCATION_PLACEHOLDER });
@@ -603,6 +630,9 @@ export default function EventEditor({
             autoReplyMessage: values.autoReplyEnabled ? values.autoReplyMessage : cleared,
         };
 
+        // A save that will link a new video meeting to the event right after. A new event's invitations wait for that save (restapi sends a
+        // protected one's at save time), so they go out once, with the link and its keys.
+        const willLinkMeeting = videoEnabled && !videoMeetingUid && meetingInviteesOf(merged.attendees, effectiveOrganizerAddress).length > 0;
         setSaving(true);
         try {
             let saved: CalendarEvent;
@@ -621,11 +651,20 @@ export default function EventEditor({
                     delete retryFields.timezone;
                     delete retryFields.allDay;
                 }
+                // A create's deferred invitations still wait for the meeting's link; without one to link, this save sends them.
+                const deferred = deferredInvitations.current;
+                if (deferred) {
+                    deferredInvitations.current = invitationContentOfFields(fields);
+                    retryFields.invitationContent = willLinkMeeting ? { defer: true } : deferredInvitations.current;
+                }
                 saved = await updateCalendarEvent(
                     { uid: savedEvent.uid, version: savedEvent.version, ...(retryFields as Partial<CalendarEventInput>) },
                     client,
                     savedEvent,
                 );
+                if (deferred && !willLinkMeeting) {
+                    deferredInvitations.current = null;
+                }
             } else if (!occurrence) {
                 // The organizer is only ever set on create - an edit keeps the event's own organizer.
                 saved = await createCalendarEvent(
@@ -634,9 +673,11 @@ export default function EventEditor({
                         folderUid: values.targetFolderUid,
                         ...fields,
                         organizer: { address: effectiveOrganizerAddress, type: "to" },
+                        ...(willLinkMeeting ? { invitationContent: { defer: true } } : {}),
                     } as CalendarEventInput,
                     client,
                 );
+                deferredInvitations.current = willLinkMeeting ? invitationContentOfFields(fields) : null;
             } else if (editingSingleOccurrence) {
                 saved = await detachOccurrence(occurrence, fields as Partial<CalendarEventInput>, client);
             } else if (occurrence.isRecurringOccurrence) {
@@ -678,6 +719,28 @@ export default function EventEditor({
             setSaving(false);
         }
     }
+
+    /** Sends the invitations a create deferred when the dialog is closed before a save sent them (the video meeting couldn't be linked):
+     * a save of no change, carrying their content. Best effort - the event is stored either way, and a failure leaves them pending until
+     * the event is saved again. Only a protected event's are sent at save time; restapi's scheduling job sends any other's. */
+    async function flushDeferredInvitations(): Promise<void> {
+        const content = deferredInvitations.current;
+        const stored = savedEventRef.current;
+        deferredInvitations.current = null;
+        if (!content || !stored || !isProtectedRecord(stored)) {
+            return;
+        }
+        try {
+            await updateCalendarEvent({ uid: stored.uid, version: stored.version, invitationContent: content }, client, stored);
+        } catch {
+            // Left pending: the next save of the event sends them.
+        }
+    }
+    // However the dialog goes away - its own close button waits for this, an Escape or a click outside a new event's popover doesn't pass
+    // through it - deferred invitations still pending are sent.
+    const flushOnUnmount = useRef(flushDeferredInvitations);
+    flushOnUnmount.current = flushDeferredInvitations;
+    useEffect(() => () => void flushOnUnmount.current(), []);
 
     // Same scheme allow-list `calendarReminders.ts#joinMeetingUrl()` already applies to a reminder's own
     // `location` field - reused here rather than duplicated so a video-conferencing plugin (or a stray
@@ -724,7 +787,7 @@ export default function EventEditor({
         saving,
         onSubmit: (event) => void handleSubmit(event),
         // Once something was stored, leaving is a save as far as the calendar behind is concerned: it has to reload.
-        onCancel: () => (savedEvent ? onSaved() : onCancel()),
+        onCancel: () => (savedEvent ? void flushDeferredInvitations().then(onSaved) : onCancel()),
     };
 
     // A new event has the tabs, whose Event face is the quick popover or the full card; an existing event is always the full card.
