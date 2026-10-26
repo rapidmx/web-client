@@ -15,6 +15,7 @@ import {
     respondToMessageInvite,
 } from "../../../../lib/calendar/inviteApi.js";
 import { guestPermissionsOf } from "../../../../lib/calendar/calendarApi.js";
+import { openSealedEvent } from "../../calendar/sealedEvents.js";
 import { formatMailAddress } from "../../../../lib/mail/mailAddress.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import Button from "../../../../lib/components/buttons/Button.js";
@@ -334,7 +335,7 @@ export default function InviteCard({ messageUid, headingLevel = 2 }: InviteCardP
                             aria-busy={pending === "acceptProposal" || undefined}
                             loading={pending === "acceptProposal"}
                             disabled={busy}
-                            onClick={() => void run("acceptProposal", "Couldn't accept the proposed time", () => acceptProposal(messageUid, client, invite.calendarEventUid))}
+                            onClick={() => void run("acceptProposal", "Couldn't accept the proposed time", () => acceptProposal(messageUid, client, invite.calendarEventUid, openSealedEvent))}
                         >
                             Accept proposal
                         </Button>

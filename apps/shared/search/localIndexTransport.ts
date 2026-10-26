@@ -79,7 +79,9 @@ export interface LocalIndexTransport {
     /** Destroys every index this transport knows of, e.g. on sign-out. Never rejects; resolves `true` only if
      * everything was removed within `timeoutMs`. */
     destroyAll(timeoutMs: number): Promise<boolean>;
-    /** Removes indexes for mailboxes outside `accessibleMailboxUids`. Never rejects. */
+    /** Removes indexes for mailboxes outside `accessibleMailboxUids`, and what zero-access sync remembered of each one it removes
+     * (`forgetZeroAccessSyncExcept()`; `pruneInaccessibleLocalIndexes()` leaves that to the transport, so a host can keep both). Never
+     * rejects. */
     pruneInaccessible(accessibleMailboxUids: Iterable<string>): Promise<void>;
     /** Retries any deletion an earlier session couldn't finish. Never rejects. */
     retryPendingDeletions(): Promise<void>;

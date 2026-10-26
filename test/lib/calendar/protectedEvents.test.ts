@@ -123,7 +123,21 @@ describe("protectedEvents", () => {
                 location: "Room 2",
                 description: null,
                 descriptionHtml: null,
+                sequence: 1,
             });
+        });
+
+        it("raises the sequence past the opened one only when the location it sends differs, so the server knows to invite again", () => {
+            const meeting = markSealedContentOpened({ ...opened, sequence: 4 });
+            // Unchanged location (a reminder or title change): the stored sequence stays.
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, title: "Offsite", location: "Lisbon", reminders: [] })).not.toHaveProperty("sequence");
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: "New" })).not.toHaveProperty("sequence");
+            // Moved, or cleared.
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, title: "Offsite", location: "Porto" })).toMatchObject({ location: "Porto", sequence: 5 });
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, location: null })).toMatchObject({ location: null, sequence: 5 });
+            // A placeholder shown (not opened) is never a change.
+            const locked: any = { uid: "e2", mailboxUid: "mb", title: "[...]", location: null, description: null, sealedContent, sequence: 4 };
+            expect(protectedEventWrite(locked, { uid: "e2", version: 1, title: "[...]", location: null })).not.toHaveProperty("sequence");
         });
 
         it("sends the whole opened content of one that also keeps its title sealed field by field, and invites with it", () => {

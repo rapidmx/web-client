@@ -99,7 +99,8 @@ export function protectedEventWrite<T extends object>(current: CalendarEvent | u
  * description not at all) are filled in with what `current` shows opened - the description and its HTML as one, as the dialog sends them.
  * This holds too for a row that also keeps its title sealed field by field (`sealedFields.title`), whose sealed content's title is empty.
  * Shown with placeholders (its mailbox is locked), the placeholders it would send back are left out, so nothing is sealed again, and a
- * changed content field is refused (`KeysLockedError`) before anything is sent: the rest of the content can't be sent with it.
+ * changed content field is refused (`KeysLockedError`) before anything is sent: the rest of the content can't be sent with it. Opened, a
+ * write whose location differs from the one shown raises `sequence` past `current`'s, the only way restapi learns the location changed.
  */
 function sealedContentWrite<T extends object>(current: CalendarEvent, input: T): T {
     const given = input as Record<string, unknown>;
@@ -126,6 +127,11 @@ function sealedContentWrite<T extends object>(current: CalendarEvent, input: T):
     if (changes.description === undefined && changes.descriptionHtml === undefined) {
         changes.description = current.description ?? null;
         changes.descriptionHtml = current.descriptionHtml ?? null;
+    }
+    // restapi can't compare a location sealed whole (it holds a placeholder), so a real change raises the sequence here: an
+    // organizer-owned meeting then invites again, as for a readable event's new location. An unchanged one leaves it alone.
+    if (text(changes.location) !== text(current.location)) {
+        changes.sequence = (current.sequence ?? 0) + 1;
     }
     const invitationContent = isProtectedRecord(current) ? invitationContentOf(current, changes) : undefined;
     return (invitationContent ? { ...changes, invitationContent } : changes) as T;

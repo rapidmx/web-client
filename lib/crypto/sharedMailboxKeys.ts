@@ -283,6 +283,11 @@ export interface SharedMaintenance {
     removed: number;
     /** Keys wrapped for the mailbox's escrow scope. */
     escrowed: number;
+    /**
+     * The server's reason when it refused (400) the new key of a pending rotation - e.g. the vault couldn't hold the new key's member wraps
+     * next to those it holds - so the current key stays active and members keep reading; the rotation is tried again on the next pass.
+     */
+    rotationRefused?: string;
 }
 
 /**
@@ -294,7 +299,8 @@ export interface SharedMaintenance {
  * master key (`provisionZeroAccessKey()`), or for a mailbox without an owner with the members' wraps - and then the departed users' wraps
  * are removed. Members still waiting (`pending`) get wraps of every key this client can open, one write per key with the active key's
  * first (a refused older key doesn't stop the rest), and the escrow scope of a mailbox without an owner gets copies of the keys it is
- * missing (`escrowPending`).
+ * missing (`escrowPending`). A rotation the server refuses (400) is reported in `rotationRefused`, not thrown: the current key stays active
+ * and the rest of the pass goes ahead.
  */
 export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: string, client?: ApiClient): Promise<SharedMaintenance> {
     const result: SharedMaintenance = { provisioned: false, rotated: false, wrapped: 0, refused: 0, removed: 0, escrowed: 0 };
@@ -315,16 +321,25 @@ export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: 
         status = await enrollNewSharedKey(mailboxUid, mailboxAddress, status, client);
         result.provisioned = true;
     } else if (status.rotationPending) {
-        if (status.ownerless) {
-            status = await enrollNewSharedKey(mailboxUid, mailboxAddress, status, client);
-        } else {
-            const vault = await getKeyVault(mailboxUid, client);
-            const { key } = await provisionZeroAccessKey(mailboxUid, mailboxAddress, ownerUnlocked!.masterKey, vault.masterKeyGeneration, client);
-            // The owner's open session gets the new key as its active one, as `ensureZeroAccessKey()` does: new mail is sealed to it.
-            addZeroAccessKey(mailboxUid, ownerUnlocked!, key);
-            status = await getSharedKeyStatus(mailboxUid, client);
+        try {
+            if (status.ownerless) {
+                status = await enrollNewSharedKey(mailboxUid, mailboxAddress, status, client);
+            } else {
+                const vault = await getKeyVault(mailboxUid, client);
+                const { key } = await provisionZeroAccessKey(mailboxUid, mailboxAddress, ownerUnlocked!.masterKey, vault.masterKeyGeneration, client);
+                // The owner's open session gets the new key as its active one, as `ensureZeroAccessKey()` does: new mail is sealed to it.
+                addZeroAccessKey(mailboxUid, ownerUnlocked!, key);
+                status = await getSharedKeyStatus(mailboxUid, client);
+            }
+            result.rotated = true;
+        } catch (err) {
+            // Refused before any key was issued (restapi: the vault can't hold the new key's member wraps next to those it holds): the
+            // current key stays active, so the rest of the pass - waiting members' wraps of it - still goes ahead. Anything else throws.
+            if (!(err instanceof ApiRequestError) || err.status !== 400) {
+                throw err;
+            }
+            result.rotationRefused = err.message;
         }
-        result.rotated = true;
     }
     // The departed hold no wrap of the active key any more (or never did): their old wraps go.
     if (!status.rotationPending) {

@@ -23,7 +23,10 @@ vi.mock("../../../lib/crypto/keySession.js", () => ({
 const shared = vi.hoisted(() => ({ unlockSharedMailbox: vi.fn(), maintainSharedMailbox: vi.fn() }));
 vi.mock("../../../lib/crypto/sharedMailboxKeys.js", () => ({ unlockSharedMailbox: shared.unlockSharedMailbox, maintainSharedMailbox: shared.maintainSharedMailbox }));
 
-const { default: SharedMailboxKeyManager, SHARED_MAILBOX_CHECK_INTERVAL_MS } = await import("../../../apps/shared/components/layout/SharedMailboxKeyManager.js");
+const notifications = vi.hoisted(() => ({ notify: vi.fn() }));
+vi.mock("../../../apps/shared/notifications/store.js", () => ({ notify: notifications.notify }));
+
+const { default: SharedMailboxKeyManager, SHARED_MAILBOX_CHECK_INTERVAL_MS, resetSharedMailboxKeyManager } = await import("../../../apps/shared/components/layout/SharedMailboxKeyManager.js");
 
 const mailboxes = [
     { uid: "mine", ownerUserUid: "me", primarySmtpAddress: "me@example.com" },
@@ -48,6 +51,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    resetSharedMailboxKeyManager();
     vi.useRealTimers();
     vi.clearAllMocks();
 });
@@ -147,5 +151,37 @@ describe("SharedMailboxKeyManager", () => {
 
         unmount();
         expect(session.listeners).toHaveLength(0);
+    });
+    it("warns once per mailbox when the server refuses a rotation, again after one went through, and for a new reason", async () => {
+        let reason: string | undefined = "the current key stays active";
+        shared.maintainSharedMailbox.mockImplementation(async (uid: string) => ({ provisioned: false, rotated: false, ...(uid === "support" && reason ? { rotationRefused: reason } : {}) }));
+        const support = { uid: "support", displayName: "Support", primarySmtpAddress: "support@example.com" };
+        render(<SharedMailboxKeyManager mailboxes={[mailboxes[2], { ...mailboxes[1], uid: "nameless" }, support] as any[]} userUid="me" />);
+        await flush();
+
+        expect(notifications.notify).toHaveBeenCalledTimes(1);
+        expect(notifications.notify.mock.calls[0][0]).toMatchObject({
+            kind: "warning",
+            title: "support@example.com: the zero-access key wasn't replaced",
+            details: "the current key stays active",
+            dedupeKey: "shared-rotation-refused:support",
+        });
+
+        // The next pass is refused the same way: nothing new to say.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(SHARED_MAILBOX_CHECK_INTERVAL_MS);
+        });
+        expect(notifications.notify).toHaveBeenCalledTimes(1);
+
+        reason = undefined;
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(SHARED_MAILBOX_CHECK_INTERVAL_MS);
+        });
+        reason = "full again";
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(SHARED_MAILBOX_CHECK_INTERVAL_MS);
+        });
+        expect(notifications.notify).toHaveBeenCalledTimes(2);
+        expect(notifications.notify.mock.calls[1][0]).toMatchObject({ details: "full again" });
     });
 });

@@ -234,6 +234,27 @@ describe("acceptProposal", () => {
         await acceptProposal("m1", undefined, "ev1");
         expect(originated.mock.calls[1][1].body).toBeUndefined();
     });
+
+    it("opens a meeting made from a zero-access invitation (sealedContent) before inviting with its content, and refuses one it can't open", async () => {
+        const sealed = { ...event, title: "[...]", videoMeetingUid: undefined, sealedContent: { keyFingerprint: "f", sealed: "c" } };
+        const openSealed = vi.fn(async (stored: any) => ({ ...stored, title: "Board meeting", location: "Room 4" }));
+        invitationContentOf.mockImplementationOnce((opened: any) => ({ title: opened.title, location: opened.location }));
+        const fetchMock = routed(sealed);
+        expect(await acceptProposal("m1", undefined, "ev1", openSealed)).toEqual(counter);
+        expect(openSealed).toHaveBeenCalledWith(expect.objectContaining({ uid: "ev1", sealedContent: sealed.sealedContent }));
+        expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ invitationContent: { title: "Board meeting", location: "Room 4" } });
+
+        // Its mailbox locked (nothing opened), or no opener given: refused here rather than by the server's 400.
+        const locked = routed(sealed);
+        await expect(acceptProposal("m1", undefined, "ev1", async (stored) => stored)).rejects.toThrow(PROTECTED_PROPOSAL_MESSAGE);
+        await expect(acceptProposal("m1", undefined, "ev1")).rejects.toThrow(PROTECTED_PROPOSAL_MESSAGE);
+        expect(locked).toHaveBeenCalledTimes(2);
+        // An event with nothing sealed whole is never handed to the opener.
+        openSealed.mockClear();
+        routed({ ...event, videoMeetingUid: undefined });
+        await acceptProposal("m1", undefined, "ev1", openSealed);
+        expect(openSealed).not.toHaveBeenCalled();
+    });
 });
 
 describe("with an explicit ApiClient", () => {

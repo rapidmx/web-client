@@ -171,18 +171,24 @@ export function proposeNewTime(messageUid: string, proposal: ProposedTime, clien
     });
 }
 
+/** Opens an event's `sealedContent` with the mailbox's unlocked keys (`apps/shared/calendar/sealedEvents.ts` `openSealedEvent()`), marking it
+ * opened, or returns it as it is when it can't. */
+export type SealedContentOpener = (event: CalendarEvent) => Promise<CalendarEvent>;
+
 /** What `acceptProposal()` refuses with, before sending anything, for a protected meeting this device can't open (its mailbox is locked). */
 export const PROTECTED_PROPOSAL_MESSAGE = "This meeting is protected. Unlock your mailbox to accept the proposed time, so its guests can be sent the new time.";
 
 /**
  * What the server needs to send the moved meeting's invitations itself (`invitationContent`): for a meeting of a protected calendar
- * (`sealedFields`) its real title, location and description, and for a meeting protected by a per-meeting key every guest's link key
+ * (`sealedFields`), or made from a zero-access invitation (`sealedContent`, opened with `openSealedContent`), its real title, location and
+ * description, and for a meeting protected by a per-meeting key every guest's link key
  * (`meetingLinkSecrets`) - with the event as read. No content for a meeting that needs neither (the server's scheduling job invites for it),
  * and nothing at all for one that isn't on the calendar or can't be read. A protected meeting this device can't open is refused (`PROTECTED_PROPOSAL_MESSAGE`) rather than left to the server's 400.
  */
 async function proposalInvitations(
     calendarEventUid: string | undefined,
     client: ApiClient | undefined,
+    openSealedContent: SealedContentOpener | undefined,
 ): Promise<{ event?: CalendarEvent; invitationContent?: Partial<InvitationContent> & { meetingLinkSecrets?: Record<string, string> } }> {
     if (!calendarEventUid) {
         return {};
@@ -194,8 +200,13 @@ async function proposalInvitations(
         // Unreadable here: the server, which reads it, decides whether the proposal can be accepted without them.
         return {};
     }
+    // A meeting made from a zero-access invitation keeps its content sealed whole (`sealedContent`), which `getCalendarEvent()` doesn't
+    // open: opened here, it is invited for with its real title, location and description.
+    if (event.sealedContent && openSealedContent) {
+        event = await openSealedContent(event);
+    }
     const content = invitationContentOf(event);
-    if (isProtectedRecord(event) && !content && (event as { encryptionOrigin?: string }).encryptionOrigin !== "originated") {
+    if ((isProtectedRecord(event) || event.sealedContent) && !content && (event as { encryptionOrigin?: string }).encryptionOrigin !== "originated") {
         throw new ApiRequestError(PROTECTED_PROPOSAL_MESSAGE, 400);
     }
     const secrets = await meetingLinkSecrets({ videoMeetingUid: event.videoMeetingUid, attendees: event.attendees, organizer: event.organizer }, client);
@@ -210,12 +221,19 @@ async function proposalInvitations(
  * `calendarEventUid`): the server moves the event and sends the attendees the update. For a protected meeting - of a calendar zero-access
  * encryption protects, or with a per-meeting key - the server can't compose the invitations by itself: this sends the decrypted title,
  * location and description and the guests' link keys with it (`invitationContent`). Without them (the mailbox locked, or the meeting's key
- * doesn't open here) the server answers 400 and nothing moves. A meeting with a video meeting has its key expiry moved to follow the new
- * time (`followMeetingKeyExpiry()`, best effort). Resolves with the invitation as it now stands.
+ * doesn't open here) the server answers 400 and nothing moves. A meeting made from a zero-access invitation (`sealedContent`) is opened
+ * with `openSealedContent` (the app passes `openSealedEvent()`); one that can't be is refused before anything is sent. A meeting with a
+ * video meeting has its key expiry moved to follow the new time (`followMeetingKeyExpiry()`, best effort). Resolves with the invitation as
+ * it now stands.
  */
-export async function acceptProposal(messageUid: string, client?: ApiClient, calendarEventUid?: string): Promise<MessageInvite> {
+export async function acceptProposal(
+    messageUid: string,
+    client?: ApiClient,
+    calendarEventUid?: string,
+    openSealedContent?: SealedContentOpener,
+): Promise<MessageInvite> {
     const source = sealedSource(messageUid);
-    const { event, invitationContent } = await proposalInvitations(calendarEventUid, client);
+    const { event, invitationContent } = await proposalInvitations(calendarEventUid, client, openSealedContent);
     const body = { ...source, ...(invitationContent ? { invitationContent } : {}) };
     const accepted = await withClient<MessageInvite>(client, `/mail/calendar-events/invite/${encodeURIComponent(messageUid)}/accept-proposal`, {
         method: "POST",

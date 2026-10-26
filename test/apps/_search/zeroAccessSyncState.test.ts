@@ -87,14 +87,20 @@ describe("zeroAccessSyncState", () => {
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBe("{}");
             await rpc.destroyAllLocalIndexes();
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBeNull();
-            // A pruned index's goes too.
+            // A prune is the transport's, sync state included: a host's transport that skips it (several accounts in one origin)
+            // keeps every index's sync state.
             transport.pruneInaccessible = vi.fn(async () => undefined);
             localStorage.setItem(zeroAccessSyncStateKey("mine"), "{}");
-            localStorage.setItem(zeroAccessSyncStateKey("previous-user"), "{}");
+            localStorage.setItem(zeroAccessSyncStateKey("other-account"), "{}");
             await rpc.pruneInaccessibleLocalIndexes(["mine"]);
+            expect(localStorage.getItem(zeroAccessSyncStateKey("other-account"))).toBe("{}");
+            expect(transport.pruneInaccessible).toHaveBeenCalledWith(new Set(["mine"]));
+            // The Worker transport's prune forgets a pruned index's with it.
+            localStorage.setItem(zeroAccessSyncStateKey("previous-user"), "{}");
+            await rpc.workerLocalIndexTransport.pruneInaccessible(["mine"]);
             expect(localStorage.getItem(zeroAccessSyncStateKey("mine"))).toBe("{}");
             expect(localStorage.getItem(zeroAccessSyncStateKey("previous-user"))).toBeNull();
-            expect(transport.pruneInaccessible).toHaveBeenCalledWith(new Set(["mine"]));
+            expect(localStorage.getItem(zeroAccessSyncStateKey("other-account"))).toBeNull();
         } finally {
             rpc.setLocalIndexTransport(rpc.workerLocalIndexTransport);
         }

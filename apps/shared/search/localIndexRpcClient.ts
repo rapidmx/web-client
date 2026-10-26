@@ -362,9 +362,13 @@ async function destroyAllLocalIndexesImpl(timeoutMs: number): Promise<boolean> {
 }
 
 /** Removes local indexes for mailboxes outside `accessibleMailboxUids` - e.g. left behind by a different
- * user who signed in on this device without signing out. Never rejects. */
+ * user who signed in on this device without signing out - and what zero-access sync passes remembered of them, as on a destroy. Both
+ * here, in the transport, so a host's wrapper that keeps other indexes (`tauri-client`, several accounts in one origin) keeps their sync
+ * state too. Never rejects. */
 async function pruneInaccessibleLocalIndexesImpl(accessibleMailboxUids: Iterable<string>): Promise<void> {
-    await removeLocalIndexDirectories(new Set(accessibleMailboxUids)).catch(() => undefined);
+    const accessible = new Set(accessibleMailboxUids);
+    forgetZeroAccessSyncExcept(accessible);
+    await removeLocalIndexDirectories(accessible).catch(() => undefined);
 }
 
 /**
@@ -482,12 +486,10 @@ export function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS): Prom
 }
 
 /** Removes local indexes for mailboxes outside `accessibleMailboxUids` - e.g. left behind by a different
- * user who signed in on this device without signing out. Never rejects. */
+ * user who signed in on this device without signing out. The transport decides what goes, zero-access sync state included (the
+ * Worker transport forgets it with the index; a host wrapper that skips the prune keeps both). Never rejects. */
 export function pruneInaccessibleLocalIndexes(accessibleMailboxUids: Iterable<string>): Promise<void> {
-    const accessible = new Set(accessibleMailboxUids);
-    // What zero-access sync passes remembered of a pruned index goes with it, whatever the transport, as on a destroy.
-    forgetZeroAccessSyncExcept(accessible);
-    return currentTransport.pruneInaccessible(accessible);
+    return currentTransport.pruneInaccessible(new Set(accessibleMailboxUids));
 }
 
 /** Retries every deletion an earlier session couldn't finish. Never rejects. */

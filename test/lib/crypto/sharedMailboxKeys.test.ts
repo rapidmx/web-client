@@ -497,4 +497,38 @@ describe("maintainSharedMailbox", () => {
         expect(session.addZeroAccessKey).toHaveBeenCalledWith("owned", ownerSession, active);
         expect(api.removeMemberKeyWraps).toHaveBeenCalledWith("owned", "gone", undefined);
     });
+    it("keeps the current key when the server refuses a rotation (400), still wraps it for waiting members, and throws anything else", async () => {
+        const reader = await identity("fp-reader");
+        const refusal = "A new zero-access key's wraps for this mailbox's 1000 members wouldn't fit next to the 9500 it holds; the current key stays active.";
+        session.getUnlockedKeys.mockReturnValue({ masterKey: generateMasterKey() });
+        api.getKeyVault.mockResolvedValue({ wrappedKeys: [], masterKeyWraps: [], masterKeyGeneration: 1 });
+        provisionZeroAccessKey.mockRejectedValueOnce(new ApiRequestError(refusal, 400));
+        const owned = status({ role: "owner", manager: true, activeKeyFingerprint: "fp-older", zeroAccessKeys: [older.key], rotationPending: true, departed: ["gone"], members: [member("reader", reader, ["fp-older"])] });
+        api.getSharedKeyStatus.mockResolvedValue(owned);
+
+        const result = await maintainSharedMailbox("owned", "owned@example.com");
+
+        expect(result).toMatchObject({ rotated: false, rotationRefused: refusal, removed: 0 });
+        expect(session.addZeroAccessKey).not.toHaveBeenCalled();
+        // The departed keep their wraps until a rotation goes through.
+        expect(api.removeMemberKeyWraps).not.toHaveBeenCalled();
+
+        // A mailbox without an owner: its waiting member still gets the active key, which stays the one new mail is sealed to.
+        session.getUnlockedKeys.mockReturnValue(undefined);
+        api.getSharedKeyStatus.mockResolvedValue(
+            status({ ownerless: true, manager: true, activeKeyFingerprint: "fp-active", zeroAccessKeys: [active.key], rotationPending: true, departed: ["gone"], members: [member("me", me, ["fp-active"], true), member("reader", reader, [])] }),
+        );
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("me", me, active)]);
+        api.enrollSharedZeroAccessKey.mockRejectedValueOnce(new ApiRequestError("A mailbox cannot hold more than 10000 member key wraps.", 400));
+
+        const ownerless = await maintainSharedMailbox("support", "support@example.com");
+
+        expect(ownerless).toMatchObject({ rotated: false, rotationRefused: "A mailbox cannot hold more than 10000 member key wraps.", wrapped: 1, removed: 0 });
+        expect(api.putMemberKeyWraps.mock.calls[0][1].map((w: any) => [w.memberUserUid, w.zeroAccessKeyFingerprint])).toEqual([["reader", "fp-active"]]);
+
+        api.enrollSharedZeroAccessKey.mockRejectedValueOnce(new ApiRequestError("boom", 500));
+        await expect(maintainSharedMailbox("support", "support@example.com")).rejects.toThrow("boom");
+        api.enrollSharedZeroAccessKey.mockRejectedValueOnce(new Error("offline"));
+        await expect(maintainSharedMailbox("support", "support@example.com")).rejects.toThrow("offline");
+    });
 });
