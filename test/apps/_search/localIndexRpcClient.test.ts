@@ -166,6 +166,14 @@ describe("localIndexRpcClient", () => {
         ]);
     });
 
+    it("the Worker transport's own destroy forgets what zero-access sync remembered of that index, for a host calling it directly", async () => {
+        storage.set("rapidmx:za-index-sync:mb1", "{}");
+        storage.set("rapidmx:za-index-sync:mb2", "{}");
+        await expect(rpc.workerLocalIndexTransport.destroy("mb1")).resolves.toBe(true);
+        expect(storage.has("rapidmx:za-index-sync:mb1")).toBe(false);
+        expect(storage.get("rapidmx:za-index-sync:mb2")).toBe("{}");
+    });
+
     it("destroyLocalIndex resolves false and logs when the Worker couldn't remove the index", async () => {
         respond = () => ({ ok: false, error: "in use by another tab" });
         await expect(rpc.destroyLocalIndex("mb1")).resolves.toBe(false);

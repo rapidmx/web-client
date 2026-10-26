@@ -98,7 +98,8 @@ describe("protectedEvents", () => {
                 descriptionHtml: "<p>Plan</p>",
                 startDate: "s",
             });
-            // A description edit sends its own pair, and the title and location it left out.
+            // A description edit sends its own pair, and the title and location it left out, and raises the sequence (the server can't
+            // see the change).
             expect(protectedEventWrite(opened, { uid: "e2", version: 1, description: "New", descriptionHtml: "<p>New</p>" })).toEqual({
                 uid: "e2",
                 version: 1,
@@ -106,6 +107,7 @@ describe("protectedEvents", () => {
                 location: "Lisbon",
                 description: "New",
                 descriptionHtml: "<p>New</p>",
+                sequence: 1,
             });
             // A cleared field stays cleared, and a description sent alone keeps its own meaning (its HTML cleared).
             expect(protectedEventWrite({ ...opened, location: undefined, descriptionHtml: null }, { uid: "e2", version: 1, location: null, description: "Plain" })).toEqual({
@@ -114,6 +116,7 @@ describe("protectedEvents", () => {
                 title: "Offsite",
                 location: null,
                 description: "Plain",
+                sequence: 1,
             });
             // An untitled one (opened to an empty title) sends it empty, and nothing it doesn't hold.
             expect(protectedEventWrite(markSealedContentOpened({ ...opened, title: "", location: undefined, description: null, descriptionHtml: undefined }), { uid: "e2", version: 1, location: "Room 2" })).toEqual({
@@ -127,11 +130,19 @@ describe("protectedEvents", () => {
             });
         });
 
-        it("raises the sequence past the opened one only when the location it sends differs, so the server knows to invite again", () => {
+        it("raises the sequence past the opened one only when the location or description it sends differs, so the server knows to invite again", () => {
             const meeting = markSealedContentOpened({ ...opened, sequence: 4 });
-            // Unchanged location (a reminder or title change): the stored sequence stays.
+            // Unchanged location and description (a reminder or title change): the stored sequence stays.
             expect(protectedEventWrite(meeting, { uid: "e2", version: 1, title: "Offsite", location: "Lisbon", reminders: [] })).not.toHaveProperty("sequence");
-            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: "New" })).not.toHaveProperty("sequence");
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, title: "Renamed" })).not.toHaveProperty("sequence");
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: "Plan", descriptionHtml: "<p>Plan</p>" })).not.toHaveProperty("sequence");
+            // The description sent alone, unchanged: its HTML isn't compared, as restapi doesn't for a readable event.
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: "Plan" })).not.toHaveProperty("sequence");
+            // A new description, or only its HTML changed, or cleared.
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: "New" })).toMatchObject({ description: "New", sequence: 5 });
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: "Plan", descriptionHtml: "<p><b>Plan</b></p>" })).toMatchObject({ sequence: 5 });
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, descriptionHtml: "<p>Agenda</p>" })).toMatchObject({ descriptionHtml: "<p>Agenda</p>", sequence: 5 });
+            expect(protectedEventWrite(meeting, { uid: "e2", version: 1, description: null, descriptionHtml: null })).toMatchObject({ description: null, sequence: 5 });
             // Moved, or cleared.
             expect(protectedEventWrite(meeting, { uid: "e2", version: 1, title: "Offsite", location: "Porto" })).toMatchObject({ location: "Porto", sequence: 5 });
             expect(protectedEventWrite(meeting, { uid: "e2", version: 1, location: null })).toMatchObject({ location: null, sequence: 5 });
@@ -151,6 +162,7 @@ describe("protectedEvents", () => {
                 location: "Lisbon",
                 description: "New",
                 descriptionHtml: "<p>New</p>",
+                sequence: 1,
                 invitationContent: { title: "Offsite", location: "Lisbon", description: "New", descriptionHtml: "<p>New</p>" },
             });
             expect(protectedEventWrite(both, { uid: "e2", version: 1, title: "Retreat" })).toMatchObject({

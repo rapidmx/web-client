@@ -421,6 +421,68 @@ describe("AppShell", () => {
         );
     });
 
+    it("leaves the keys, the indexes, the logout and the navigation to a host that signs its account out itself", async () => {
+        const location = mockLocation();
+        location.href = "https://app.localhost/";
+        const fetchMock = mockFetch(() => new Response(null, { status: 204 }));
+        const order: string[] = [];
+        const flush = vi.fn(async () => {
+            order.push("flush");
+        });
+        const unregister = registerComposeFlush(flush);
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const signOutHost = {
+            destroyKeys: vi.fn(() => {
+                order.push("keys");
+            }),
+            finish: vi.fn(async () => {
+                order.push("finish");
+            }),
+        };
+        const other = new BroadcastChannel("test-sign-out");
+        try {
+            const user = userEvent.setup();
+            const { unmount } = render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} signOutHost={signOutHost}>
+                    content
+                </AppShell>,
+            );
+            // Another tab's sign-out isn't this account's: the host keeps other accounts in this origin.
+            other.postMessage({ type: "sign-out" });
+            await new Promise((r) => setTimeout(r, 20));
+            expect(destroyUnlockedKeys).not.toHaveBeenCalled();
+            expect(destroyAllLocalIndexes).not.toHaveBeenCalled();
+
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+            await waitFor(() => expect(signOutHost.finish).toHaveBeenCalledTimes(1));
+            expect(order).toEqual(["keys", "flush", "finish"]);
+            expect(isSigningOut()).toBe(true);
+            expect(clearPinnedSignerCache).toHaveBeenCalledTimes(1);
+            expect(destroyUnlockedKeys).not.toHaveBeenCalled();
+            expect(destroyAllLocalIndexes).not.toHaveBeenCalled();
+            expect(fetchMock).not.toHaveBeenCalledWith(`${AUTH_SERVER_URL}/api/auth/logout`, expect.anything());
+            expect(location.href).toBe("https://app.localhost/");
+            unmount();
+
+            // A failing host sign-out is logged, never thrown, and still goes nowhere by itself.
+            const failing = { destroyKeys: vi.fn(), finish: vi.fn(() => Promise.reject(new Error("keychain locked"))) };
+            render(
+                <AppShell active="mail" userUid="u1" authServerUrl={AUTH_SERVER_URL} signOutHost={failing}>
+                    content
+                </AppShell>,
+            );
+            await user.click(screen.getByRole("button", { name: "Account menu" }));
+            await user.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+            await waitFor(() => expect(warn).toHaveBeenCalledWith("The host's sign-out failed:", expect.any(Error)));
+            expect(location.href).toBe("https://app.localhost/");
+        } finally {
+            other.close();
+            unregister();
+            warn.mockRestore();
+        }
+    });
+
     it("renews the sign-in through auth-server, and lets open compose windows save before going to sign-in when that is refused", async () => {
         const location = mockLocation();
         location.href = "https://mail.example.com/mail";

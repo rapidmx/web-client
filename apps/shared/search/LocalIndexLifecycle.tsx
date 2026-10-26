@@ -8,10 +8,10 @@
  * "MUST be destroyed on the same events that destroy private keys: explicit logout, session revocation,
  * and the configurable idle timeout").
  *
- * **Why polling, not hooking the existing destroy call sites directly**: `destroyUnlockedKeys()`
- * (`react-shared/src/crypto/keySession.ts`) has no observer/callback hook. Watching `getUnlockedKeys()`
- * for a present-to-absent transition catches *every* destroy path uniformly - idle timeout, the manual
- * button, or anything else that calls it - without needing to know which one fired.
+ * **Locks**: `localIndexRpcClient.ts` itself destroys an index it opened the moment `subscribeKeySession()` reports its mailbox locked,
+ * whatever destroyed the keys (idle timeout, the manual button, a sign-out) and whether or not this component is still mounted. This
+ * component also watches `getUnlockedKeys()` for a present-to-absent transition, to reset what it remembers of the mailbox (built,
+ * synced) so a re-unlock builds again; the destroy it also sends then finds nothing left open.
  *
  * Every mailbox this component has seen unlocked is tracked for the life of the mount - not just whichever
  * is active right now - so switching mailboxes (or a folders-list refresh re-running the build effect)

@@ -116,6 +116,24 @@ export interface AppShellProps extends PluginNavProps {
     branding?: Branding;
     /** The signed-in user's stored appearance preferences as the server rendered the page (its `appearance` prop), so the first paint already wears the theme and background - see `AppearanceProvider`. */
     appearance?: unknown;
+    /** A host that signs its account out itself - see `ShellSignOutHost`. Absent (the webmail), "Sign out" ends the one session this
+     * origin holds. */
+    signOutHost?: ShellSignOutHost;
+}
+
+/**
+ * How a host that keeps several accounts in one page (`tauri-client`: one webview, one key session, one local-index storage for all of
+ * them) signs out the account whose shell is mounted. The shell's own sign-out assumes one user per origin: it destroys every
+ * mailbox's unlocked keys and every local index on the device, posts auth-server's cookie logout and navigates to auth-server. With a
+ * host, "Sign out" still marks compose as signing out, clears this session's caches and notifications and saves open compose windows,
+ * but leaves the keys, the indexes, the logout and where to go next to the host.
+ */
+export interface ShellSignOutHost {
+    /** Called first, where the shell would destroy every mailbox's unlocked keys: destroys the signing-out account's. */
+    destroyKeys(): void;
+    /** Called once open compose windows are saved: destroys the account's local indexes, ends its session and leaves the page. Should
+     * not reject; a rejection is logged. */
+    finish(): Promise<void>;
 }
 
 export interface AppDef {
@@ -181,6 +199,7 @@ export function AppChrome({
     pluginNav,
     busy,
     hideChrome,
+    signOutHost,
     children,
 }: PropsWithChildren<AppChromeProps>) {
     const client = useApiClient();
@@ -253,9 +272,10 @@ export function AppChrome({
     // own, so this is what actually removes the indexes after a console sign-out (the console also records a
     // pending deletion, retried on the next mail load, in case no mail tab is open). `destroyAllLocalIndexes()`
     // announces the sign-out on this same channel, which this tab then hears itself, so the ref is set first:
-    // each tab reacts once, and the tab that started the sign-out ignores its own announcement.
+    // each tab reacts once, and the tab that started the sign-out ignores its own announcement. A host that signs out itself
+    // (`signOutHost`) keeps other accounts in this origin, so another tab's sign-out isn't this one's.
     useEffect(() => {
-        if (!userUid || typeof BroadcastChannel === "undefined") {
+        if (!userUid || signOutHost || typeof BroadcastChannel === "undefined") {
             return;
         }
         const channel = new BroadcastChannel(SIGN_OUT_CHANNEL);
@@ -278,15 +298,19 @@ export function AppChrome({
             });
         });
         return () => channel.close();
-    }, [userUid, authServerUrl]);
+    }, [userUid, authServerUrl, signOutHost]);
 
     async function handleSignOut() {
         signingOutRef.current = true;
         // Before flushing and navigating: compose windows then skip their "Leave site?" prompt, which could
         // otherwise cancel the sign-out's own navigation.
         markSigningOut();
-        // Unlocked private keys never outlive an explicit sign-out.
-        destroyUnlockedKeys();
+        // Unlocked private keys never outlive an explicit sign-out - only the signing-out account's where a host keeps others.
+        if (signOutHost) {
+            signOutHost.destroyKeys();
+        } else {
+            destroyUnlockedKeys();
+        }
         // Trusted signer pins read from contacts don't outlive the session either.
         clearPinnedSignerCache();
         clearAppearanceCache();
@@ -295,6 +319,11 @@ export function AppChrome({
         // Open compose windows save edits still waiting on their autosave debounce while the session is still
         // valid - logout invalidates it. Bounded the same way as logout itself, and never rejects.
         await flushComposeDrafts(LOGOUT_TIMEOUT_MS);
+        if (signOutHost) {
+            // The host destroys its account's indexes (spec §11) and ends its session; this page can't tell its accounts apart.
+            await signOutHost.finish().catch((err: unknown) => console.warn("The host's sign-out failed:", err));
+            return;
+        }
         // The Tier 2 local index MUST be destroyed on explicit logout, the same as unlocked keys themselves
         // (spec §11). Destroys every index on this device (not only mailboxes opened this page load) and is
         // awaited before navigating - a navigation tears down the Worker mid-delete otherwise.

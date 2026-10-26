@@ -18,6 +18,9 @@ import type { LocalIndexTransport } from "../../../apps/shared/search/localIndex
 
 type RpcModule = typeof import("../../../apps/shared/search/localIndexRpcClient.js");
 
+const { cancelLocalIndexBuild } = vi.hoisted(() => ({ cancelLocalIndexBuild: vi.fn() }));
+vi.mock("../../../apps/shared/search/localIndexBuilder.js", () => ({ cancelLocalIndexBuild }));
+
 let rpc: RpcModule;
 
 beforeEach(async () => {
@@ -174,5 +177,98 @@ describe("localIndexRpcClient's swappable transport", () => {
         // Back on the Worker transport, in this (node) environment with no `Worker` global - the same proof
         // of "really is the Worker path" as the defaulting test above.
         await expect(rpc.getLocalCoverage("mb1")).rejects.toThrow();
+    });
+});
+
+describe("localIndexRpcClient's lock-to-destroy", () => {
+    type KeySessionModule = typeof import("../../../lib/crypto/keySession.js");
+    let keys: KeySessionModule;
+
+    beforeEach(async () => {
+        cancelLocalIndexBuild.mockClear();
+        // The same module registry as `rpc`'s, so the session it subscribed to is this one.
+        keys = await import("../../../lib/crypto/keySession.js");
+    });
+
+    /** Unlocks `mailboxUid` and destroys its keys, as an idle lock would. */
+    function lock(mailboxUid: string): void {
+        keys.installSharedSession(mailboxUid, { masterKey: new Uint8Array(32) }, keys.sharedUnlockGeneration(mailboxUid));
+        keys.destroyUnlockedKeys(mailboxUid);
+    }
+
+    function destroyedUids(transport: { destroy: unknown }): string[] {
+        return (transport.destroy as ReturnType<typeof vi.fn>).mock.calls.map(([uid]) => uid as string);
+    }
+
+    function spiedTransport() {
+        const { transport } = fakeTransport();
+        transport.destroy = vi.fn(async () => true);
+        rpc.setLocalIndexTransport(transport);
+        return transport;
+    }
+
+    it("cancels the build and destroys an index it opened when its mailbox's keys are destroyed, with no mail view mounted", async () => {
+        const transport = spiedTransport();
+        await rpc.initLocalIndex({ mailboxUid: "mb1" } as never);
+        await rpc.initLocalIndex({ mailboxUid: "mb2" } as never);
+        lock("mb1");
+        expect(destroyedUids(transport)).toEqual(["mb1"]);
+        await vi.waitFor(() => expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb1"));
+        // Destroyed already: a later lock finds nothing open. Nor does a mailbox never opened, or one destroyed meanwhile.
+        lock("mb1");
+        lock("other");
+        await rpc.destroyLocalIndex("mb2");
+        lock("mb2");
+        expect(destroyedUids(transport)).toEqual(["mb1", "mb2"]);
+        // A lock of every mailbox reaches each one open.
+        await rpc.initLocalIndex({ mailboxUid: "mb3" } as never);
+        keys.installSharedSession("mb3", { masterKey: new Uint8Array(32) }, keys.sharedUnlockGeneration("mb3"));
+        keys.destroyUnlockedKeys();
+        expect(destroyedUids(transport)).toEqual(["mb1", "mb2", "mb3"]);
+    });
+
+    it("ignores an unlock, and counts an index whose open failed as never opened", async () => {
+        const transport = spiedTransport();
+        keys.installSharedSession("mb1", { masterKey: new Uint8Array(32) }, keys.sharedUnlockGeneration("mb1"));
+        transport.init = vi.fn(async () => {
+            throw new Error("no OPFS");
+        });
+        await expect(rpc.initLocalIndex({ mailboxUid: "mb1" } as never)).rejects.toThrow("no OPFS");
+        keys.destroyUnlockedKeys("mb1");
+        expect(transport.destroy).not.toHaveBeenCalled();
+    });
+
+    it("still destroys the index when the build can't be cancelled", async () => {
+        const transport = spiedTransport();
+        cancelLocalIndexBuild.mockImplementationOnce(() => {
+            throw new Error("builder failed to load");
+        });
+        await rpc.initLocalIndex({ mailboxUid: "mb1" } as never);
+        lock("mb1");
+        expect(destroyedUids(transport)).toEqual(["mb1"]);
+        await vi.waitFor(() => expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb1"));
+    });
+
+    it("destroys an index whose keys were destroyed while it opened", async () => {
+        const transport = spiedTransport();
+        let opened!: () => void;
+        transport.init = vi.fn(() => new Promise<void>((resolve) => (opened = resolve)));
+        const init = rpc.initLocalIndex({ mailboxUid: "mb1" } as never);
+        lock("mb1");
+        expect(transport.destroy).not.toHaveBeenCalled();
+        opened();
+        await init;
+        expect(destroyedUids(transport)).toEqual(["mb1"]);
+        // It never counted as open, so a later lock doesn't destroy it again.
+        lock("mb1");
+        expect(destroyedUids(transport)).toEqual(["mb1"]);
+    });
+
+    it("leaves what it opened tracked across a destroy of every index, whose host transport may keep some", async () => {
+        const transport = spiedTransport();
+        await rpc.initLocalIndex({ mailboxUid: "mb1" } as never);
+        await rpc.destroyAllLocalIndexes();
+        lock("mb1");
+        expect(destroyedUids(transport)).toEqual(["mb1"]);
     });
 });

@@ -47,6 +47,7 @@ export default function WwwShell({
     pluginNav,
     branding,
     appearance,
+    signOutHost,
 }: WwwShellProps) {
     const { route, pending } = useRouter();
     const [takeovers, setTakeovers] = useState(0);
@@ -74,6 +75,7 @@ export default function WwwShell({
                 pluginNav={pluginNav}
                 branding={branding}
                 appearance={appearance}
+                signOutHost={signOutHost}
             >
                 {children}
             </AppChrome>

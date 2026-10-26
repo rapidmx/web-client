@@ -85,7 +85,12 @@ describe("zeroAccessSyncState", () => {
             await rpc.destroyLocalIndex("mb1");
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb1"))).toBeNull();
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBe("{}");
+            // Destroying every index is the transport's too: a host's transport that destroys only its account's (several accounts in
+            // one origin) keeps the others' sync state, and the Worker transport, which destroys every index, forgets every one.
             await rpc.destroyAllLocalIndexes();
+            expect(transport.destroyAll).toHaveBeenCalled();
+            expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBe("{}");
+            await rpc.workerLocalIndexTransport.destroyAll(1_000);
             expect(localStorage.getItem(zeroAccessSyncStateKey("mb2"))).toBeNull();
             // A prune is the transport's, sync state included: a host's transport that skips it (several accounts in one origin)
             // keeps every index's sync state.

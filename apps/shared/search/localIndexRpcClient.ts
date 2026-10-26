@@ -26,6 +26,11 @@
  * replacement. `searchTier2.ts` additionally races its own calls against a timeout, since a Worker that's
  * merely stuck (not crashed) posts no `error` event at all.
  *
+ * **A lock destroys the index**: `initLocalIndex()` subscribes once to the key session (`subscribeKeySession()`); when the keys of
+ * a mailbox whose index it opened are destroyed (an idle lock, a manual lock, a sign-out), that mailbox's build is cancelled and its
+ * index destroyed (spec section 11), whether or not a mail view (`LocalIndexLifecycle`) is still mounted to notice - after leaving Mail
+ * for Calendar, or in a host whose account switch unmounted the shell that opened it (`tauri-client`).
+ *
  * **Swappable transport**: everything above is specific to this one implementation - the Worker/OPFS-backed
  * default. Every function this module exports below (`initLocalIndex`, `searchLocal`, `destroyLocalIndex`, ...)
  * is a thin delegator to whichever `LocalIndexTransport` (`localIndexTransport.ts`) is "current," which defaults
@@ -38,6 +43,7 @@
  * plain exports, not part of the swappable interface - they name this one transport's own cross-tab/localStorage
  * mechanics, which a different transport has no reason to share.
  */
+import { subscribeKeySession } from "../../../lib/crypto/keySession.js";
 import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
 import type {
     Coverage,
@@ -303,6 +309,9 @@ function setLocalIndexBuildingImpl(mailboxUid: string, building: boolean, comple
  * when the index could not be removed, e.g. because another tab still has it open; the deletion is then
  * retried on the next page load. */
 async function destroyLocalIndexImpl(mailboxUid: string): Promise<boolean> {
+    // What zero-access sync passes remembered of it goes with it, here too, so a host wrapper destroying mailboxes one by one through this
+    // transport (`tauri-client`'s scoped sign-out) forgets theirs.
+    forgetZeroAccessSync(mailboxUid);
     updatePendingDeletions((current) => current.add(mailboxUid));
     try {
         await call("destroy", { mailboxUid, generation: nextLocalIndexGenerationImpl() } satisfies DestroyParams);
@@ -330,6 +339,9 @@ export const DESTROY_ALL_TIMEOUT_MS = 3_000;
  */
 async function destroyAllLocalIndexesImpl(timeoutMs: number): Promise<boolean> {
     signedOut = true;
+    // Here, in the transport, as for prune: a host wrapper that destroys only some accounts' indexes (`tauri-client`, several accounts in
+    // one origin) keeps the other accounts' sync state too.
+    forgetAllZeroAccessSync();
     writePendingDeletions([ALL_INDEXES]);
     try {
         getChannel()?.postMessage({ type: "sign-out" });
@@ -413,8 +425,49 @@ export function nextLocalIndexGeneration(): number {
     return currentTransport.nextGeneration();
 }
 
-export function initLocalIndex(params: InitParams): Promise<void> {
-    return currentTransport.init(params);
+/** Every mailbox whose index `initLocalIndex()` opened, through whichever transport, and that wasn't destroyed since. */
+const openedMailboxes = new Set<string>();
+/** How many times each mailbox's keys were destroyed this page load - an `initLocalIndex()` that a lock overtook destroys what it opened. */
+const lockCounts = new Map<string, number>();
+let watchingLocks = false;
+
+/** Cancels `mailboxUid`'s build and destroys its index, as `LocalIndexLifecycle` does on a lock. Never rejects. */
+function destroyOnLock(mailboxUid: string): void {
+    // Stop a build pass still running with the destroyed keys; the destroy also makes the Worker reject anything that pass still sends.
+    // Loaded lazily (it imports this module, and carries the message security code).
+    import("./localIndexBuilder.js")
+        .then(({ cancelLocalIndexBuild }) => cancelLocalIndexBuild(mailboxUid))
+        .catch(() => undefined);
+    void destroyLocalIndex(mailboxUid);
+}
+
+/** Subscribes, once, to key destruction: see this module's doc comment ("A lock destroys the index"). */
+function watchKeyLocks(): void {
+    if (watchingLocks) {
+        return;
+    }
+    watchingLocks = true;
+    subscribeKeySession(({ mailboxUid, state }) => {
+        if (state !== "locked") {
+            return;
+        }
+        lockCounts.set(mailboxUid, (lockCounts.get(mailboxUid) ?? 0) + 1);
+        if (openedMailboxes.has(mailboxUid)) {
+            destroyOnLock(mailboxUid);
+        }
+    });
+}
+
+export async function initLocalIndex(params: InitParams): Promise<void> {
+    watchKeyLocks();
+    const locks = lockCounts.get(params.mailboxUid) ?? 0;
+    await currentTransport.init(params);
+    if ((lockCounts.get(params.mailboxUid) ?? 0) !== locks) {
+        // Its keys were destroyed while it opened: it never counted as open, so the lock's own destroy didn't reach it.
+        destroyOnLock(params.mailboxUid);
+        return;
+    }
+    openedMailboxes.add(params.mailboxUid);
 }
 
 export function indexLocalEntities(mailboxUid: string, entities: LocalIndexEntity[], generation?: number): Promise<IndexEntitiesResult> {
@@ -473,6 +526,7 @@ export function setLocalIndexBuilding(mailboxUid: string, building: boolean, com
  * resolves `false` when the index could not be removed - see the current transport's own doc comment for what
  * that means for it (the Worker transport also logs why, and retries on the next page load). */
 export function destroyLocalIndex(mailboxUid: string): Promise<boolean> {
+    openedMailboxes.delete(mailboxUid);
     // What zero-access sync passes remembered importing into it goes with it, whatever the transport.
     forgetZeroAccessSync(mailboxUid);
     return currentTransport.destroy(mailboxUid);
@@ -481,7 +535,8 @@ export function destroyLocalIndex(mailboxUid: string): Promise<boolean> {
 /** Destroys **every** local index this transport knows of - not just the mailboxes this session opened - e.g.
  * on sign-out. Never rejects. Resolves `true` only if everything was removed within `timeoutMs`. */
 export function destroyAllLocalIndexes(timeoutMs = DESTROY_ALL_TIMEOUT_MS): Promise<boolean> {
-    forgetAllZeroAccessSync();
+    // `openedMailboxes` is left as it is: a host transport may keep other accounts' indexes open (`tauri-client`), and a lock of one
+    // already destroyed finds nothing to close.
     return currentTransport.destroyAll(timeoutMs);
 }
 
