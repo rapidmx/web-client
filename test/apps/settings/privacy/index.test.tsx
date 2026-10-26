@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../testUtils.js";
@@ -449,11 +449,25 @@ describe("SettingsPrivacyPage", () => {
         });
 
         it("still says why when the policy can't be read, as the server would refuse the upload", async () => {
-            const fetchMock = shell(() => jsonResponse(500, { message: "down" }));
+            let policyBody: Promise<unknown> | undefined;
+            const fetchMock = shell(() => {
+                const res = jsonResponse(500, { message: "down" });
+                const json = res.json.bind(res);
+                res.json = () => (policyBody = json());
+                return res;
+            });
             render(<SettingsPrivacyPage userUid="u1" />);
-            expect(await screen.findByText(IMPORT_REFUSED)).toBeInTheDocument();
+            // The refusal shows from the section's first render (a policy not yet read counts as allowed), and the policy is asked from an
+            // effect that can run after that render is found, so wait for the request and for its failure to be handled before checking.
+            await vi.waitFor(() => expect(policyBody).toBeDefined());
+            await act(async () => {
+                await policyBody;
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            });
             expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/system/encryption-policy"))).toBe(true);
+            expect(screen.getByText(IMPORT_REFUSED)).toBeInTheDocument();
             expect(screen.queryByLabelText("Upload mail archive")).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Upload Mbox or PST file" })).not.toBeInTheDocument();
         });
 
         it("offers the upload once the administrator turned zero-access off for the server", async () => {

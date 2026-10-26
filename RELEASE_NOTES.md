@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Releases publish only after every CI build of the release commit passes.** A release pushes `main` and its tag at the same commit, and each push runs a build. Publishing now runs only from the tag's build and waits for both, refusing if either failed, instead of publishing after whichever build passed.
+- A Settings > Privacy test that failed v0.37.0's `main` build at random now waits for the encryption policy request and its failure before checking that the import refusal is still shown. The page itself was correct.
+
 ## v0.37.0
 
 ### Added
