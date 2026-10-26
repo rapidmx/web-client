@@ -38,6 +38,8 @@ import {
 } from "./contactCardData.js";
 import { type Participant, contactInputFor, isExternalAddress, ownDomains, participantName } from "./participantDetails.js";
 import { openSealedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
+import { isSealedRecord } from "../../../../lib/zeroAccess/sealedMoves.js";
+import { useKeysLocked } from "../../zeroAccess/useKeysLocked.js";
 
 type Section<T> = { status: "loading" } | { status: "error" } | { status: "ready"; data: T };
 
@@ -220,6 +222,15 @@ export default function ContactCard({ participant, context = {}, onClose, userUi
             }
         }
     }
+
+    // The contact and the upcoming events are shown opened: a lock of the mailbox whose sealed content they hold takes the card off screen,
+    // as the calendar page closes a protected event's card - its state would keep what the lock cleared everywhere else.
+    useKeysLocked((locked) => {
+        const shown = [stored, ...(events.status === "ready" ? events.data : [])];
+        if (shown.some((record) => record?.mailboxUid === locked && isSealedRecord(record))) {
+            onClose();
+        }
+    });
 
     // Not while a picture is being changed: that goes against the version the star would replace.
     const [photoBusy, setPhotoBusy] = useState(false);

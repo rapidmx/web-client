@@ -65,6 +65,7 @@ import {
     retrySend,
     startSend,
 } from "../../../apps/shared/mail/outbox/sendJob.js";
+import { handleSendEvent } from "../../../apps/shared/mail/outbox/sendOutcomes.js";
 import { isSendPending } from "../../../apps/shared/mail/outbox/pendingSends.js";
 import { registerComposeOpener, registerUnlockOpener } from "../../../apps/shared/mail/outbox/composeBridge.js";
 import { getNotificationsSnapshot, dismissAll } from "../../../apps/shared/notifications/store.js";
@@ -601,7 +602,8 @@ describe("startSend - OpenPGP recipients", () => {
         await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(3));
         await settle();
         expect(mocks.queueMessageSend.mock.calls[2][0]).toBe("m2");
-        expect(mocks.getMessage.mock.calls.map(([uid]) => uid)).toEqual(["m2"]);
+        // Asked whether it went already: by the Retry, and by the attempt before it hands it over.
+        expect(mocks.getMessage.mock.calls.map(([uid]) => uid)).toEqual(["m2", "m2"]);
         expect(mocks.createDraft).toHaveBeenCalledTimes(1);
         expect(mocks.buildPgpEncryptedMessage).toHaveBeenCalledTimes(1);
         expect(toasts().filter((toast) => toast.kind === "error")).toEqual([]);
@@ -659,6 +661,71 @@ describe("startSend - OpenPGP recipients", () => {
         await settle();
         expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m1", "m1", "m2"]);
         expect(mocks.createDraft).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves out of a Retry a copy whose request never answered but which went after all, so the other copy goes and Open draft isn't offered", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        // The S/MIME copy's request lands, but its answer is lost - and so is the check after it.
+        mocks.queueMessageSend.mockRejectedValueOnce(new TypeError("network down"));
+        mocks.getMessage.mockRejectedValue(new TypeError("network down"));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+
+        // The server relayed it; the OpenPGP copy is still a draft. Retry hands over only that one - which fails, as only some recipients'.
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: uid === "m1" ? "sent" : "drafts" }));
+        mocks.queueMessageSend.mockReset().mockRejectedValueOnce(new ApiRequestError("Unavailable", 503)).mockResolvedValue({ queued: true, message: draft });
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(1));
+        await settle();
+        expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m2"]);
+        expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+
+        // The next Retry hands it over, and the request is kept under both copies.
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+        await settle();
+        expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m2", "m2"]);
+        expect(retainedRequest("m1")?.copyUids).toEqual(["m1", "m2"]);
+        expect(retainedRequest("m2")).toBe(retainedRequest("m1"));
+        expect(forgetRetainedRequest("m1")).toBe(false);
+        expect(forgetRetainedRequest("m2")).toBe(true);
+    });
+
+    it("hands nothing over when every copy still to go went between the Retry's check and the attempt", async () => {
+        const pendingCopies = [draft, { ...draft, uid: "m2" }];
+        for (const scheduledSendTime of [undefined, new Date(Date.now() + 1e6).toISOString()]) {
+            // The Retry finds the S/MIME copy still a draft; by the time the attempt asks, both have gone.
+            let asked = 0;
+            mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: asked++ === 0 ? "drafts" : "outbox" }));
+            await retrySend(request({ pendingCopies, copyUids: ["m1", "m2"], scheduledSendTime }));
+            await settle();
+            expect(mocks.queueMessageSend).not.toHaveBeenCalled();
+            expect(mocks.sendMessage).not.toHaveBeenCalled();
+            expect(toasts().filter((toast) => toast.kind === "error")).toEqual([]);
+        }
+        expect(toasts().some((toast) => toast.title === "Message scheduled")).toBe(true);
+        expect(retainedRequest("m2")).toBe(retainedRequest("m1"));
+    });
+
+    it("offers only Retry when the server fails to relay one copy of a mixed-format message, and confirms it once every copy went", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+
+        // The OpenPGP copy is relayed; the S/MIME one is refused for good.
+        handleSendEvent({ action: "send-succeeded", uid: "m2", mailboxUid: "mb1", subject: "Hello", recipients: ["pat@proton.example"], attempt: 1 });
+        expect(toasts()).toEqual([]);
+        handleSendEvent({ action: "send-failed", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 3, error: { message: "Mailbox full." } });
+        expect(toasts()[0].message).toBe('To bob@example.com - "Hello": The copy for some of its recipients didn\'t go - the others\' copy is sent on its own. Mailbox full.');
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+
+        // Retried, it goes: now the message is confirmed.
+        handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
     });
 
     it("says only some recipients will get a send-later message when one copy couldn't be scheduled", async () => {

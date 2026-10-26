@@ -74,6 +74,10 @@ export interface SendRequest {
     /** Some copies already went (`pendingCopies` holds only the rest): every later failure says so, and never offers "Open draft", which
      * would send those recipients a second copy - kept across any number of retries. */
     partial?: boolean;
+    /** The uids of every copy of this message, when it is more than one (one per encryption format, each delivered only to its own
+     * recipients): the request is retained under each, and a failure the server reports later for one of them offers no "Open draft",
+     * which would send the other copy's recipients a second message. */
+    copyUids?: string[];
 }
 
 /** How long a background send waits for the mailbox / encryption policy it did not have, before it goes ahead treating them as unknown. Nobody waits for it. */
@@ -92,21 +96,27 @@ export function registerOutboxCounter(tracker: (mailboxUid: string) => OutboxCou
 
 const RETAINED_LIMIT = 25;
 
-/** The request a message was queued from, while this tab still holds it: what lets "Open draft" and "Retry" work on a failure the server reports later. */
+/** The request a message (or one of its copies, `SendRequest.copyUids`) was queued from, while this tab still holds it: what lets "Open draft"
+ * and "Retry" work on a failure the server reports later. */
 export function retainedRequest(draftUid: string): SendRequest | undefined {
     return sendState.retained.get(draftUid);
 }
 
-/** Drops the request a message was queued from, and the pictures remembered as attached to its draft: it has gone, so neither is wanted again. */
-export function forgetRetainedRequest(draftUid: string): void {
+/** Drops the request a message (or one of its copies) was queued from, and the pictures remembered as attached to its draft: it has gone, so
+ * neither is wanted again. Whether nothing of the request is retained any more - the last of its copies has gone too. */
+export function forgetRetainedRequest(draftUid: string): boolean {
+    const request = sendState.retained.get(draftUid);
     sendState.retained.delete(draftUid);
     forgetDraftImages(draftUid);
+    return !request?.copyUids?.some((uid) => sendState.retained.get(uid) === request);
 }
 
 function retain(request: SendRequest): void {
-    sendState.retained.delete(request.draft.uid);
-    sendState.retained.set(request.draft.uid, request);
-    if (sendState.retained.size > RETAINED_LIMIT) {
+    for (const uid of request.copyUids ?? [request.draft.uid]) {
+        sendState.retained.delete(uid);
+        sendState.retained.set(uid, request);
+    }
+    while (sendState.retained.size > RETAINED_LIMIT) {
         sendState.retained.delete(sendState.retained.keys().next().value!);
     }
 }
@@ -170,7 +180,8 @@ interface Failure {
     partial?: boolean;
 }
 
-type Outcome = { kind: "queued" | "sent" | "scheduled" } | { kind: "failed"; failure: Failure; pendingCopies?: Message[] };
+/** `copyUids`: every copy of the message, when there is more than one (`SendRequest.copyUids`). */
+type Outcome = { kind: "queued" | "sent" | "scheduled"; copyUids?: string[] } | { kind: "failed"; failure: Failure; pendingCopies?: Message[]; copyUids?: string[] };
 
 const OPEN_POLICY: EncryptionPolicy = { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" };
 
@@ -311,6 +322,8 @@ async function alreadyAccepted(request: SendRequest, client: ApiClient | undefin
 /** Hands `copies` over to the server - queued, or scheduled - one after the other. One that fails stops the rest: the failure carries the
  * copies still to go, so a retry never sends one twice (an encrypted message's other copy may already be on its way to its recipients). */
 async function handOver(request: SendRequest, copies: Message[], client: ApiClient | undefined): Promise<Outcome> {
+    // A retry hands over only what was left: the request already names every copy.
+    const copyUids: string[] | undefined = request.copyUids ?? (copies.length > 1 ? copies.map((copy) => copy.uid) : undefined);
     let queued = false;
     for (let index = 0; index < copies.length; index++) {
         const copy = copies[index];
@@ -338,10 +351,11 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
                 // draft may have been opened and autosaved plain since). Several copies are kept even when none went, so a mixed-format
                 // retry doesn't create another OpenPGP draft.
                 pendingCopies: partial || copies.length > 1 ? copies.slice(index) : undefined,
+                copyUids,
             };
         }
     }
-    return { kind: request.scheduledSendTime ? "scheduled" : queued ? "queued" : "sent" };
+    return { kind: request.scheduledSendTime ? "scheduled" : queued ? "queued" : "sent", copyUids };
 }
 
 /** The whole client-side path of one send: settle, decide, assemble, hand over. Never rejects. `client` is the explicit `ApiClient` (from
@@ -349,10 +363,21 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
 async function attempt(request: SendRequest, client: ApiClient | undefined): Promise<Outcome> {
     try {
         await request.saved?.catch(() => undefined);
-        // Built already by the attempt that failed part-way: only what didn't go is handed over.
+        // Built already by the attempt that failed part-way: only what didn't go is handed over. A copy whose request seemed to fail but
+        // landed (its answer was lost, and so was the check after it) has gone since: handed over again it is refused, and the copies after
+        // it would never go - it is left out, and what fails now is a failure of only some of the recipients.
         if (request.pendingCopies?.length) {
             setPendingStage(request.draft.uid, "queuing");
-            return await handOver(request, request.pendingCopies, client);
+            const remaining: Message[] = [];
+            for (const copy of request.pendingCopies) {
+                if (!(await accepted(copy, client))) {
+                    remaining.push(copy);
+                }
+            }
+            if (remaining.length === 0) {
+                return { kind: request.scheduledSendTime ? "scheduled" : "queued", copyUids: request.copyUids };
+            }
+            return await handOver(remaining.length < request.pendingCopies.length ? { ...request, partial: true } : request, remaining, client);
         }
         const all = [...request.to, ...request.cc, ...request.bcc];
         let mailbox = request.mailbox;
@@ -521,7 +546,9 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
         if (outcome.kind === "failed") {
             tracker?.revert();
             notifyFailure(
-                outcome.pendingCopies ? { ...request, pendingCopies: outcome.pendingCopies, partial: outcome.failure.partial } : request,
+                outcome.pendingCopies
+                    ? { ...request, pendingCopies: outcome.pendingCopies, partial: outcome.failure.partial, copyUids: outcome.copyUids }
+                    : request,
                 outcome.failure,
                 client,
             );
@@ -529,7 +556,7 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
         }
         tracker?.settle();
         if (outcome.kind === "queued") {
-            retain(request);
+            retain(outcome.copyUids ? { ...request, copyUids: outcome.copyUids } : request);
             sendState.queuedListener?.(request.mailboxUid);
         } else if (outcome.kind === "sent") {
             // A server with no queue relayed it before answering: the Sent Items copy exists already.

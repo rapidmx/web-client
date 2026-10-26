@@ -19,6 +19,7 @@ vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
 
 const { EVENT_LIST_FIELDS, SEALED_EVENT_CONTENT_MESSAGE, SealedEventContentError, fullyOpenedEvent, listCalendarEvents, respondToEvent, updateCalendarEvent } = await import("../../../lib/calendar/calendarApi.js");
 const { isSealedContentOpened, markSealedContentOpened } = await import("../../../lib/calendar/protectedEvents.js");
+const { detachOccurrence } = await import("../../../lib/calendar/calendarMutations.js");
 
 const event: any = {
     uid: "e1",
@@ -97,6 +98,33 @@ describe("calendarApi and protected events", () => {
         expect(await fullyOpenedEvent(plain)).toBe(plain);
         expect(await fullyOpenedEvent(undefined)).toBeUndefined();
         expect(sealed.openSealedRecord).not.toHaveBeenCalled();
+    });
+
+    it("keeps the title opened from a row's sealed content over its older per-field one when it opens the rest, for a write and a detached occurrence", async () => {
+        // A row sealed field by field, then by a revision without SUMMARY, then renamed: its `sealedFields.title` still holds the old title.
+        const listed: any = markSealedContentOpened({ ...event, title: "Budget v2", sealedContent: { keyFingerprint: "fp", sealed: "x" } });
+        const full: any = await fullyOpenedEvent(listed);
+        expect(full).toMatchObject({ title: "Budget v2", location: "Room 4", description: "Agenda", opened: true });
+        expect(isSealedContentOpened(full)).toBe(true);
+
+        const fetchMock = mockFetch((url, init) => {
+            if (url === "/api/mail/calendar-events" && init?.method === "POST") {
+                const body = JSON.parse(init.body as string);
+                return jsonResponse(200, { ...body, uid: "e2", version: 0, title: "[...]", sealedContent: { keyFingerprint: "fp", sealed: "y" } });
+            }
+            return jsonResponse(200, listed);
+        });
+        const occurrence: any = {
+            ...listed,
+            recurrenceRule: { freq: "weekly", interval: 1, exceptions: [] },
+            recurrenceId: "2026-01-05T09:00:00.000Z",
+            occurrenceKey: "e1::2026-01-05T09:00:00.000Z",
+            isRecurringOccurrence: true,
+        };
+        const created = await detachOccurrence(occurrence, { startDate: "2026-01-05T10:00:00.000Z", endDate: "2026-01-05T10:30:00.000Z" });
+        const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+        expect(JSON.parse((post[1] as RequestInit).body as string)).toMatchObject({ title: "Budget v2", location: "Room 4", description: "Agenda" });
+        expect(created.title).toBe("Budget v2");
     });
 
     describe("an event made from a zero-access invitation (sealedContent)", () => {

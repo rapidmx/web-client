@@ -22,6 +22,9 @@ const { notifyApiError, exportOpenPgpSecretKey, readPublicKey, armorPublicKey, u
 vi.mock("../../../apps/shared/notifications/apiErrors.js", () => ({ notifyApiError }));
 vi.mock("../../../lib/crypto/openPgpKey.js", () => ({ exportOpenPgpSecretKey }));
 vi.mock("../../../lib/crypto/openpgp.js", () => ({ readPublicKey, armorPublicKey }));
+// The settings shell's copy of the mailbox, which the page is mounted from again on a switch back to it.
+const shell = vi.hoisted(() => ({ current: {} as { mailboxes: unknown[]; patchMailbox?: (...args: unknown[]) => void } }));
+vi.mock("../../../apps/shared/components/settings/layout/SettingsShell.js", () => ({ useSettingsShell: () => shell.current }));
 vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/mail/mailApi.js")>()),
     updateMailbox,
@@ -48,6 +51,7 @@ const revokeObjectURL = vi.fn();
 let click: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+    shell.current = { mailboxes: [], patchMailbox: vi.fn() };
     vi.stubGlobal("URL", Object.assign(URL, { createObjectURL, revokeObjectURL }));
     click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
 });
@@ -160,10 +164,23 @@ describe("OpenPgpKeySetting", () => {
         await user.click(screen.getByRole("radio", { name: "S/MIME (recommended)" }));
         await waitFor(() => expect(updateMailbox).toHaveBeenCalledTimes(2));
         expect(updateMailbox.mock.calls[1][0].encryptPreference).toEqual({ preferEncrypt: "mutual", lastSeen: 4 });
+        // A server that answers without the preference: what was written is kept.
+        expect(shell.current.patchMailbox).toHaveBeenLastCalledWith("mb1", { version: undefined, encryptPreference: { preferEncrypt: "mutual", lastSeen: 4 } });
+    });
+
+    it("keeps what it saved in the settings shell, so the page shows it when it is mounted again for the mailbox", async () => {
+        const user = userEvent.setup();
+        updateMailbox.mockResolvedValue({ ...MAILBOX, version: 5, encryptPreference: { preferEncrypt: "nopreference", preferFormat: "openpgp" } });
+        render(<OpenPgpKeySetting mailbox={MAILBOX} canManage />);
+
+        await user.click(screen.getByRole("radio", { name: "OpenPGP" }));
+        await waitFor(() => expect(shell.current.patchMailbox).toHaveBeenCalledWith("mb1", { version: 5, encryptPreference: { preferEncrypt: "nopreference", preferFormat: "openpgp" } }));
     });
 
     it("retries once against a newer mailbox version, and goes back to the saved choice when saving fails", async () => {
         const user = userEvent.setup();
+        // Outside a settings shell nothing is kept.
+        shell.current = { mailboxes: [] };
         updateMailbox.mockRejectedValueOnce(new ApiRequestError("stale", 409)).mockResolvedValueOnce({});
         getMailbox.mockResolvedValue({ ...MAILBOX, version: 9, encryptPreference: { preferEncrypt: "mutual", preferFormat: "openpgp" } });
         render(<OpenPgpKeySetting mailbox={mailbox([SMIME_KEY, OPENPGP_KEY])} canManage />);

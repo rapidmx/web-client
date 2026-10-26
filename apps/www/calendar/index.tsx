@@ -415,14 +415,18 @@ function CalendarContent({ userUid, bookingHref }: { userUid?: string; bookingHr
     const searchedEvents = searchable?.from === events ? searchable.events : events;
 
     // The calendar holds protected events opened with their mailboxes' keys: a lock of one takes them off screen - read again with their
-    // placeholders, the search's fully opened copies dropped, and an open card or form of a protected event closed.
+    // placeholders, the search's fully opened copies dropped, and an open card or form of a protected event closed - its own mailbox's
+    // lock closes it too when it isn't one of the listed events (opened from a reminder, its calendar unchecked).
     useKeysLocked((locked) => {
-        if (!events.some((event) => event.mailboxUid === locked)) {
+        const listed: boolean = events.some((event) => event.mailboxUid === locked);
+        setModal((current) =>
+            current?.occurrence && isSealedRecord(current.occurrence) && (listed || current.occurrence.mailboxUid === locked) ? null : current,
+        );
+        if (!listed) {
             return;
         }
         reload();
         setSearchable(null);
-        setModal((current) => (current?.occurrence && isSealedRecord(current.occurrence) ? null : current));
     });
     const matches = useMemo(() => {
         const found = searching ? searchOccurrences(searchedEvents, query) : [];

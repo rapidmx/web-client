@@ -22,6 +22,7 @@ import {
     UpdateCalendarEventInput,
     createCalendarEvent,
     deleteCalendarEvent,
+    fullyOpenedEvent,
     getCalendarEvent,
     listCalendarEvents,
     updateCalendarEvent,
@@ -29,7 +30,7 @@ import {
 import { CalendarOccurrence, fromEventWallClock, seriesEndDate, toEventWallClock } from "./recurrence.js";
 import { ApiClient, ApiRequestError } from "../util/api.js";
 import { KeysLockedError } from "../crypto/masterKey.js";
-import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../zeroAccess/sealedRecords.js";
+import { isOpenedRecord, isProtectedRecord } from "../zeroAccess/sealedRecords.js";
 import { followMeetingKeyExpiry } from "../videoconf/protectedMeetings.js";
 import { isSealedContentOpened, markSealedContentOpened } from "./protectedEvents.js";
 
@@ -185,9 +186,7 @@ export async function detachOccurrence(
     fields: Partial<CalendarEventInput>,
     client?: ApiClient,
 ): Promise<CalendarEvent> {
-    if (isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) {
-        occurrence = await openSealedRecord(occurrence);
-    }
+    occurrence = await fullyOpenedEvent(occurrence);
     // Nor one of an event made from an invitation to a zero-access mailbox (`sealedContent`) whose content wasn't opened - asked of the
     // mark, not of its title: an untitled one opens to an empty title, and a title can be anything.
     if ((isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) || (occurrence.sealedContent && !isSealedContentOpened(occurrence))) {

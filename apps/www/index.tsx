@@ -159,6 +159,9 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
         encrypted,
         DECRYPT_CONCURRENCY,
         async (message): Promise<[string, DecryptedRow] | null> => {
+            // A lock while a row was opened has already cleared the shared store: what it opened must not go back in (`decryptForDisplay()`
+            // asks the same). The caller's lock generation keeps it off this page.
+            const stillUnlocked = (): boolean => getUnlockedKeys(message.mailboxUid) === unlocked;
             try {
                 // Loaded here, on first use: the S/MIME code (PKI.js, ASN.1, X.509) is over half a megabyte and an inbox with
                 // no encrypted mail in it never needs it.
@@ -167,11 +170,17 @@ async function decryptEncryptedRows(messages: Message[], unlocked: UnlockedKeys)
                 const summary = message.zeroAccess ? await securityApi.openZeroAccessSummary(message.zeroAccess.sealedSummary, unlocked.zeroAccessKeys) : undefined;
                 if (summary) {
                     const preview = summary.preview.slice(0, LIST_PREVIEW_MAX_LENGTH);
-                    rememberDecrypted(message.uid, message.mailboxUid, { subject: summary.subject, preview });
+                    if (stillUnlocked()) {
+                        rememberDecrypted(message.uid, message.mailboxUid, { subject: summary.subject, preview });
+                    }
                     return [message.uid, { subject: summary.subject, preview }];
                 }
                 const rawMime = await getMessageRawContent(message.uid);
                 const security = await securityApi.evaluateMessageSecurity(rawMime, unlocked);
+                // Nor is a lock a failure to decrypt.
+                if (!stillUnlocked()) {
+                    return null;
+                }
                 if (!security.subject && !security.html) {
                     markDecryptFailed(message.uid);
                     return null;

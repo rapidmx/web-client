@@ -16,6 +16,7 @@ import { MailConnectionContext, type MailConnection } from "../../../apps/shared
 import { getNotificationsSnapshot } from "../../../apps/shared/notifications/store.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import { ContactPhotoError, prepareContactPhoto } from "../../../lib/contacts/preparePhoto.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 // Making a picture small enough is `preparePhoto.test.ts`'s business (jsdom cannot decode or draw one): here the card is handed the file as it was chosen.
 vi.mock("../../../lib/contacts/preparePhoto.js", async (importOriginal) => ({
@@ -362,6 +363,51 @@ describe("ContactCard for a contact", () => {
         link.addEventListener("click", (event) => event.preventDefault());
         await user.click(link);
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+});
+
+describe("ContactCard and a lock", () => {
+    /** The mailbox's keys lock, as the idle timeout does. */
+    function lock(mailboxUid: string) {
+        act(() => {
+            installSharedSession(mailboxUid, { masterKey: new Uint8Array(32) }, sharedUnlockGeneration(mailboxUid));
+            destroyUnlockedKeys(mailboxUid);
+        });
+    }
+
+    it("closes when the mailbox of the protected contact it shows locks", async () => {
+        serve({ contacts: [{ ...JANE, mailboxUid: "mb1", folderUid: "c1", sealedFields: { notes: "c2VhbGVk" } }], events: jsonResponse(500, { message: "down" }) });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await within(dialog).findByRole("link", { name: "Open contact" });
+
+        lock("mb1");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes when the mailbox of a sealed upcoming event it shows locks, and stays for any other lock", async () => {
+        serve({ events: [{ ...JANE_EVENT, mailboxUid: "mb1", sealedContent: { keyFingerprint: "fp", sealed: "c2VhbGVk" } }] });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await within(dialog).findByText("Design review");
+
+        lock("mb9");
+        expect(screen.getByRole("dialog", { name: "Jane Doe" })).toBeInTheDocument();
+        lock("mb1");
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("stays open when nothing it shows is sealed", async () => {
+        serve({ contacts: [{ ...JANE, mailboxUid: "mb1", folderUid: "c1" }], events: [{ ...JANE_EVENT, mailboxUid: "mb1" }] });
+        const user = userEvent.setup();
+        renderCard();
+        const dialog = await openCard(user);
+        await within(dialog).findByText("Design review");
+
+        lock("mb1");
+        expect(screen.getByRole("dialog", { name: "Jane Doe" })).toBeInTheDocument();
     });
 });
 

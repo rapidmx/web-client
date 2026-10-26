@@ -13,6 +13,7 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import { notifyApiError } from "../../notifications/apiErrors.js";
 import PolicyLockedNotice from "./PolicyLockedNotice.js";
+import { useSettingsShell } from "./layout/SettingsShell.js";
 
 export interface OpenPgpKeySettingProps {
     mailbox: Mailbox;
@@ -55,6 +56,7 @@ function groupFingerprint(fingerprint: string): string {
  */
 export default function OpenPgpKeySetting({ mailbox, canManage }: OpenPgpKeySettingProps) {
     const client = useApiClient();
+    const { patchMailbox } = useSettingsShell();
     const [open, setOpen] = useState(false);
     const [password, setPassword] = useState("");
     const [passphrase, setPassphrase] = useState("");
@@ -84,17 +86,23 @@ export default function OpenPgpKeySetting({ mailbox, canManage }: OpenPgpKeySett
         setFormat(next);
         setSavingFormat(true);
         try {
-            const write = (current: Pick<Mailbox, "version" | "encryptPreference">) =>
-                updateMailbox({ uid: mailbox.uid, version: current.version, encryptPreference: withPreferredFormat(current.encryptPreference, next) }, client);
+            const write = async (current: Pick<Mailbox, "version" | "encryptPreference">): Promise<Pick<Mailbox, "version" | "encryptPreference">> => {
+                const encryptPreference: EncryptionPreference = withPreferredFormat(current.encryptPreference, next);
+                const saved = await updateMailbox({ uid: mailbox.uid, version: current.version, encryptPreference }, client);
+                return { version: saved.version, encryptPreference: saved.encryptPreference ?? encryptPreference };
+            };
+            let saved: Pick<Mailbox, "version" | "encryptPreference">;
             try {
-                await write(mailbox);
+                saved = await write(mailbox);
             } catch (err) {
                 // Enrolling a key moves the mailbox's version on: read it again and retry once.
                 if (!(err instanceof ApiRequestError && err.status === 409)) {
                     throw err;
                 }
-                await write(await getMailbox(mailbox.uid, {}, client));
+                saved = await write(await getMailbox(mailbox.uid, {}, client));
             }
+            // Kept in the settings shell's copy of the mailbox, which this page is mounted from again on a switch back to it.
+            patchMailbox?.(mailbox.uid, saved);
         } catch (err) {
             setFormat(previous);
             notifyApiError(err, "Couldn't save your preferred encryption format");

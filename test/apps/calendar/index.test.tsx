@@ -12,6 +12,7 @@ import CalendarPageBase from "../../../apps/www/calendar/index.js";
 import { withTestRouter } from "../routerTestUtils.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import type { ApiClient } from "../../../lib/util/api.js";
+import { destroyUnlockedKeys, installSharedSession, sharedUnlockGeneration } from "../../../lib/crypto/keySession.js";
 
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
@@ -877,6 +878,23 @@ describe("CalendarPage opening an event from the address (a calendar alarm's Vie
         await screen.findByRole("heading", { name: format(new Date(), "MMMM yyyy") });
         await waitFor(() => expect(window.location.search).not.toContain("event="));
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes the card of a sealed event it opened when that event's mailbox locks, though no listed event is of that mailbox", async () => {
+        // Its calendar unchecked: the event is opened on its own, never listed.
+        window.history.pushState(null, "", "/calendar?event=e9&start=2026-07-20T10%3A00%3A00.000Z");
+        serve({ ...offsite, sealedContent: { keyFingerprint: "fp", sealed: "c2VhbGVk" } });
+        render(<CalendarPage userUid="u1" />);
+        await screen.findByRole("dialog", { name: "Event details" });
+        const lock = (mailboxUid: string) => {
+            installSharedSession(mailboxUid, { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration(mailboxUid));
+            act(() => destroyUnlockedKeys(mailboxUid));
+        };
+
+        lock("mb-other");
+        expect(screen.getByRole("dialog", { name: "Event details" })).toBeInTheDocument();
+        lock("mb1");
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "Event details" })).not.toBeInTheDocument());
     });
 
     it("says so when the event can't be loaded", async () => {

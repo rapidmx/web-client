@@ -186,9 +186,15 @@ const EVENT_SORT = JSON.stringify({ uid: "ASC" });
 export const EVENT_LIST_FIELDS = ["title", "location"] as const;
 
 /** `event` with every protected field opened, when only some were (a listed event) - for a write, which sends only what changed and
- * invites with the whole content. */
+ * invites with the whole content. The title of one whose `sealedContent` was opened stays: a row can hold both, and its per-field copy
+ * (`sealedFields.title`) is then an older title the sealed content's replaced (renamed since) - or, sealed without one, the same title
+ * `openSealedEvents()` already shows. */
 export async function fullyOpenedEvent<T extends CalendarEvent | undefined>(event: T): Promise<T> {
-    return event && isProtectedRecord(event) && !isOpenedRecord(event) ? openSealedRecord(event) : event;
+    if (!event || !isProtectedRecord(event) || isOpenedRecord(event)) {
+        return event;
+    }
+    const full = await openSealedRecord(event);
+    return isSealedContentOpened(event) ? { ...full, title: event.title } : full;
 }
 
 export async function listCalendarEvents(folderUid: string, client?: ApiClient): Promise<CalendarEvent[]> {

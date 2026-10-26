@@ -119,8 +119,8 @@ export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
         markOutgoingSent(event.uid);
         // The server reports every message it relays, scheduled ones from long ago included: only a message this tab queued in the background is
         // worth a confirmation (several are one pop-up counting up). Anything else - a send-later message going out, another tab's send - is quiet.
-        if (retainedRequest(event.uid)) {
-            forgetRetainedRequest(event.uid);
+        // A message sent as several copies (one per encryption format) is confirmed once, when the last of them has gone.
+        if (retainedRequest(event.uid) && forgetRetainedRequest(event.uid)) {
             notifySent();
         }
         return;
@@ -141,18 +141,22 @@ export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
         return;
     }
     dismiss(retryId(event.uid));
+    // One copy of a message sent as several (one per encryption format, `SendRequest.copyUids`): the others' recipients have theirs or
+    // will, and "Open draft" would send the whole message to them again - Retry sends just this copy, to just its own recipients.
+    const oneCopy = !!retainedRequest(event.uid)?.copyUids;
     const actions = [
         { label: "Retry", onClick: () => void retryFailed(event, client) },
-        { label: "Open draft", onClick: () => void openFailedDraft(event, client) },
+        ...(oneCopy ? [] : [{ label: "Open draft", onClick: () => void openFailedDraft(event, client) }]),
     ];
+    const message: string = oneCopy ? `The copy for some of its recipients didn't go - the others' copy is sent on its own. ${failure.message}` : failure.message;
     notify({
         id: failedId(event.uid),
         kind: "error",
         title: "This message wasn't sent",
-        message: `${what}: ${failure.message}`,
+        message: `${what}: ${message}`,
         details: failure.lines,
         actions,
     });
     // The conversation on screen shows the same failure under the message, with the same ways out.
-    failOutgoing(event.uid, failure.message, actions);
+    failOutgoing(event.uid, message, actions);
 }

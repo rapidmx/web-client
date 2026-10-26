@@ -100,6 +100,10 @@ interface SyncState {
     segments: Record<string, string>;
     /** ISO 8601: when the last live-tail pass started. */
     tailSince?: string;
+    /** Where a live-tail pass that ended early stopped: the listing it was paging through (`since`, absent for a whole one), the page
+     * after the last one it imported, and when it started - which the pass that finishes it records as `tailSince`, so nothing written
+     * while it was interrupted is skipped. */
+    tailCursor?: { since?: string; after: string; start: string };
 }
 
 /** What a pass did, for the caller's logging and tests. */
@@ -497,8 +501,8 @@ export async function uploadClientDocuments(mailboxUid: string, unlocked: Unlock
     return written;
 }
 
-/** Every pending entry of `week` (or, without one, written since `since`), paged through. */
-async function listAllEntries(mailboxUid: string, filter: { week?: string; since?: string }, client?: ApiClient): Promise<SealedIndexEntry[]> {
+/** Every pending entry of `week`, paged through. */
+async function listAllEntries(mailboxUid: string, filter: { week: string }, client?: ApiClient): Promise<SealedIndexEntry[]> {
     const entries: SealedIndexEntry[] = [];
     let after: string | undefined;
     do {
@@ -507,6 +511,24 @@ async function listAllEntries(mailboxUid: string, filter: { week?: string; since
         after = page.next;
     } while (after);
     return entries;
+}
+
+/** Per mailbox, the weeks a compaction found it can't fold on this device - a segment it can't read, or pending entries sealed to a key
+ * it doesn't hold (an older key a shared mailbox's member hasn't been given yet) - with how many entries were pending then, and the
+ * zero-access keys it had. Such a week stays pending, and the oldest weeks come first: without this, a few of them would take every pass's
+ * `MAX_COMPACTIONS_PER_PASS` and no other week would ever be compacted here. A week is tried again once its count changes (new entries,
+ * or another device folded it), and every week once this device's keys do. */
+const stalled = new Map<string, { keys: string; weeks: Map<string, number> }>();
+
+/** The weeks of `mailboxUid` this device found it can't fold with `keys` (see `stalled`). */
+function stalledWeeks(mailboxUid: string, keys: ZeroAccessKeys): Map<string, number> {
+    const fingerprints: string = keys.map((key) => key.fingerprint).join(",");
+    let entry = stalled.get(mailboxUid);
+    if (entry?.keys !== fingerprints) {
+        entry = { keys: fingerprints, weeks: new Map() };
+        stalled.set(mailboxUid, entry);
+    }
+    return entry.weeks;
 }
 
 /** The documents of `entries` that open, with the uids of those entries; how many didn't. */
@@ -563,41 +585,66 @@ export async function syncZeroAccessIndex(mailboxUid: string, unlocked: Unlocked
     result.clientSegmentsImported = await importClientSegments(mailboxUid, unlocked, client, { manifest });
     state = loadState(mailboxUid);
 
-    // The live tail.
-    const tailStart = new Date().toISOString();
+    // The live tail, a page at a time: without a `since` (a new or emptied local index) it is every pending entry of the mailbox, which
+    // after zero-access is turned on can be every message it has - never held, opened, all at once. Each page imported is remembered
+    // (`tailCursor`), so a pass that ends early is taken up where it stopped rather than from the start.
     const since = state.tailSince ? new Date(new Date(state.tailSince).getTime() - TAIL_OVERLAP_MS).toISOString() : undefined;
-    const tail = await openEntries(await listAllEntries(mailboxUid, since ? { since } : {}, client), keys);
+    const resumed = state.tailCursor?.since === since ? state.tailCursor : undefined;
+    const tailStart: string = resumed?.start ?? new Date().toISOString();
     // Rows nothing has recorded a folder and flags for: not on this device with a version yet (the builder's mark), nor remembered by it.
     // Asked in batches - a backlog's tail can be every message of the mailbox, past what one SQL statement may bind - and only until there
     // are as many as a pass looks up.
-    const tailUids: string[] = [...new Set(tail.docs.map((doc) => doc.messageUid))];
     const remembered = rememberedMetadata.get(mailboxUid);
+    const asked = new Set<string>();
     const unrecorded: string[] = [];
-    for (let i = 0; i < tailUids.length && unrecorded.length < MAX_TAIL_LOOKUPS; i += IMPORT_BATCH) {
-        const batch: string[] = tailUids.slice(i, i + IMPORT_BATCH);
-        const recorded: Record<string, string> = await getIndexedVersions(mailboxUid, batch);
-        unrecorded.push(...batch.filter((uid) => recorded[uid] === undefined && !remembered?.has(uid)));
-    }
-    await importDocuments(mailboxUid, tail.docs);
+    let after: string | undefined = resumed?.after;
+    do {
+        const page = await listSearchIndexEntries(mailboxUid, { ...(since ? { since } : {}), ...(after ? { after } : {}) }, client);
+        const tail = await openEntries(page.entries, keys);
+        const tailUids: string[] = [...new Set(tail.docs.map((doc) => doc.messageUid))].filter((uid) => !asked.has(uid));
+        tailUids.forEach((uid) => asked.add(uid));
+        for (let i = 0; i < tailUids.length && unrecorded.length < MAX_TAIL_LOOKUPS; i += IMPORT_BATCH) {
+            const batch: string[] = tailUids.slice(i, i + IMPORT_BATCH);
+            const recorded: Record<string, string> = await getIndexedVersions(mailboxUid, batch);
+            unrecorded.push(...batch.filter((uid) => recorded[uid] === undefined && !remembered?.has(uid)));
+        }
+        await importDocuments(mailboxUid, tail.docs);
+        result.entriesImported += tail.docs.length;
+        result.unreadable += tail.unreadable;
+        after = page.next;
+        if (after) {
+            state.tailCursor = { ...(since ? { since } : {}), after, start: tailStart };
+            saveState(mailboxUid, state, epoch);
+        }
+    } while (after);
     await recordTailMetadata(mailboxUid, unrecorded, client);
-    result.entriesImported += tail.docs.length;
-    result.unreadable += tail.unreadable;
     state.tailSince = tailStart;
+    delete state.tailCursor;
     saveState(mailboxUid, state, epoch);
 
-    // Compaction of closed weeks.
+    // Compaction of closed weeks, passing over those this device found it can't fold (`stalled`) while nothing has changed in them.
     const active = keys[0];
+    const stalledHere: Map<string, number> = stalledWeeks(mailboxUid, keys);
     const segmentOf = (weekId: string): IndexSegment | undefined => zeroAccessSegments.find((segment) => segment.weekId === weekId);
-    for (const week of manifest.weeks.filter((w) => shouldCompact(w, segmentOf(w.weekId)?.bytes ?? 0)).slice(0, MAX_COMPACTIONS_PER_PASS)) {
+    const weeks: IndexWeekEntries[] = manifest.weeks.filter((w) => stalledHere.get(w.weekId) !== w.pendingEntries && shouldCompact(w, segmentOf(w.weekId)?.bytes ?? 0));
+    for (const week of weeks.slice(0, MAX_COMPACTIONS_PER_PASS)) {
         const current: IndexSegment | undefined = segmentOf(week.weekId);
         const previous: ZeroAccessIndexDocument[] | undefined = current ? await readSegment(mailboxUid, current, keys, client) : [];
         if (!previous) {
             // A generation this device can't read can't be folded into: leave the week to a device that can.
+            stalledHere.set(week.weekId, week.pendingEntries);
             continue;
         }
         const pending = await openEntries(await listAllEntries(mailboxUid, { week: week.weekId }, client), keys);
         if (pending.uids.length === 0) {
+            stalledHere.set(week.weekId, week.pendingEntries);
             continue;
+        }
+        // What this device can't open stays pending once the rest is folded: the week is passed over until that count changes.
+        if (pending.unreadable > 0) {
+            stalledHere.set(week.weekId, pending.unreadable);
+        } else {
+            stalledHere.delete(week.weekId);
         }
         const merged = new Map<string, ZeroAccessIndexDocument>(previous.map((doc) => [doc.messageUid, doc]));
         for (const doc of pending.docs) {

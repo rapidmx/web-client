@@ -692,7 +692,9 @@ describe("searching all mailboxes", () => {
 
     it("decrypts the rows of every mailbox whose keys are unlocked, not just the open one's", async () => {
         at("?aggregate=inbox");
-        getUnlockedKeys.mockImplementation((uid: string) => (uid === "mb2" ? { masterKey: new Uint8Array(32) } : undefined));
+        // One session object, as the key session hands out: a decrypt keeps what it opened only while its mailbox still has it.
+        const unlocked = { masterKey: new Uint8Array(32) };
+        getUnlockedKeys.mockImplementation((uid: string) => (uid === "mb2" ? unlocked : undefined));
         evaluateMessageSecurity.mockResolvedValue({ subject: "Real subject", html: "<p>Real body</p>" });
         mockMail({
             messages: [

@@ -400,6 +400,108 @@ describe("syncZeroAccessIndex", () => {
         await expect(syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] })).rejects.toMatchObject({ status: 500 });
     });
 
+    it("imports the live tail a page at a time, and takes up a pass that ended early where it stopped", async () => {
+        const pages: Record<string, () => Promise<any>> = {
+            "": async () => ({ entries: [await sealEntry("e1", "2026-W43", doc("m1"), key.certDer)], next: "p1" }),
+            p1: async () => ({ entries: [await sealEntry("e2", "2026-W43", doc("m1"), key.certDer), await sealEntry("e3", "2026-W43", doc("m2"), key.certDer)], next: "p2" }),
+            p2: async () => {
+                throw new ApiRequestError("unavailable", 503);
+            },
+        };
+        api.listSearchIndexEntries.mockImplementation((_mb: string, filter: any) => pages[filter.after ?? ""]());
+
+        await expect(syncZeroAccessIndex("paged", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] })).rejects.toMatchObject({ status: 503 });
+
+        // Each page went to the local index before the next was asked for, and a message on two pages was looked up once.
+        expect(indexedUids()).toEqual(["m1", "m1", "m2"]);
+        expect(rpc.indexLocalEntities.mock.invocationCallOrder[0]).toBeLessThan(api.listSearchIndexEntries.mock.invocationCallOrder[1]);
+        expect(rpc.getIndexedVersions.mock.calls.map(([, uids]) => uids)).toEqual([["m1"], ["m2"]]);
+        const interrupted = JSON.parse(storage.get("rapidmx:za-index-sync:paged")!);
+        expect(interrupted.tailSince).toBeUndefined();
+        expect(interrupted.tailCursor).toEqual({ after: "p2", start: expect.any(String) });
+
+        // The next pass asks only for what is left, and records the interrupted pass's start as where the next tail starts.
+        pages.p2 = async () => ({ entries: [await sealEntry("e4", "2026-W43", doc("m3"), key.certDer)] });
+        api.listSearchIndexEntries.mockClear();
+        rpc.indexLocalEntities.mockClear();
+        const resumed = await syncZeroAccessIndex("paged", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] });
+        expect(resumed.entriesImported).toBe(1);
+        expect(api.listSearchIndexEntries.mock.calls.map(([, filter]) => filter)).toEqual([{ after: "p2" }]);
+        expect(indexedUids()).toEqual(["m3"]);
+        expect(JSON.parse(storage.get("rapidmx:za-index-sync:paged")!)).toMatchObject({ tailSince: interrupted.tailCursor.start });
+        expect(JSON.parse(storage.get("rapidmx:za-index-sync:paged")!).tailCursor).toBeUndefined();
+    });
+
+    it("starts the live tail over when a stopped pass was listing from another time, remembering where this one is", async () => {
+        const tailSince = new Date(Date.now() - 3_600_000).toISOString();
+        storage.set("rapidmx:za-index-sync:moved", JSON.stringify({ segments: {}, tailSince, tailCursor: { since: "2020-01-01T00:00:00.000Z", after: "old", start: "2020-01-01T00:10:00.000Z" } }));
+        const since = new Date(new Date(tailSince).getTime() - TAIL_OVERLAP_MS).toISOString();
+        api.listSearchIndexEntries.mockImplementation(async (_mb: string, filter: any) => {
+            if (!filter.after) {
+                return { entries: [await sealEntry("e1", "2026-W43", doc("m1"), key.certDer)], next: "p1" };
+            }
+            throw new ApiRequestError("unavailable", 503);
+        });
+
+        await expect(syncZeroAccessIndex("moved", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] })).rejects.toMatchObject({ status: 503 });
+
+        expect(api.listSearchIndexEntries.mock.calls[0][1]).toEqual({ since });
+        expect(JSON.parse(storage.get("rapidmx:za-index-sync:moved")!).tailCursor).toEqual({ since, after: "p1", start: expect.any(String) });
+    });
+
+    it("passes over weeks this device can't fold until they change, so the weeks after them are compacted", async () => {
+        const stranger = await zeroAccessKey("stranger");
+        const week = (weekId: string, pendingEntries: number = 1) => ({ weekId, pendingEntries, latestEntryAt: "", compactable: true });
+        const weeks = [week("2026-W30"), week("2026-W31"), week("2026-W32"), week("2026-W33"), week("2026-W34"), week("2026-W35", 2)];
+        api.getSearchIndexManifest.mockImplementation(async () => ({ mailboxUid: "stall", segments: [segment("2026-W30", 1, "e30")], weeks }));
+        // W30's segment and W31-W33's entries are sealed to a key this device doesn't hold; W35 holds one of each.
+        api.getSearchIndexSegment.mockResolvedValue(await sealSegment([doc("x")], stranger.certDer));
+        api.listSearchIndexEntries.mockImplementation(async (_mb: string, filter: any) => {
+            switch (filter.week) {
+                case "2026-W31":
+                case "2026-W32":
+                case "2026-W33":
+                    return { entries: [await sealEntry(`u-${filter.week}`, filter.week, doc(`u-${filter.week}`), stranger.certDer)] };
+                case "2026-W34":
+                    // Over two pages.
+                    return filter.after ? { entries: [] } : { entries: [await sealEntry("k34", filter.week, doc("k34"), key.certDer)], next: "k34" };
+                case "2026-W35":
+                    return { entries: [await sealEntry("k35", filter.week, doc("k35"), key.certDer), await sealEntry("u35", filter.week, doc("u35"), stranger.certDer)] };
+                default:
+                    return { entries: [] };
+            }
+        });
+        api.putSearchIndexSegment.mockImplementation(async (_mb: string, weekId: string) => segment(weekId, 1, `e-${weekId}`));
+        const unlocked = { masterKey: new Uint8Array(1), zeroAccessKeys: [key] };
+        const tried = (): string[] => api.listSearchIndexEntries.mock.calls.map(([, filter]) => filter.week).filter(Boolean);
+
+        // The four oldest take the first pass and fold nothing; the next pass reaches the rest.
+        expect((await syncZeroAccessIndex("stall", unlocked)).weeksCompacted).toBe(0);
+        expect((await syncZeroAccessIndex("stall", unlocked)).weeksCompacted).toBe(2);
+        expect(api.putSearchIndexSegment.mock.calls.map(([, weekId, upload]) => [weekId, upload.foldedEntryUids])).toEqual([
+            ["2026-W34", ["k34"]],
+            ["2026-W35", ["k35"]],
+        ]);
+
+        // Folded as far as it can be here: W35 is left its one unreadable entry, and nothing is tried again.
+        weeks.splice(4, 2, week("2026-W35", 1));
+        api.listSearchIndexEntries.mockClear();
+        await syncZeroAccessIndex("stall", unlocked);
+        expect(tried()).toEqual([]);
+
+        // A week that gets another entry is tried again.
+        weeks[1] = week("2026-W31", 2);
+        api.listSearchIndexEntries.mockClear();
+        await syncZeroAccessIndex("stall", unlocked);
+        expect(tried()).toEqual(["2026-W31"]);
+
+        // And every week, once this device holds another key.
+        api.listSearchIndexEntries.mockClear();
+        api.putSearchIndexSegment.mockRejectedValue(new ApiRequestError("changed", 409));
+        await syncZeroAccessIndex("stall", { masterKey: new Uint8Array(1), zeroAccessKeys: [key, stranger] });
+        expect(tried()).toEqual(["2026-W30", "2026-W31", "2026-W32", "2026-W33"]);
+    });
+
     it("works on without storage, and starts over from corrupt state", async () => {
         storage.set("rapidmx:za-index-sync:mb", "{not json");
         expect((await syncZeroAccessIndex("mb", { masterKey: new Uint8Array(1), zeroAccessKeys: [key] })).entriesImported).toBe(0);

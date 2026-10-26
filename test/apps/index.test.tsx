@@ -11,7 +11,7 @@ import { getNotificationsSnapshot } from "../../apps/shared/notifications/store.
 import { clearInviteCache } from "../../apps/shared/components/mail/invite/inviteStore.js";
 import { LONG_PRESS_MS } from "../../apps/shared/gestures/useLongPress.js";
 import InboxPageBase from "../../apps/www/index.js";
-import { clearDecryptedMessages } from "../../apps/shared/mail/decryptedMessages.js";
+import { clearDecryptedMessages, decryptFailedBefore, useDecryptedMessages } from "../../apps/shared/mail/decryptedMessages.js";
 import { latestRouter, TestRouter, withTestRouter } from "./routerTestUtils.js";
 import { createApiClient } from "../../lib/util/api.js";
 import { ApiClientContext } from "../../lib/util/apiClientContext.js";
@@ -5587,6 +5587,41 @@ describe("InboxPage", () => {
 
             expect(screen.queryByText("Leaked subject")).not.toBeInTheDocument();
             expect(screen.getByText("Encrypted message")).toBeInTheDocument();
+        });
+
+        it("keeps what an in-flight decrypt opens after the keys were locked out of the shared store, and counts no failure for it", async () => {
+            const sealedMsg = messageFixture({ uid: "m-za", subject: "[...]", bodyPreview: "", zeroAccess: { keyFingerprint: "fp", sealedSummary: "c2VhbGVk" } });
+            const encryptedMsg = messageFixture({ uid: "m-enc", subject: "[...]", bodyPreview: undefined });
+            mockShellAndInbox([sealedMsg, encryptedMsg]);
+            getUnlockedKeys.mockReturnValue({ masterKey: new Uint8Array(32), zeroAccessKeys: [{}] });
+            let resolveSummary!: (value: unknown) => void;
+            let resolveDecrypt!: (value: unknown) => void;
+            openZeroAccessSummary.mockReturnValue(new Promise((resolve) => (resolveSummary = resolve)));
+            evaluateMessageSecurity.mockReturnValue(new Promise((resolve) => (resolveDecrypt = resolve)));
+            // What the conversation list and thread pane read.
+            function SharedStore() {
+                const decrypted = useDecryptedMessages();
+                return <span data-testid="shared-store">{Object.values(decrypted).map((entry) => entry.subject).join(",")}</span>;
+            }
+            render(
+                <>
+                    <InboxPage userUid="u1" />
+                    <SharedStore />
+                </>,
+            );
+            await waitFor(() => expect(evaluateMessageSecurity).toHaveBeenCalled());
+            expect(openZeroAccessSummary).toHaveBeenCalled();
+
+            getUnlockedKeys.mockReturnValue(undefined);
+            act(() => emitKeySession({ mailboxUid: "mb1", state: "locked" }));
+            resolveSummary({ subject: "Leaked summary", preview: "Leaked preview" });
+            resolveDecrypt({ state: "encrypted", decryptError: "Locked." });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            expect(screen.getByTestId("shared-store").textContent).toBe("");
+            expect(screen.queryByText("Leaked summary")).not.toBeInTheDocument();
+            expect(decryptFailedBefore("m-enc")).toBe(false);
+            openZeroAccessSummary.mockReset();
         });
 
         it("never shows rows an unlock-banner decrypt finishes after the keys were locked again", async () => {
