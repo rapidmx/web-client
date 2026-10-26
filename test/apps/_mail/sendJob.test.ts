@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
     buildPgpEncryptedMessage: vi.fn(),
     readKeysBase64: vi.fn(),
     armorPublicKey: vi.fn(),
+    listFolders: vi.fn(),
+    cancelScheduledSend: vi.fn(),
+    deleteMessage: vi.fn(),
 }));
 
 vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
@@ -37,6 +40,9 @@ vi.mock("../../../lib/mail/mailApi.js", async (importOriginal) => ({
     queueMessageSend: mocks.queueMessageSend,
     sendMessage: mocks.sendMessage,
     setMessageRequestReceipt: mocks.setMessageRequestReceipt,
+    listFolders: mocks.listFolders,
+    cancelScheduledSend: mocks.cancelScheduledSend,
+    deleteMessage: mocks.deleteMessage,
 }));
 vi.mock("../../../lib/crypto/keyvaultApi.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../../../lib/crypto/keyvaultApi.js")>()),
@@ -55,6 +61,7 @@ vi.mock("../../../lib/crypto/openpgp.js", () => ({ armorPublicKey: mocks.armorPu
 
 import {
     CONTEXT_GRACE_MS,
+    CopyFate,
     SendRequest,
     describeMessage,
     forgetRetainedRequest,
@@ -683,15 +690,17 @@ describe("startSend - OpenPGP recipients", () => {
         expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
         expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
 
-        // The next Retry hands it over, and the request is kept under both copies.
+        // The next Retry hands it over. The request is kept under it alone - the S/MIME copy went long ago, its report come and gone - so the
+        // OpenPGP copy's report confirms the message.
         toasts()[0].actions[0].onClick!();
         await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
         await settle();
         expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid)).toEqual(["m2", "m2"]);
-        expect(retainedRequest("m1")?.copyUids).toEqual(["m1", "m2"]);
-        expect(retainedRequest("m2")).toBe(retainedRequest("m1"));
-        expect(forgetRetainedRequest("m1")).toBe(false);
-        expect(forgetRetainedRequest("m2")).toBe(true);
+        expect(retainedRequest("m1")).toBeUndefined();
+        expect(retainedRequest("m2")?.copyUids).toEqual(["m1", "m2"]);
+        handleSendEvent({ action: "send-succeeded", uid: "m2", mailboxUid: "mb1", subject: "Hello", recipients: ["pat@proton.example"], attempt: 1 });
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+        expect(retainedRequest("m2")).toBeUndefined();
     });
 
     it("hands nothing over when every copy still to go went between the Retry's check and the attempt", async () => {
@@ -700,14 +709,112 @@ describe("startSend - OpenPGP recipients", () => {
             // The Retry finds the S/MIME copy still a draft; by the time the attempt asks, both have gone.
             let asked = 0;
             mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: asked++ === 0 ? "drafts" : "outbox" }));
-            await retrySend(request({ pendingCopies, copyUids: ["m1", "m2"], scheduledSendTime }));
+            const copyFates = new Map<string, CopyFate>([
+                ["m1", "unsent"],
+                ["m2", "unsent"],
+            ]);
+            await retrySend(request({ pendingCopies, copyUids: ["m1", "m2"], copyFates, scheduledSendTime }));
             await settle();
             expect(mocks.queueMessageSend).not.toHaveBeenCalled();
             expect(mocks.sendMessage).not.toHaveBeenCalled();
             expect(toasts().filter((toast) => toast.kind === "error")).toEqual([]);
         }
         expect(toasts().some((toast) => toast.title === "Message scheduled")).toBe(true);
-        expect(retainedRequest("m2")).toBe(retainedRequest("m1"));
+        // Neither copy is waited for: their reports have most likely come and gone. The message is confirmed at once.
+        expect(toasts().some((toast) => toast.title === "Message sent")).toBe(true);
+        expect(retainedRequest("m1")).toBeUndefined();
+        expect(retainedRequest("m2")).toBeUndefined();
+    });
+
+    it("confirms a partly-sent message once its retried copy goes, though the first copy went before the Retry (#619)", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend.mockResolvedValueOnce({ queued: true, message: draft }).mockRejectedValueOnce(new ApiRequestError("Unavailable", 503));
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: uid === "m1" ? "outbox" : "drafts" }));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
+
+        // The S/MIME copy is relayed while the failure is showing; then the Retry hands over the OpenPGP copy, which is relayed in turn.
+        handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+        expect(toasts().some((toast) => toast.title === "Message sent")).toBe(false);
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(3));
+        await settle();
+        expect(retainedRequest("m1")).toBeUndefined();
+        handleSendEvent({ action: "send-succeeded", uid: "m2", mailboxUid: "mb1", subject: "Hello", recipients: ["pat@proton.example"], attempt: 1 });
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+        expect(retainedRequest("m2")).toBeUndefined();
+    });
+
+    it("finds the message's other copy when a copy's report comes while the next is still being handed over (#621)", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        let handOverSecond: (value: unknown) => void = () => undefined;
+        mocks.queueMessageSend
+            .mockResolvedValueOnce({ queued: true, message: draft })
+            .mockImplementationOnce(() => new Promise((resolve) => (handOverSecond = resolve)));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+
+        // The S/MIME copy is refused for good while the OpenPGP one is still on its way to the server: only Retry.
+        handleSendEvent({ action: "send-failed", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1, error: { message: "No such user." } });
+        expect(toasts()[0].message).toContain("the others' copy is sent on its own");
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+        handOverSecond({ queued: true, message: draft });
+        await settle();
+        expect(retainedRequest("m2")?.copyUids).toEqual(["m1", "m2"]);
+        expect(retainedRequest("m1")).toBe(retainedRequest("m2"));
+    });
+
+    it("counts a copy's success reported while the next is still being handed over, confirming the message once the last goes", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        let handOverSecond: (value: unknown) => void = () => undefined;
+        mocks.queueMessageSend
+            .mockResolvedValueOnce({ queued: true, message: draft })
+            .mockImplementationOnce(() => new Promise((resolve) => (handOverSecond = resolve)));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+        handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+        handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+        handOverSecond({ queued: true, message: draft });
+        await settle();
+        expect(retainedRequest("m1")).toBeUndefined();
+        expect(toasts()).toEqual([]);
+        handleSendEvent({ action: "send-succeeded", uid: "m2", mailboxUid: "mb1", subject: "Hello", recipients: ["pat@proton.example"], attempt: 1 });
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+    });
+
+    it("confirms a message whose every copy a server with no queue relayed before answering, once", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        // The first copy's report comes before the server answers; the second copy is relayed before it answers too.
+        mocks.queueMessageSend
+            .mockImplementationOnce(async () => {
+                handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+                return { queued: false, message: draft };
+            })
+            .mockImplementationOnce(async () => {
+                handleSendEvent({ action: "send-succeeded", uid: "m2", mailboxUid: "mb1", subject: "Hello", recipients: ["pat@proton.example"], attempt: 1 });
+                return { queued: false, message: draft };
+            });
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+        expect(retainedRequest("m1")).toBeUndefined();
+        expect(retainedRequest("m2")).toBeUndefined();
+    });
+
+    it("confirms a message whose every copy a server with no queue relayed before answering, reporting none, from the send itself", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend.mockResolvedValue({ queued: false, message: draft });
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+        expect(retainedRequest("m1")).toBeUndefined();
+        expect(retainedRequest("m2")).toBeUndefined();
     });
 
     it("offers only Retry when the server fails to relay one copy of a mixed-format message, and confirms it once every copy went", async () => {
@@ -724,6 +831,108 @@ describe("startSend - OpenPGP recipients", () => {
         expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
 
         // Retried, it goes: now the message is confirmed.
+        handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+        expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+    });
+
+    describe("when the server fails every copy of a mixed-format message", () => {
+        const failed = (uid: string, recipient: string) =>
+            handleSendEvent({ action: "send-failed", uid, mailboxUid: "mb1", subject: "Hello", recipients: [recipient], attempt: 3, error: { message: "Over quota." } });
+        const errors = () => toasts().filter((toast) => toast.kind === "error");
+        const sendMixed = async () => {
+            mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+            mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+            send({ cc: [{ address: "pat@proton.example" }] });
+            await settle();
+        };
+        const settleBoth = async () => {
+            await vi.waitFor(() => expect(isSendPending("m1") || isSendPending("m2")).toBe(false));
+        };
+
+        it("says the whole message failed, in one pop-up whose Retry hands every copy over again and which offers Open draft (#620)", async () => {
+            await sendMixed();
+            failed("m2", "pat@proton.example");
+            expect(errors()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+            failed("m1", "bob@example.com");
+            expect(errors()).toHaveLength(1);
+            expect(errors()[0].message).toBe('To bob@example.com - "Hello": Over quota.');
+            expect(errors()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+
+            // Retry hands both over: the S/MIME copy is refused at once, the OpenPGP one relayed before the server answered.
+            mocks.queueMessageSend.mockReset().mockImplementation(async (uid: string) => {
+                if (uid === "m1") {
+                    throw new ApiRequestError("Unavailable", 503);
+                }
+                return { queued: false, message: draft };
+            });
+            errors()[0].actions[0].onClick!();
+            await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+            await settleBoth();
+            expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid).sort()).toEqual(["m1", "m2"]);
+            // One copy went, so the message isn't confirmed - and a failure of the other is one copy's again.
+            expect(toasts().some((toast) => toast.title === "Message sent")).toBe(false);
+            expect(retainedRequest("m2")).toBeUndefined();
+            failed("m1", "bob@example.com");
+            expect(errors().find((toast) => toast.message?.includes("Over quota."))?.actions.map((action) => action.label)).toEqual(["Retry"]);
+        });
+
+        it("writes the whole message again from Open draft, removing the extra OpenPGP copy (#620)", async () => {
+            const open = vi.fn();
+            const off = registerComposeOpener(open);
+            await sendMixed();
+            failed("m1", "bob@example.com");
+            failed("m2", "pat@proton.example");
+            mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, version: 7, folderUid: "outbox" }));
+            mocks.listFolders.mockResolvedValue([{ uid: "drafts", type: "drafts" }]);
+            mocks.cancelScheduledSend.mockImplementation(async (message: Message, folderUid: string) => ({ ...message, folderUid }));
+            mocks.deleteMessage.mockResolvedValue(undefined);
+            errors()[0].actions[1].onClick!();
+            await vi.waitFor(() => expect(open).toHaveBeenCalled());
+            expect(open.mock.calls[0][0].resume.draft).toMatchObject({ uid: "m1", folderUid: "drafts" });
+            expect(open.mock.calls[0][0].resume.to).toBe("bob@example.com");
+            expect(mocks.deleteMessage.mock.calls).toEqual([["m2", 7, undefined]]);
+            expect(errors()).toEqual([]);
+            expect(retainedRequest("m1")).toBeUndefined();
+            expect(retainedRequest("m2")).toBeUndefined();
+            off();
+        });
+
+        it("won't write the message again from an Open draft offered earlier, once a copy is on its way again (#621)", async () => {
+            const open = vi.fn();
+            const off = registerComposeOpener(open);
+            await sendMixed();
+            failed("m1", "bob@example.com");
+            failed("m2", "pat@proton.example");
+            const [retry, openDraft] = errors()[0].actions;
+            retry.onClick!();
+            await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(4));
+            await settleBoth();
+            openDraft.onClick!();
+            await vi.waitFor(() => expect(toasts().some((toast) => toast.title === "Only this copy didn't go")).toBe(true));
+            expect(mocks.listFolders).not.toHaveBeenCalled();
+            expect(mocks.cancelScheduledSend).not.toHaveBeenCalled();
+            expect(open).not.toHaveBeenCalled();
+            off();
+        });
+    });
+
+    it("waits for the first copy's report when the copy a Retry was for turns out to have gone already", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.queueMessageSend.mockResolvedValueOnce({ queued: true, message: draft }).mockRejectedValueOnce(new TypeError("network down"));
+        mocks.getMessage.mockRejectedValue(new TypeError("network down"));
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(toasts()[0].message).toContain("Only some of its recipients were sent it");
+
+        // The Retry finds the OpenPGP copy still a draft; by the time the attempt asks, it has gone.
+        let asked = 0;
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, folderUid: asked++ === 0 ? "drafts" : "outbox" }));
+        toasts()[0].actions[0].onClick!();
+        await vi.waitFor(() => expect(asked).toBe(2));
+        await settle();
+        expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2);
+        expect(toasts().some((toast) => toast.title === "Message sent")).toBe(false);
         handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
         expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
     });

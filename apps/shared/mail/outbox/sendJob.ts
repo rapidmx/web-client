@@ -78,7 +78,14 @@ export interface SendRequest {
      * recipients): the request is retained under each, and a failure the server reports later for one of them offers no "Open draft",
      * which would send the other copy's recipients a second message. */
     copyUids?: string[];
+    /** What has become of each of those copies, by uid: one map shared by every request made from this one (a retry's, the one retained), so
+     * how any copy went is known to all of them. */
+    copyFates?: Map<string, CopyFate>;
 }
+
+/** One copy of a message sent as several (`SendRequest.copyFates`): `unsent` - not handed over (or its hand-over failed), `pending` - handed
+ * over, how it went still to be reported, `sent`, or `failed` - the server reported it couldn't relay it. */
+export type CopyFate = "unsent" | "pending" | "sent" | "failed";
 
 /** How long a background send waits for the mailbox / encryption policy it did not have, before it goes ahead treating them as unknown. Nobody waits for it. */
 export const CONTEXT_GRACE_MS = 4_000;
@@ -96,23 +103,73 @@ export function registerOutboxCounter(tracker: (mailboxUid: string) => OutboxCou
 
 const RETAINED_LIMIT = 25;
 
-/** The request a message (or one of its copies, `SendRequest.copyUids`) was queued from, while this tab still holds it: what lets "Open draft"
- * and "Retry" work on a failure the server reports later. */
+/** The request a message was queued from, while this tab still holds it: what lets "Open draft" and "Retry" work on a failure the server
+ * reports later. A message sent as several copies (`SendRequest.copyUids`) is held under each copy still to go, from just before it is handed
+ * over - how the first went can be reported while the next is still being handed over. */
 export function retainedRequest(draftUid: string): SendRequest | undefined {
     return sendState.retained.get(draftUid);
 }
 
+/** Stops holding the request of a message sent as several copies under copy `uid` - never another message's request held there since. */
+function release(fates: Map<string, CopyFate>, uid: string): void {
+    if (sendState.retained.get(uid)?.copyFates === fates) {
+        sendState.retained.delete(uid);
+    }
+}
+
+/** Records that copy `uid` of a message sent as several (`fates`) has gone. Whether it was the last of them to go, each counted once, so the
+ * message is confirmed now - always, for a message sent as one. */
+function copyWent(fates: Map<string, CopyFate> | undefined, uid: string): boolean {
+    if (!fates) {
+        return true;
+    }
+    release(fates, uid);
+    if (fates.get(uid) === "sent") {
+        return false;
+    }
+    fates.set(uid, "sent");
+    return [...fates.values()].every((fate) => fate === "sent");
+}
+
 /** Drops the request a message (or one of its copies) was queued from, and the pictures remembered as attached to its draft: it has gone, so
- * neither is wanted again. Whether nothing of the request is retained any more - the last of its copies has gone too. */
+ * neither is wanted again. Whether the message has now gone in full - the last of its copies to go. */
 export function forgetRetainedRequest(draftUid: string): boolean {
     const request = sendState.retained.get(draftUid);
     sendState.retained.delete(draftUid);
     forgetDraftImages(draftUid);
-    return !request?.copyUids?.some((uid) => sendState.retained.get(uid) === request);
+    return copyWent(request?.copyFates, draftUid);
 }
 
-function retain(request: SendRequest): void {
-    for (const uid of request.copyUids ?? [request.draft.uid]) {
+/** Records that the server couldn't relay copy `uid` of the message `request` sent as several copies (nothing for a message sent as one). */
+export function copyFailed(request: SendRequest | undefined, uid: string): void {
+    request?.copyFates?.set(uid, "failed");
+}
+
+/** Copy `uid` of the message `request` sent as several copies is handed over again (a Retry): how it goes is to be reported once more, and
+ * finds the request held under it. Nothing for a message sent as one. */
+export function copyRetried(request: SendRequest | undefined, uid: string): void {
+    if (request?.copyFates) {
+        request.copyFates.set(uid, "pending");
+        retain(request, [uid]);
+    }
+}
+
+/** Every copy of the message `request` sent as several, when none of them has gone nor may still go - each failed, or was never handed over:
+ * nobody has the message. `undefined` while one has gone or may, and for a message sent as one. */
+export function unsentCopies(request: SendRequest | undefined): string[] | undefined {
+    const fates = request?.copyFates;
+    return fates && [...fates.values()].every((fate) => fate === "failed" || fate === "unsent") ? [...fates.keys()] : undefined;
+}
+
+/** Stops holding a message sent as several copies under any of them: it is being written again. */
+export function forgetCopies(fates: Map<string, CopyFate>): void {
+    for (const uid of fates.keys()) {
+        release(fates, uid);
+    }
+}
+
+function retain(request: SendRequest, uids: string[]): void {
+    for (const uid of uids) {
         sendState.retained.delete(uid);
         sendState.retained.set(uid, request);
     }
@@ -180,8 +237,10 @@ interface Failure {
     partial?: boolean;
 }
 
-/** `copyUids`: every copy of the message, when there is more than one (`SendRequest.copyUids`). */
-type Outcome = { kind: "queued" | "sent" | "scheduled"; copyUids?: string[] } | { kind: "failed"; failure: Failure; pendingCopies?: Message[]; copyUids?: string[] };
+/** `copyUids`, `copyFates`: every copy of the message and what became of each, when there is more than one (`SendRequest.copyUids`). "sent"
+ * for a message sent as several copies: the last of them went in this attempt, with nothing else to confirm it. */
+type Copies = { copyUids?: string[]; copyFates?: Map<string, CopyFate> };
+type Outcome = ({ kind: "queued" | "sent" | "scheduled" } & Copies) | ({ kind: "failed"; failure: Failure; pendingCopies?: Message[] } & Copies);
 
 const OPEN_POLICY: EncryptionPolicy = { encryptSameOrg: "optional", encryptFederated: "optional", encryptExternal: "optional" };
 
@@ -324,14 +383,30 @@ async function alreadyAccepted(request: SendRequest, client: ApiClient | undefin
 async function handOver(request: SendRequest, copies: Message[], client: ApiClient | undefined): Promise<Outcome> {
     // A retry hands over only what was left: the request already names every copy.
     const copyUids: string[] | undefined = request.copyUids ?? (copies.length > 1 ? copies.map((copy) => copy.uid) : undefined);
+    const copyFates = request.copyFates ?? (copyUids && new Map(copyUids.map((uid): [string, CopyFate] => [uid, "unsent"])));
+    // An immediate send of several copies is held under each before any is handed over: how the first went can be reported while the next
+    // is still on its way to the server, and must find the others - a failure that offered "Open draft" would send their recipients the
+    // message again, a success not counted would leave the message never confirmed.
+    if (copyFates && !request.scheduledSendTime) {
+        for (const copy of copies) {
+            copyFates.set(copy.uid, "pending");
+        }
+        retain({ ...request, copyUids, copyFates }, copies.map((copy) => copy.uid));
+    }
     let queued = false;
+    let completed = false;
     for (let index = 0; index < copies.length; index++) {
         const copy = copies[index];
         try {
             if (request.scheduledSendTime) {
                 await sendMessage(copy.uid, { scheduledSendTime: request.scheduledSendTime }, client);
             } else {
-                queued = (await queueMessageSend(copy.uid, client)).queued || queued;
+                const handed = await queueMessageSend(copy.uid, client);
+                queued = handed.queued || queued;
+                // A server with no queue relayed it before answering: one of several copies has gone already.
+                if (!handed.queued && copyFates) {
+                    completed = copyWent(copyFates, copy.uid) || completed;
+                }
             }
         } catch (err) {
             // A request that never came back may still have landed: never offer to send it twice if it did.
@@ -340,6 +415,13 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
                 continue;
             }
             const failure = failureOf(err, request.scheduledSendTime ? "Could not schedule this message." : "Could not send this message.");
+            // This copy and the ones after it weren't handed over: nothing of them is to be reported.
+            if (copyFates) {
+                for (const left of copies.slice(index)) {
+                    copyFates.set(left.uid, "unsent");
+                    release(copyFates, left.uid);
+                }
+            }
             // A copy that went in this attempt, or in an earlier one this retries.
             const partial = index > 0 || !!request.partial;
             return {
@@ -352,10 +434,16 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
                 // retry doesn't create another OpenPGP draft.
                 pendingCopies: partial || copies.length > 1 ? copies.slice(index) : undefined,
                 copyUids,
+                copyFates,
             };
         }
     }
-    return { kind: request.scheduledSendTime ? "scheduled" : queued ? "queued" : "sent", copyUids };
+    if (request.scheduledSendTime) {
+        return { kind: "scheduled", copyUids, copyFates };
+    }
+    // Several copies: the message has gone only when this hand-over saw the last of them go - otherwise the server's report for the last copy
+    // to go confirms it.
+    return { kind: (copyFates ? completed : !queued) ? "sent" : "queued", copyUids, copyFates };
 }
 
 /** The whole client-side path of one send: settle, decide, assemble, hand over. Never rejects. `client` is the explicit `ApiClient` (from
@@ -369,13 +457,18 @@ async function attempt(request: SendRequest, client: ApiClient | undefined): Pro
         if (request.pendingCopies?.length) {
             setPendingStage(request.draft.uid, "queuing");
             const remaining: Message[] = [];
+            let completed = false;
             for (const copy of request.pendingCopies) {
                 if (!(await accepted(copy, client))) {
                     remaining.push(copy);
+                } else {
+                    // How it went has most likely been reported already, to nothing waiting for it: it isn't waited for now.
+                    completed = copyWent(request.copyFates, copy.uid) || completed;
                 }
             }
             if (remaining.length === 0) {
-                return { kind: request.scheduledSendTime ? "scheduled" : "queued", copyUids: request.copyUids };
+                const { copyUids, copyFates } = request;
+                return { kind: request.scheduledSendTime ? "scheduled" : completed ? "sent" : "queued", copyUids, copyFates };
             }
             return await handOver(remaining.length < request.pendingCopies.length ? { ...request, partial: true } : request, remaining, client);
         }
@@ -547,7 +640,7 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
             tracker?.revert();
             notifyFailure(
                 outcome.pendingCopies
-                    ? { ...request, pendingCopies: outcome.pendingCopies, partial: outcome.failure.partial, copyUids: outcome.copyUids }
+                    ? { ...request, pendingCopies: outcome.pendingCopies, partial: outcome.failure.partial, copyUids: outcome.copyUids, copyFates: outcome.copyFates }
                     : request,
                 outcome.failure,
                 client,
@@ -556,10 +649,14 @@ export function startSend(request: SendRequest, client?: ApiClient): boolean {
         }
         tracker?.settle();
         if (outcome.kind === "queued") {
-            retain(outcome.copyUids ? { ...request, copyUids: outcome.copyUids } : request);
+            // A message sent as several copies is held under each already, from before it was handed over.
+            if (!outcome.copyFates) {
+                retain(request, [uid]);
+            }
             sendState.queuedListener?.(request.mailboxUid);
         } else if (outcome.kind === "sent") {
-            // A server with no queue relayed it before answering: the Sent Items copy exists already.
+            // A server with no queue relayed it before answering (or, of several copies, the last of them went in this attempt): the Sent
+            // Items copy exists already.
             markOutgoingSent(uid);
             forgetDraftImages(uid);
             notifySent();

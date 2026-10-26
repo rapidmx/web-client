@@ -17,6 +17,7 @@ import SlideIn, { SlideFrom } from "./SlideIn.js";
 import { isOpenedRecord, isProtectedRecord } from "../../../../lib/zeroAccess/sealedRecords.js";
 import { useOpenedRecord } from "../../zeroAccess/useOpenedRecord.js";
 import { QuickTab } from "./QuickCreateTabs.js";
+import { fullyOpenedEvent } from "../../../../lib/calendar/calendarApi.js";
 
 export { VIDEO_LOCATION_PLACEHOLDER } from "./EventEditor.js";
 export type { EventAnchor } from "./EventShell.js";
@@ -127,9 +128,11 @@ export default function EventModal({
     // An event on a calendar shared with the reader view-only cannot be changed, deleted or answered.
     const canWrite = useMailboxUpdateAccess(mailboxOptions?.find((option) => option.mailbox.uid === listedOccurrence?.mailboxUid)?.mailbox);
     // A protected event from a list has only what the views draw opened (`EVENT_LIST_FIELDS`): the card shows and the form edits all of it, so
-    // the rest is opened first - a form seeded from a placeholder description would save it over the real one.
+    // the rest is opened first - a form seeded from a placeholder description would save it over the real one. Opened as a write opens it
+    // (`fullyOpenedEvent()`): the title opened from its sealed content stays, never replaced by an older per-field one the card, a reply and
+    // a save would then carry.
     const partlyOpened = !!listedOccurrence && isProtectedRecord(listedOccurrence) && !isOpenedRecord(listedOccurrence);
-    const opening = useOpenedRecord(partlyOpened ? listedOccurrence : undefined);
+    const opening = useOpenedRecord(partlyOpened ? listedOccurrence : undefined, fullyOpenedEvent);
     const occurrence: CalendarOccurrence | null = partlyOpened ? opening.record! : listedOccurrence;
 
     if (!open) {

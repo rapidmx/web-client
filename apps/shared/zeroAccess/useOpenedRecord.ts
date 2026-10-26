@@ -20,8 +20,14 @@ function uidOf(record: SealedRecord | undefined): string | undefined {
  * a live update (its in-progress edits kept); the new one - its new `version` - takes over once opened. The record's mailbox locking drops
  * what was opened at once (nothing opened outlives its key session) and opens it again, which gives the placeholders; its unlocking opens it
  * again too.
+ *
+ * `open` opens it, `openSealedRecord()` unless a kind of record has its own full open (a calendar event's `fullyOpenedEvent()`, which keeps
+ * the title opened from its sealed content) - a function defined once, not per render, so the record isn't opened again on every render.
  */
-export function useOpenedRecord<T extends SealedRecord>(record: T | undefined): { record: T | undefined; ready: boolean } {
+export function useOpenedRecord<T extends SealedRecord>(
+    record: T | undefined,
+    open: (record: T) => Promise<T> = openSealedRecord,
+): { record: T | undefined; ready: boolean } {
     const [opened, setOpened] = useState<{ from: T; record: T } | undefined>(undefined);
     const [generation, setGeneration] = useState(0);
     const protectedRecord = isProtectedRecord(record);
@@ -45,7 +51,7 @@ export function useOpenedRecord<T extends SealedRecord>(record: T | undefined): 
             return;
         }
         let cancelled = false;
-        void openSealedRecord(record).then((result) => {
+        void open(record).then((result) => {
             if (!cancelled) {
                 setOpened({ from: record, record: result });
             }
@@ -53,7 +59,7 @@ export function useOpenedRecord<T extends SealedRecord>(record: T | undefined): 
         return () => {
             cancelled = true;
         };
-    }, [record, protectedRecord, generation]);
+    }, [record, protectedRecord, generation, open]);
     if (!record || !protectedRecord) {
         return { record, ready: true };
     }
