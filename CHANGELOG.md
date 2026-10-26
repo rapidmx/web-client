@@ -7,6 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-26
+
+### Added
+- Added an Allow OpenPGP setting to the encryption policy and the openpgpkey CNAME to the domain DNS setup
+- Added a Preferred format choice to contacts that have an OpenPGP key, explaining what Automatic picks
+- Added a What to protect section to zero-access encryption settings, with a switch per data type that says what it encrypts and plainly what it breaks on the user's ActiveSync devices and Outlook, and a table of what stays readable to the server and why
+
+### Changed
+- Give every mailbox a v6 OpenPGP key on unlock when the server allows OpenPGP, sealed under the master key, with its fingerprint, public key download and passphrase-protected export in the encryption settings
+- Encrypt to recipients who have only an OpenPGP key as PGP/MIME, keeping S/MIME for everyone with a certificate, and send one copy per format to mixed recipients, each delivered only to its own
+- Read PGP/MIME, inline and cleartext-signed OpenPGP mail with the same signer trust rules as S/MIME, checking signatures against the sender's pinned OpenPGP keys
+- Pin, review and paste contacts' OpenPGP keys per format, and trust or accept an OpenPGP signer's key from a message
+- Keep an OpenPGP key's type, and seal zero-access and OpenPGP keys under their own purposes, when rotating keys
+- Generate v4 Curve25519 OpenPGP keys by default, which GnuPG and every OpenPGP app read, keeping v6 keys as an option and reading both
+- Stagger search index compaction by platform - desktop at once, web after six hours, mobile after a day - with phones declining weeks over 5 MB and cellular or data-saver connections
+- Encrypt to a recipient who has both formats in the one they prefer - the contact's own choice, what they advertise, or what they last used - and in S/MIME otherwise
+- Let the mailbox owner advertise OpenPGP or S/MIME as their preferred format from the OpenPGP key settings
+- Open calendar, contact and task fields sealed to the mailbox's zero-access key, and mark protected items with a lock
+- Show protected tasks with their opened titles and offer Tasks in What to protect
+- Open protected contacts' names, phones and photos on the device, sending only plaintext the server seals on arrival
+- Match protected contacts by their opened names in recipient suggestions while the mailbox is unlocked
+- Move sealedRecords to lib/zeroAccess and open only the fields a view needs
+- Open protected calendar events everywhere calendarApi returns them
+- Send only the content a protected event's save changes, with invitationContent for the server to invite with
+- Name replies and change requests about a protected event by its real content
+- Show a protected event's real title in its reminder by reading the event
+- Title a protected event's video meeting generically, since the meeting stores its title readable
+- Offer the Calendar switch in What to protect, saying what phones and Outlook will no longer do
+- Make, carry and open the temporary keys of protected video meetings in lib/crypto/meetingKeys
+- Protect a new video meeting when the organizer's mailbox has zero-access, sealing its title and names and wrapping its key to the organizer
+- Send every attendee's meeting link key with a save that invites to a protected meeting, and add it to the organizer's own join link
+- Say in the event editor when a video meeting isn't end-to-end protected, and why
+- Compute a series' last occurrence end for when a meeting's key is discarded
+- Move a protected video meeting's key expiry to follow its event when a save changes the event's times or recurrence
+- Forget opened meeting keys when their mailbox locks, and never hand out a remembered one while it is locked
+- Show invitation events' placeholders while the mailbox is locked, clearing what was opened on any lock
+- Print earlier zero-access messages of a conversation decrypted, like encrypted ones
+- Leave a protected suggested contact that won't open where it is instead of copying its placeholders and deleting it
+- Refuse to detach one occurrence of a protected event that can't be opened, writing nothing
+- Mount the encryption settings anew per mailbox and keep what zero-access settings saved in the settings shell
+- Encrypt with S/MIME to a recipient who prefers OpenPGP when the sender has no OpenPGP key, and ask for the unlock rather than send plain while locked
+- Hand over only the copies still to go when a mixed-format send failed part-way, and say only some recipients got it
+- Put a rotated zero-access key into the owner's open session and reopen members' shared sessions that lack the active key
+- Leave out a zero-access key whose server-supplied certificate isn't the opened key's
+- Record zero-access rows' folder and flags, also on rows the sync imports after the build
+- Start the zero-access sync however the build ended, and never let a pass from before a lock hold up the next one
+- Upload decrypted end-to-end messages for other devices in batches as the build walks
+- Show recipient suggestions without waiting for the protected-contacts crawl, which reads folders side by side and is kept ten minutes
+- Open only title and location of listed protected events, and the whole event before it is shown, edited, saved or searched
+- Defer a new event's invitations to the save that links its video meeting with invitationContent defer, so attendees get one invitation with the link
+- Send the deferred invitations' content with the meeting-linking save, for a protected event this device couldn't open
+- Send the deferred invitations without a meeting on a retry that no longer links one, or when the event dialog closes with them still pending
+- Refuse moving a protected contact, calendar event or task to another mailbox before sending anything when the record is known, and turn the server's 409 into the same SealedMoveError
+- Give live-tail zero-access index rows nothing recorded their folder, version and flags at import by looking up the message
+- Treat an S/MIME encryption key or retained encryption key whose certificate isn't its own as unopenable
+- Reject a zero-access certificate the enrollment answer returns that isn't the new key's
+- Never wrap a shared mailbox key under a certificate that isn't its own, nor for this user under a certificate swapped for one of their own keys
+- Show an unlock-to-edit notice instead of the form for a protected contact that can't be opened, and disable its Edit button
+- Send only the protected contact and event fields that changed from what was shown, naming emptied ones in clearedFields
+- Skip a protected contact that can't be opened when adding a category in bulk, instead of saving its placeholder categories
+- Look up live-tail rows' indexed versions in batches, and bind at most 500 uids per indexedVersions statement in the worker
+- Move a protected video meeting's key expiry when its event is dragged or resized
+- Forget the zero-access sync state when a local index is destroyed, and never let a pass from before the destroy write it back
+- Keep a local index row's recorded version when a zero-access document without one is imported again
+- Keep no meeting key, opened field or sealed blob decrypted across a lock that came during the decryption
+- Forget decrypted invitation calendar files and what was read with them when their mailbox locks, and send none while it is locked
+- Reload the calendar, contacts and tasks pages when their mailbox locks, closing a protected event's card, and drop an opened record's details on lock
+- Forget opened protected contact names when their mailbox locks and on sign-out
+- Keep a protected contact's form mounted across a live update of the same contact
+- Dismiss a failed send's pop-up when its draft is opened, and re-assemble a single-copy message on Retry when nothing went
+- Record a protected event's reminder in the notification history under its placeholder title
+- Keep the object URL of a key export download for a minute instead of revoking it right after the click
+- Send the opened content of an event filed from a zero-access invitation as invitationContent, so replies and change requests about it are named
+- Send a protected meeting's content and its guests' link keys when accepting a proposed time, and refuse before sending when the meeting can't be opened
+- Move a video meeting's key expiry to the accepted time after accepting a proposal
+- Open an event filed from a zero-access invitation for its reminder, so the reminder shows its real title and location
+- Send only a protected task's changed fields and its clearedFields when updateTask is given the task as shown
+- Refuse to detach one occurrence of an event made from a zero-access invitation before sending anything, so its opened title, location and description are never created readable
+- Drop a mailbox's decrypted sealed contact photos from the cache and from mounted avatars when it locks, and retry one that failed once it unlocks
+- Drop a protected meeting's keyed join link from the event card and the event editor when the mailbox locks
+- Forget the zero-access sync state of a pruned index, of one the worker discarded as corrupted, and whenever a pass finds the local index empty
+- Save a contact form against the version it was filled from, so a change made elsewhere meanwhile is refused instead of overwritten, and offer to reload it
+- Keep a partly-sent message's partial state across retries, so a Retry that fails again still offers no Open draft
+- Show the zero-access types the server settled when zero-access is turned on, and the server's merge after changing one, disabling the switches until the save answers
+- Take opened protected contacts and tasks off their lists on a lock before reloading, so a failed reload can't leave them shown
+- Put a protected event's alarm, shown or snoozed, back to its placeholder title and location when a mailbox locks
+- Send one occurrence of an event made from a zero-access invitation opened again when it is detached, now that the server seals it to the series' key, and show the copy opened; refuse it before sending when it moves to another calendar, and delete and refuse a copy a server stored unsealed
+- Offer no server-side import for a mailbox whose mail is zero-access, saying why, and show the server's refusal in place of the upload
+- Show the title a protected event's per-field sealed copy holds when its sealed content's title is empty
+- Send the whole opened content with any content edit of an event made from a zero-access invitation, filling in the fields the edit leaves out, so the server's re-seal never drops an unchanged location or description; refuse a content edit of one that isn't opened, and return a saved one marked opened
+- Open an untitled zero-access invitation to an empty title instead of its placeholder, and decide whether one occurrence of it can be detached by whether it was opened rather than by its title
+- Replace the import upload only for the server's zero-access refusal, so an import already in progress leaves the upload offered and shows that import
+- Put back only the completion flag when a task toggle fails, so a lock's placeholder reload is never undone by the opened task
+- Fetch no sealed contact photo while its mailbox is locked
+- Send a shared mailbox's waiting members their wraps one key at a time, the active key's first, so a refused backfill of an older key never keeps them from new mail and never stops the other keys or the escrow wraps
+- Say clearly, when the server refuses a location or description change of an event made from a zero-access invitation sent without its opened title, that the mailbox must be unlocked and the event opened again to change it
+- Keep the title opened from an event's sealed content when its per-field fields are opened in full, for a write, a reply, the calendar search and a detached occurrence, so a row's older per-field title never replaces a newer sealed one
+- Pass over zero-access index weeks this device found it can't fold until their pending count or the unlocked keys change, so a few unfoldable old weeks never take every compaction slot
+- Import the zero-access live tail a page at a time, remembering where an interrupted pass stopped and resuming there, so a whole backfill's entries are never held opened at once
+- Retain a mixed-format send's request under every copy's uid and offer only Retry when the server fails to relay one copy, confirming the message once its last copy has gone
+- Leave out of a Retry a copy of a mixed-format send that went after its request seemed to fail, treating the rest as a partial send, so the other copy goes and Open draft isn't offered
+- Keep what the inbox opens of an encrypted row after its mailbox locked out of the shared decrypted store, and never count such a lock as a decrypt failure
+- Close the contact card when the mailbox of the protected contact or sealed upcoming event it shows locks
+- Close an open sealed event card when its own mailbox locks even when no listed event belongs to that mailbox
+- Keep the saved preferred OpenPGP format and mailbox version in the settings shell, so the encryption page shows it when mounted again for the mailbox
+- Report a shared mailbox rotation the server refuses with 400 (its vault can't hold the new key's member wraps) as a status the key manager shows once as a warning, keeping the current key active and going on with the rest of the pass, instead of throwing
+- Raise the sequence past the opened one when a write to an event made from a zero-access invitation changes its location, so the server knows to send an organizer-owned meeting's new invitation
+- Open a meeting's sealed content before building the invitation content an accepted proposal sends, and refuse one sealed whole that can't be opened before anything is sent
+- Forget a pruned local index's zero-access sync state in the Worker transport's prune rather than before every transport, so a host wrapper that skips the prune keeps the other accounts' sync state too
+- Wait in the contact photo badge test for the favorite star to be enabled again, since the photo editor reports it is no longer busy from an effect a render after its own badge
+- Open a listed protected event in the event card as a write opens it, keeping the title opened from its sealed content, so the card, a reply and a dialog save never carry its older per-field title
+- Hold a mixed-format send's request only under the copies still awaiting relay, from before the first is handed over, counting each copy's success once, so a partly-sent message whose first copy went before the Retry is confirmed when its last copy goes
+- Keep a partly-sent message's failure pop-up, with the Retry that hands over its other copy, when its first copy is relayed
+- Say a mixed-format message failed as a whole once the server has failed every copy, in one pop-up whose Retry hands every copy over again and whose Open draft writes the message again, removing the extra OpenPGP copy
+- Refuse Open draft for a copy of a mixed-format message while another copy has gone or may still go, however the action was offered
+- Raise the sequence past the opened one when a write to an event made from a zero-access invitation changes its description or description HTML, so an organizer-owned meeting invites again for a description edit as a readable one does
+- Let a host that keeps several accounts in one page sign the mounted account out itself through an optional signOutHost shell prop, destroying only that account's keys and indexes, with no auth-server logout, navigation or other-tab sign-out listener
+- Forget the zero-access sync state of every index in the Worker transport's destroy-all, and of one mailbox in its destroy, rather than before every transport, so a host wrapper that destroys only one account's indexes keeps the other accounts' sync state
+- Destroy an open local index and cancel its build the moment its mailbox's keys are destroyed, from the index client itself, so a lock still reaches it after the mail view that opened it unmounted
+- Forget a mailbox's built and synced local index state the moment its keys are locked, from a key session subscription in LocalIndexLifecycle, so a re-unlock before the next poll tick builds the index again rather than leaving it destroyed with every zero-access sync failing
+- Say a mixed-format message failed as a whole when the server fails its first copy while the next is being handed over and that hand-over fails too, in one pop-up whose Retry hands both copies over again and whose Open draft writes the message again
+- Delete the extra OpenPGP copy's draft, best effort, when Open draft follows a client-side failure in which no copy of a mixed-format message went, and when an attempt fails after creating it but before handing it over
+- Force the fixed brace-expansion, source-map-js and undici through resolutions and raise dompurify and vite so the audit passes with no ignored advisories
+- Open no local index when its mailbox's keys were locked while the index key was being derived, in both the build pass and Tier 2 search's initialization, since the derive still succeeds and the index client's lock watcher has nothing open to destroy yet
+- Drop LocalIndexLifecycle's poll check for a mailbox whose keys went away, which the key session's locked event made unreachable
+- Describe this release's changes in the release notes
+
 ## [0.36.0] - 2026-10-23
 
 ### Added
@@ -1435,7 +1562,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/rapidmx/web-client/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/rapidmx/web-client/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/rapidmx/web-client/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/rapidmx/web-client/compare/v0.33.0...v0.34.0

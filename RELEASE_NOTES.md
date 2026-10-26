@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.37.0
+
 ### Added
 
 - **OpenPGP alongside S/MIME** (restapi's `specs/end-to-end_encryption.md`, *OpenPGP Interoperability*). When the administrator allows it, people can send encrypted mail to and receive it from Proton, GnuPG and other OpenPGP users. S/MIME stays the default.
