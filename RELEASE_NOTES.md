@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.37.1
+
 ### Fixed
 
 - **Releases publish only after every CI build of the release commit passes.** A release pushes `main` and its tag at the same commit, and each push runs a build. Publishing now runs only from the tag's build and waits for both, refusing if either failed, instead of publishing after whichever build passed.

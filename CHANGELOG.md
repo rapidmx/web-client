@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-10-26
+
+### Changed
+- Publish only from a release tag's own Build, and only once every Build of that commit has finished green
+- Wait in the Settings > Privacy unreadable-policy test for the policy request and its failure before checking the import refusal stays
+- Describe this patch's fixes in the release notes
+
 ## [0.37.0] - 2026-10-26
 
 ### Added
@@ -1562,7 +1569,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.37.1...HEAD
+[0.37.1]: https://github.com/rapidmx/web-client/compare/v0.37.0...v0.37.1
 [0.37.0]: https://github.com/rapidmx/web-client/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/rapidmx/web-client/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/rapidmx/web-client/compare/v0.34.0...v0.35.0
