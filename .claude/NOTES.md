@@ -4113,3 +4113,9 @@ Fixed (seventh-round review findings assigned to web-client):
 Left:
 - #713's whole-message pop-up shows the hand-over's own error (the last thing that happened), not the server's reason for the copy it failed; that reason was shown in the pop-up it replaces.
 - #714's deletes are best effort: a copy that can't be read or deleted (offline) stays in Drafts, where it can be deleted by hand. Open draft is not made to wait on the server, since the failure it follows is often the server being unreachable.
+
+## 2026-10-26: Dependency audit
+- **Why.** CI's `validate` job (`validate.sh`: `yarn npm audit -R --severity high --no-deprecations`, production then development) failed on high advisories in development dependencies.
+- **Fixed by `resolutions`** in `package.json` (descriptor-scoped, as in restapi; drop each once the parent's own range picks up the fixed version): brace-expansion ^1.1.7 -> ^1.1.21 (minimatch 3.1.5) and ^5.0.8 -> ^5.0.12 (minimatch 10.2.6), source-map-js ^1.2.1 -> ^1.2.2 (@tailwindcss/node via postcss), undici ^8.4.1 / ^8.9.0 -> ^8.12.3 (jsdom). Direct ranges raised: `dompurify` ^3.4.17, `vite` ^8.3.5 (dev; 8.3.0-8.3.2 carry the launch-editor advisory).
+- **No audit exception.** Every flagged advisory has a fixed release, so `.yarnrc.yml` has no `npmAuditIgnoreAdvisories` (web-client has no node-forge, unlike restapi).
+- **Verified.** Both audits answer "No audit suggestions"; yarn build; full `vitest run` with coverage.
