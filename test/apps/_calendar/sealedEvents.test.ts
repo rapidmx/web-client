@@ -21,6 +21,7 @@ vi.mock("../../../lib/crypto/keySession.js", () => ({
 }));
 
 const { clearSealedEvents, openSealedEvent, openSealedEvents } = await import("../../../apps/shared/calendar/sealedEvents.js");
+const { invitationContentOf, isSealedContentOpened } = await import("../../../lib/calendar/protectedEvents.js");
 const { markSigningOut, clearSigningOut } = await import("../../../apps/shared/components/mail/compose/composeFlushRegistry.js");
 
 async function zeroAccessKey() {
@@ -65,7 +66,8 @@ describe("openSealedEvents", () => {
 
         expect(plain.title).toBe("Plain a");
         expect(opened).toMatchObject({ title: "Board meeting", location: "Room 4", description: "Agenda", descriptionHtml: "<p>Agenda</p>" });
-        expect(untitled).toMatchObject({ title: "[...]", location: undefined, description: null, descriptionHtml: null });
+        // No title of its own (nor a per-field copy): untitled, never the row's placeholder.
+        expect(untitled).toMatchObject({ title: "", location: undefined, description: null, descriptionHtml: null });
 
         // Remembered: not opened again while the mailbox stays unlocked.
         getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [await zeroAccessKey()] });
@@ -83,8 +85,13 @@ describe("openSealedEvents", () => {
         const perField = { ...event("b", sealed), title: "Opened per-field title", sealedFields: { title: "c2VhbGVk" } };
 
         expect(await openSealedEvent(perField)).toMatchObject({ title: "Opened per-field title", location: "Room 9" });
-        // The cache is shared by every row with this content: one still showing its placeholder keeps it.
-        expect((await openSealedEvent(event("c", sealed))).title).toBe("[...]");
+        // The cache is shared by every row with this content: one without a per-field title is untitled, opened, and shows no `[...]`
+        // (which `detachOccurrence()` and `invitationContentOf()` would otherwise take for its title), while the first keeps its own.
+        const untitled = await openSealedEvent(event("c", sealed));
+        expect(untitled).toMatchObject({ title: "", location: "Room 9" });
+        expect(isSealedContentOpened(untitled)).toBe(true);
+        expect(invitationContentOf(untitled)).toBeUndefined();
+        expect((await openSealedEvent(perField)).title).toBe("Opened per-field title");
     });
 
     it("forgets what it opened when a mailbox locks", async () => {

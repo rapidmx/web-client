@@ -18,6 +18,7 @@ vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
 }));
 
 const { EVENT_LIST_FIELDS, fullyOpenedEvent, listCalendarEvents, respondToEvent, updateCalendarEvent } = await import("../../../lib/calendar/calendarApi.js");
+const { isSealedContentOpened, markSealedContentOpened } = await import("../../../lib/calendar/protectedEvents.js");
 
 const event: any = {
     uid: "e1",
@@ -96,5 +97,52 @@ describe("calendarApi and protected events", () => {
         expect(await fullyOpenedEvent(plain)).toBe(plain);
         expect(await fullyOpenedEvent(undefined)).toBeUndefined();
         expect(sealed.openSealedRecord).not.toHaveBeenCalled();
+    });
+
+    describe("an event made from a zero-access invitation (sealedContent)", () => {
+        const sealedContent = { keyFingerprint: "fp", sealed: "x" };
+        const placeholders = { ...event, sealedFields: undefined, title: "[...]", location: null, description: null, descriptionHtml: null, sealedContent };
+        const opened: any = markSealedContentOpened({ ...placeholders, title: "Offsite", location: "Lisbon", description: "Plan", descriptionHtml: "<p>Plan</p>" });
+        const unmocked = async (record: any) => record;
+
+        it("sends its whole content with an edit, and returns what the server stored with placeholders shown with it, opened", async () => {
+            sealed.openSealedRecord.mockImplementation(unmocked);
+            const fetchMock = mockFetch(() => jsonResponse(200, { ...placeholders, version: 1, sealedContent: { keyFingerprint: "fp", sealed: "y" } }));
+
+            const saved = await updateCalendarEvent({ uid: "e1", version: 0, title: "Retreat", location: "Lisbon" }, undefined, opened);
+
+            expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+                uid: "e1",
+                version: 0,
+                title: "Retreat",
+                location: "Lisbon",
+                description: "Plan",
+                descriptionHtml: "<p>Plan</p>",
+            });
+            expect(saved).toMatchObject({ version: 1, title: "Retreat", location: "Lisbon", description: "Plan", descriptionHtml: "<p>Plan</p>" });
+            expect(isSealedContentOpened(saved)).toBe(true);
+
+            // So a save that follows (the editor linking a video meeting) still sends it whole; one without content keeps it shown.
+            fetchMock.mockClear();
+            const linked = await updateCalendarEvent({ uid: "e1", version: 1, location: "Video" }, undefined, saved);
+            expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ title: "Retreat", location: "Video", description: "Plan" });
+            expect(linked).toMatchObject({ title: "Retreat", location: "Video" });
+            const moved = await updateCalendarEvent({ uid: "e1", version: 1, startDate: "2026-01-07T09:00:00.000Z" }, undefined, { ...opened, location: undefined, description: undefined, descriptionHtml: undefined });
+            expect(moved).toMatchObject({ title: "Offsite", location: undefined, description: null, descriptionHtml: null });
+            expect(isSealedContentOpened(moved)).toBe(true);
+            sealed.openSealedRecord.mockReset();
+        });
+
+        it("returns one it couldn't open, or one stored without sealed content, as the server sent it", async () => {
+            sealed.openSealedRecord.mockImplementation(unmocked);
+            mockFetch(() => jsonResponse(200, { ...placeholders, version: 1 }));
+            const saved = await updateCalendarEvent({ uid: "e1", version: 0, startDate: "2026-01-07T09:00:00.000Z" }, undefined, placeholders);
+            expect(saved).toMatchObject({ title: "[...]" });
+            expect(isSealedContentOpened(saved)).toBe(false);
+
+            mockFetch(() => jsonResponse(200, { ...placeholders, sealedContent: null, title: "Offsite" }));
+            expect(isSealedContentOpened(await updateCalendarEvent({ uid: "e1", version: 0, title: "Offsite" }, undefined, opened))).toBe(false);
+            sealed.openSealedRecord.mockReset();
+        });
     });
 });

@@ -31,10 +31,11 @@ vi.mock("../../../apps/shared/mail/listAllPages.js", async (importOriginal) => {
     };
 });
 
-// A protected task opens to its real title here; `sealedRecords.test.ts` covers the decryption itself.
+// A protected task opens to its real title here (unless a test says its mailbox is locked); `sealedRecords.test.ts` covers the decryption itself.
+const sealedState = vi.hoisted(() => ({ locked: false }));
 vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../../../lib/zeroAccess/sealedRecords.js")>();
-    const open = (record: any) => (record.sealedFields ? { ...record, title: `Opened ${record.uid}` } : record);
+    const open = (record: any) => (record.sealedFields && !sealedState.locked ? { ...record, title: `Opened ${record.uid}` } : record);
     return { ...actual, openSealedRecords: async (records: any[]) => records.map(open), openSealedRecord: async (record: any) => open(record) };
 });
 
@@ -115,6 +116,7 @@ function mockShellAndTasks(
 afterEach(() => {
     vi.unstubAllGlobals();
     truncateNextLists.length = 0;
+    sealedState.locked = false;
     vi.useRealTimers();
 });
 
@@ -178,6 +180,32 @@ describe("TasksPage", () => {
         expect(await screen.findByText("Unavailable.")).toBeInTheDocument();
         expect(screen.queryByText("Opened t-sealed")).not.toBeInTheDocument();
         expect(screen.getByText(noDueDateTask.title)).toBeInTheDocument();
+    });
+
+    it("puts back only the completion flag when a toggle fails, never the opened task over the placeholder a lock reloaded", async () => {
+        const sealed = task({ uid: "t-sealed", title: "Protected task", sealedFields: { title: "c2VhbGVk" } });
+        let failPut!: () => void;
+        mockShellAndTasks([sealed, noDueDateTask], (url, init) =>
+            url === "/api/mail/tasks/t-sealed" && init?.method === "PUT"
+                ? (new Promise<Response>((resolve) => (failPut = () => resolve(jsonResponse(503, { message: "Unavailable." })))) as any)
+                : undefined,
+        );
+        const user = userEvent.setup();
+        render(<TasksPage userUid="u1" />);
+        await user.click(await screen.findByRole("checkbox", { name: /Mark "Opened t-sealed" as complete/ }));
+        await waitFor(() => expect(failPut).toBeTypeOf("function"));
+
+        // The mailbox locks while the toggle is in flight, and its reload shows the placeholder.
+        sealedState.locked = true;
+        installSharedSession("mb1", { masterKey: new Uint8Array(32), zeroAccessKeys: [] }, sharedUnlockGeneration("mb1"));
+        act(() => destroyUnlockedKeys("mb1"));
+        expect(await screen.findByText("Protected task")).toBeInTheDocument();
+
+        failPut();
+        expect(await screen.findByText("Unavailable.")).toBeInTheDocument();
+        expect(screen.getByText("Protected task")).toBeInTheDocument();
+        expect(screen.queryByText("Opened t-sealed")).not.toBeInTheDocument();
+        expect(screen.getByRole("checkbox", { name: /Mark "Protected task" as complete/ })).not.toBeChecked();
     });
 
     it("passes the server's plugin nav through to the app rail", async () => {

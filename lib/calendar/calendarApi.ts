@@ -11,7 +11,7 @@ import { ApiClient, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
 import { guardSealedMove } from "../zeroAccess/sealedMoves.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
-import { type InvitationContent, invitationContentOf, protectedEventWrite } from "./protectedEvents.js";
+import { EVENT_CONTENT_FIELDS, type InvitationContent, invitationContentOf, isSealedContentOpened, markSealedContentOpened, protectedEventWrite } from "./protectedEvents.js";
 import { meetingLinkSecrets } from "../videoconf/protectedMeetings.js";
 
 export type AttendeeRole = "required" | "optional" | "resource";
@@ -305,7 +305,19 @@ async function saveCalendarEvent(input: UpdateCalendarEventInput, client: ApiCli
         method: "PUT",
         body: JSON.stringify(body),
     });
-    return opened(updated);
+    if (!updated.sealedContent || !isSealedContentOpened(current)) {
+        return opened(updated);
+    }
+    // An event made from a zero-access invitation, opened here, comes back with its placeholders: shown with the content this save sealed
+    // again (`protectedEventWrite()` sends all of it, or none and the sealed content stays), so a save that follows still writes it whole.
+    const content = Object.fromEntries(EVENT_CONTENT_FIELDS.map((field) => [field, field in body ? body[field] : current![field]]));
+    return markSealedContentOpened({
+        ...(await opened(updated)),
+        title: content.title ?? "",
+        location: content.location ?? undefined,
+        description: content.description ?? null,
+        descriptionHtml: content.descriptionHtml ?? null,
+    });
 }
 
 export function deleteCalendarEvent(uid: string, version: number, client?: ApiClient): Promise<void> {

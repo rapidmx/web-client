@@ -467,7 +467,7 @@ describe("SettingsPrivacyPage", () => {
     it("shows the server's 409 refusal in place of the upload (zero-access turned on since the page loaded)", async () => {
         mockShell((url, init) => {
             if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") {
-                return jsonResponse(409, { message: "Server-side import isn't available for a zero-access mailbox." });
+                return jsonResponse(409, { code: "api-003", message: "Server-side import isn't available for a zero-access mailbox." });
             }
             return undefined;
         });
@@ -480,6 +480,27 @@ describe("SettingsPrivacyPage", () => {
         expect(await screen.findByText("Server-side import isn't available for a zero-access mailbox.")).toBeInTheDocument();
         expect(screen.queryByLabelText("Upload mail archive")).not.toBeInTheDocument();
         expect(screen.queryByText("Couldn't upload the file")).not.toBeInTheDocument();
+    });
+
+    it("keeps the upload offered after a 409 that isn't the zero-access refusal (an import already in progress), listing that import", async () => {
+        const fetchMock = mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") {
+                return jsonResponse(409, { code: "api-011", message: "An import into this mailbox is already in progress." });
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+        const lists = () => fetchMock.mock.calls.filter(([url, init]) => String(url).startsWith("/api/mail/mailbox-import-requests") && (init?.method ?? "GET") === "GET").length;
+        const before = lists();
+
+        const user = userEvent.setup();
+        await user.upload(screen.getByLabelText("Upload mail archive"), new File(["..."], "archive.mbox"));
+
+        expect(await screen.findByText("Couldn't upload the file")).toBeInTheDocument();
+        expect(screen.getByLabelText("Upload mail archive")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Upload Mbox or PST file" })).toBeInTheDocument();
+        await vi.waitFor(() => expect(lists()).toBeGreaterThan(before));
     });
 
     it("shows a generic message when uploading fails with a non-API error", async () => {

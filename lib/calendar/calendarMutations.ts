@@ -31,7 +31,7 @@ import { ApiClient, ApiRequestError } from "../util/api.js";
 import { KeysLockedError } from "../crypto/masterKey.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../zeroAccess/sealedRecords.js";
 import { followMeetingKeyExpiry } from "../videoconf/protectedMeetings.js";
-import { markSealedContentOpened } from "./protectedEvents.js";
+import { isSealedContentOpened, markSealedContentOpened } from "./protectedEvents.js";
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
@@ -39,9 +39,6 @@ import { markSealedContentOpened } from "./protectedEvents.js";
  * and threads the same `client` through to every `calendarApi.ts` call it makes internally. */
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/** The title restapi gives an event whose content is sealed (`sealedContent`) until it is opened. */
-const PROTECTED_TITLE = "[...]";
 
 /** What `SealedOccurrenceError` says. */
 export const SEALED_OCCURRENCE_MESSAGE =
@@ -191,8 +188,9 @@ export async function detachOccurrence(
     if (isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) {
         occurrence = await openSealedRecord(occurrence);
     }
-    // An event made from an invitation to a zero-access mailbox (`sealedContent`) still titled `[...]` wasn't opened either.
-    if ((isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) || (occurrence.sealedContent && occurrence.title === PROTECTED_TITLE)) {
+    // Nor one of an event made from an invitation to a zero-access mailbox (`sealedContent`) whose content wasn't opened - asked of the
+    // mark, not of its title: an untitled one opens to an empty title, and a title can be anything.
+    if ((isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) || (occurrence.sealedContent && !isSealedContentOpened(occurrence))) {
         throw new KeysLockedError("This event is protected and your mailbox is locked. Unlock it to change one occurrence of the event.");
     }
     const sealedContent: boolean = !!occurrence.sealedContent;

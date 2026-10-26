@@ -17,7 +17,7 @@ import {
 } from "../../../lib/calendar/calendarMutations.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
-import { isSealedContentOpened } from "../../../lib/calendar/protectedEvents.js";
+import { isSealedContentOpened, markSealedContentOpened } from "../../../lib/calendar/protectedEvents.js";
 
 /** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
  * default (no-client) path uses - lets a test assert an explicit client's calls never touch the global one. */
@@ -239,7 +239,9 @@ describe("detachOccurrence", () => {
 
     describe("an opened occurrence of an event made from a zero-access invitation", () => {
         const opened = () =>
-            occurrence({ title: "Acquisition talks", location: "Room 4", description: "Project X", sealedContent: { keyFingerprint: "fp", sealed: "x" } });
+            markSealedContentOpened(
+                occurrence({ title: "Acquisition talks", location: "Room 4", description: "Project X", sealedContent: { keyFingerprint: "fp", sealed: "x" } }),
+            );
         /** The server's answers: the create sealed again (restapi `prepareCreate()`), unless `unsealed`. */
         const server = (options: { unsealed?: boolean; deleteFails?: boolean } = {}) =>
             mockFetch((url, init) => {
@@ -279,6 +281,19 @@ describe("detachOccurrence", () => {
             expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/calendar-events/e1" && (init as RequestInit).method === "PUT")).toBe(true);
             expect(created).toMatchObject({ uid: "e2", title: "Acquisition talks", location: "Room 4", description: "Project X", descriptionHtml: null });
             expect(isSealedContentOpened(created)).toBe(true);
+        });
+
+        it("detaches an untitled one, opened to an empty title, as opened - and refuses one not opened, whatever its title", async () => {
+            const fetchMock = server();
+            const untitled = markSealedContentOpened(occurrence({ title: "", location: "Room 4", sealedContent: { keyFingerprint: "fp", sealed: "x" } }));
+            const created = await moveOccurrence(untitled, 60 * 60_000);
+            const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+            expect(JSON.parse((post[1] as RequestInit).body as string)).toMatchObject({ title: "", location: "Room 4" });
+            expect(created).toMatchObject({ title: "", location: "Room 4" });
+
+            fetchMock.mockClear();
+            await expect(detachOccurrence(occurrence({ title: "Acquisition talks", sealedContent: { keyFingerprint: "fp", sealed: "x" } }), {})).rejects.toThrow(KeysLockedError);
+            expect(fetchMock).not.toHaveBeenCalled();
         });
 
         it("refuses, writing nothing, to move it to another calendar, where the series isn't there to seal it to", async () => {

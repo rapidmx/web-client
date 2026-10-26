@@ -94,8 +94,13 @@ export async function openSealedEvents(events: CalendarEvent[]): Promise<Calenda
                 return event;
             }
             const fields = await openFields(event);
-            // Marked, so a reply or change request names it by its real title (`invitationContentOf()`).
-            return fields ? markSealedContentOpened({ ...event, ...fields }) : event;
+            if (!fields) {
+                return event;
+            }
+            // Marked, so a reply or change request names it by its real title (`invitationContentOf()`). An empty sealed title with no
+            // per-field copy to show instead (an invitation without SUMMARY) is an untitled event: opened, it never shows the row's `[...]`.
+            const untitled = fields.title === undefined && !event.sealedFields?.title ? { title: "" } : {};
+            return markSealedContentOpened({ ...event, ...fields, ...untitled });
         }),
     );
 }

@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { describe, expect, it, vi } from "vitest";
+import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
 
 const { isOpenedRecord } = vi.hoisted(() => ({ isOpenedRecord: vi.fn((record: any) => !!record?.opened) }));
 vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
@@ -66,11 +67,95 @@ describe("protectedEvents", () => {
         expect(isSealedContentOpened(unopened)).toBe(false);
         // An occurrence is a spread copy: still opened.
         expect(invitationContentOf({ ...opened, startDate: "s" })).toEqual({ title: "Offsite", location: "Lisbon", description: "Plan", descriptionHtml: undefined });
-        // A write to it is the server's own sealing (keepSealed()): left as it is.
-        const input = { uid: "e2", version: 1, title: "Offsite" };
+        // A write without content is left as it is.
+        const input = { uid: "e2", version: 1, startDate: "s" };
         expect(protectedEventWrite(opened, input)).toBe(input);
         // Sealed field by field as well: both parts must be opened.
         expect(invitationContentOf({ ...opened, sealedFields })).toBeUndefined();
         expect(invitationContentOf({ ...opened, sealedFields, opened: true })).toEqual({ title: "Offsite", location: "Lisbon", description: "Plan", descriptionHtml: undefined });
+    });
+
+    describe("a write to an event made from a zero-access invitation (sealedContent), which restapi seals again whole from what it sends", () => {
+        const sealedContent = { keyFingerprint: "f", sealed: "c" };
+        const opened: any = markSealedContentOpened({
+            uid: "e2",
+            mailboxUid: "mb",
+            title: "Offsite",
+            location: "Lisbon",
+            description: "Plan",
+            descriptionHtml: "<p>Plan</p>",
+            sealedContent,
+        } as any);
+
+        it("sends the content it leaves out as shown, so an edit of one field never drops the others", () => {
+            // The editor's save of a changed time: title and location, but the unchanged description not at all.
+            expect(protectedEventWrite(opened, { uid: "e2", version: 1, title: "Offsite", location: "Lisbon", startDate: "s" })).toEqual({
+                uid: "e2",
+                version: 1,
+                title: "Offsite",
+                location: "Lisbon",
+                description: "Plan",
+                descriptionHtml: "<p>Plan</p>",
+                startDate: "s",
+            });
+            // A description edit sends its own pair, and the title and location it left out.
+            expect(protectedEventWrite(opened, { uid: "e2", version: 1, description: "New", descriptionHtml: "<p>New</p>" })).toEqual({
+                uid: "e2",
+                version: 1,
+                title: "Offsite",
+                location: "Lisbon",
+                description: "New",
+                descriptionHtml: "<p>New</p>",
+            });
+            // A cleared field stays cleared, and a description sent alone keeps its own meaning (its HTML cleared).
+            expect(protectedEventWrite({ ...opened, location: undefined, descriptionHtml: null }, { uid: "e2", version: 1, location: null, description: "Plain" })).toEqual({
+                uid: "e2",
+                version: 1,
+                title: "Offsite",
+                location: null,
+                description: "Plain",
+            });
+            // An untitled one (opened to an empty title) sends it empty, and nothing it doesn't hold.
+            expect(protectedEventWrite(markSealedContentOpened({ ...opened, title: "", location: undefined, description: null, descriptionHtml: undefined }), { uid: "e2", version: 1, location: "Room 2" })).toEqual({
+                uid: "e2",
+                version: 1,
+                title: "",
+                location: "Room 2",
+                description: null,
+                descriptionHtml: null,
+            });
+        });
+
+        it("sends the whole opened content of one that also keeps its title sealed field by field, and invites with it", () => {
+            // A revision without SUMMARY over a row whose title is sealed field by field: its sealed content's title is empty, the title
+            // shown is the per-field one.
+            const both: any = { ...opened, sealedFields: { title: "c" }, opened: true };
+            expect(protectedEventWrite(both, { uid: "e2", version: 1, title: "Offsite", location: "Lisbon", description: "New", descriptionHtml: "<p>New</p>" })).toEqual({
+                uid: "e2",
+                version: 1,
+                title: "Offsite",
+                location: "Lisbon",
+                description: "New",
+                descriptionHtml: "<p>New</p>",
+                invitationContent: { title: "Offsite", location: "Lisbon", description: "New", descriptionHtml: "<p>New</p>" },
+            });
+            expect(protectedEventWrite(both, { uid: "e2", version: 1, title: "Retreat" })).toMatchObject({
+                title: "Retreat",
+                location: "Lisbon",
+                description: "Plan",
+                descriptionHtml: "<p>Plan</p>",
+                invitationContent: { title: "Retreat", location: "Lisbon" },
+            });
+        });
+
+        it("never sends the placeholders of one it couldn't open, and refuses a content change it can't send whole", () => {
+            const locked: any = { uid: "e2", mailboxUid: "mb", title: "[...]", location: null, description: null, sealedContent };
+            expect(protectedEventWrite(locked, { uid: "e2", version: 1, title: "[...]", location: null, startDate: "s" })).toEqual({ uid: "e2", version: 1, startDate: "s" });
+            expect(() => protectedEventWrite(locked, { uid: "e2", version: 1, title: "[...]", location: "Room 2" })).toThrow(KeysLockedError);
+            // Opened field by field but not its sealed content: not shown opened either.
+            expect(() => protectedEventWrite({ ...locked, sealedFields: { title: "c" }, opened: true, title: "Offsite" }, { uid: "e2", version: 1, title: "Offsite", description: "New" })).toThrow(
+                /Unlock it to change its title/,
+            );
+        });
     });
 });

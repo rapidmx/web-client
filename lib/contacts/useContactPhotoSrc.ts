@@ -126,14 +126,16 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
 
 /**
  * The `blob:` URL for `key`, fetched with `load` unless it is cached, and counted as shown until `release()`. Concurrent callers share one fetch.
- * `sealedMailboxUid` is a sealed picture's mailbox: opened only while it is unlocked, it is neither handed out from the cache nor stored once
- * that mailbox is locked.
+ * `sealedMailboxUid` is a sealed picture's mailbox: opened only while it is unlocked, it is neither fetched, handed out from the cache nor
+ * stored once that mailbox is locked (rejects).
  */
 async function acquire(key: string, load: () => Promise<Blob>, sealedMailboxUid?: string): Promise<string> {
     if (sealedMailboxUid !== undefined) {
         forgetOnLock();
         if (!getUnlockedKeys(sealedMailboxUid)) {
+            // Not fetched either: it couldn't be opened, and the avatar retries it once the mailbox unlocks (`useContactPhoto()`).
             forgetSealed(sealedMailboxUid);
+            throw new Error("The contact's mailbox is locked.");
         }
     }
     const entry = entries.get(key);

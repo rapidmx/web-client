@@ -33,6 +33,7 @@ import Alert from "../../../../lib/components/feedback/Alert.js";
 import Button from "../../../../lib/components/buttons/Button.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import { notifyApiError } from "../../../shared/notifications/apiErrors.js";
+import { INVALID_REQUEST_CODE } from "../../../../lib/zeroAccess/sealedMoves.js";
 import GravatarSetting from "../../../shared/components/settings/GravatarSetting.js";
 
 const NON_MAIL_FOLDER_TYPES = new Set(["calendar", "contacts", "tasks", "notes"]);
@@ -244,7 +245,8 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
 /**
  * Uploads a mail archive for restapi's server-side import. Not offered for a mailbox whose mail is zero-access (`mailIsZeroAccess()`):
  * restapi refuses it (409), since the archive would wait readable in its blob store until the import ran, and the reason is shown
- * instead. A 409 the server gives anyway (zero-access turned on since the page loaded) is shown in its place too.
+ * instead. The server's zero-access refusal given anyway (zero-access turned on since the page loaded) is shown in its place too; its other
+ * 409, an import already in progress, is not.
  */
 function ImportSection({ mailboxUid, mailbox }: { mailboxUid?: string; mailbox: Mailbox }) {
     const client = useApiClient();
@@ -325,11 +327,15 @@ function ImportSection({ mailboxUid, mailbox }: { mailboxUid?: string; mailbox: 
         uploadMailboxImport(file, { format: importFormatFromFilename(file.name), targetFolderUid, mailboxUid: mailboxUid! }, client)
             .then(() => loadRequests())
             .catch((err) => {
-                if (err instanceof ApiRequestError && err.status === 409) {
+                if (err instanceof ApiRequestError && err.status === 409 && err.code === INVALID_REQUEST_CODE) {
                     // The server refuses an import into this mailbox (its mail is zero-access): say why, in place of the upload.
                     setRefused(err.message);
-                } else {
-                    notifyApiError(err, "Couldn't upload the file");
+                    return;
+                }
+                // Any other refusal - an import already in progress is a 409 too - leaves the upload offered, and shows that import.
+                notifyApiError(err, "Couldn't upload the file");
+                if (err instanceof ApiRequestError && err.status === 409) {
+                    void loadRequests();
                 }
             })
             .finally(() => setUploading(false));

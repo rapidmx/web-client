@@ -29,8 +29,9 @@ export const SEALED_MOVE_MESSAGE =
 /** `SealedMoveError.code`. */
 export const SEALED_MOVE_CODE = "sealed-move";
 
-/** restapi's `ApiErrors.INVALID_REQUEST`, the code of its sealed-move refusal (a version conflict, also a `409`, is `api-012`). */
-const INVALID_REQUEST_CODE = "api-003";
+/** restapi's `ApiErrors.INVALID_REQUEST`, the code of its sealed-move refusal and of its other zero-access refusals (a version conflict,
+ * also a `409`, is `api-012`; an identifier already taken, `api-011`). */
+export const INVALID_REQUEST_CODE = "api-003";
 
 /** A move of a protected record to another mailbox, refused - by this client before sending it, or by the server. Nothing was written. */
 export class SealedMoveError extends ApiRequestError {

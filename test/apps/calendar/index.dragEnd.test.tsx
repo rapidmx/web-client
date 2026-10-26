@@ -26,6 +26,13 @@ import type { ApiClient } from "../../../lib/util/api.js";
 // Rendered inside a router, as the app's shell does (see routerTestUtils.tsx).
 const CalendarPage = withTestRouter(CalendarPageBase);
 
+// An event made from a zero-access invitation is opened here as an unlocked mailbox would open it: as it is, marked opened.
+vi.mock("../../../apps/shared/calendar/sealedEvents.js", async () => {
+    const { markSealedContentOpened } = await import("../../../lib/calendar/protectedEvents.js");
+    const open = (event: any) => (event.sealedContent ? markSealedContentOpened(event) : event);
+    return { openSealedEvents: async (events: any[]) => events.map(open), openSealedEvent: async (event: any) => open(event), clearSealedEvents: () => undefined };
+});
+
 /** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
  * default (no-provider) path uses - lets a test assert an explicit client's calls never touch the global one. */
 function fakeApiClient(impl: (path: string, init?: RequestInit) => unknown = () => undefined): ApiClient & { fetch: ReturnType<typeof vi.fn> } {
@@ -296,7 +303,7 @@ describe("CalendarPage handleDragEnd", () => {
     });
 
     it("refuses to move one occurrence of an event made from a zero-access invitation that the server stored unprotected, as a warning, taking the copy back", async () => {
-        // As the page holds it once opened: the real title beside the sealed content.
+        // Opened (the mock above): the real title beside the sealed content.
         const invited = { ...event, title: "Acquisition talks", sealedContent: { keyFingerprint: "fp", sealed: "c2VhbGVk" }, recurrenceRule: { freq: "daily", interval: 1, exceptions: [] } };
         const fetchMock = mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);

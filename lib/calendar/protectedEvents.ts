@@ -11,6 +11,7 @@
  */
 import type { CalendarEvent } from "./calendarApi.js";
 import { isOpenedRecord, isProtectedRecord } from "../zeroAccess/sealedRecords.js";
+import { KeysLockedError } from "../crypto/masterKey.js";
 
 /** The fields zero-access encryption seals on an event. */
 export const EVENT_CONTENT_FIELDS = ["title", "location", "description", "descriptionHtml"] as const;
@@ -66,6 +67,9 @@ export function invitationContentOf(current: CalendarEvent | undefined, changes:
  * `invitationContent` when `current` was opened - and `clearedFields` naming the sealed ones it empties.
  */
 export function protectedEventWrite<T extends object>(current: CalendarEvent | undefined, input: T): T {
+    if (current?.sealedContent) {
+        return sealedContentWrite(current, input);
+    }
     if (!isProtectedRecord(current)) {
         return input;
     }
@@ -85,5 +89,44 @@ export function protectedEventWrite<T extends object>(current: CalendarEvent | u
         changes.clearedFields = clearedFields;
     }
     const invitationContent = invitationContentOf(current, changes);
+    return (invitationContent ? { ...changes, invitationContent } : changes) as T;
+}
+
+/**
+ * `input` as written to `current`, an event made from a zero-access invitation (`sealedContent`). restapi seals its whole content again
+ * from the content fields a write sends (`BaseCalendarEventRoute.keepSealed()`), dropping one the write leaves out, since it can't read the
+ * sealed value to keep it. So a write that sends any of them sends them all: those it leaves out (the event dialog sends an unchanged
+ * description not at all) are filled in with what `current` shows opened - the description and its HTML as one, as the dialog sends them.
+ * This holds too for a row that also keeps its title sealed field by field (`sealedFields.title`), whose sealed content's title is empty.
+ * Shown with placeholders (its mailbox is locked), the placeholders it would send back are left out, so nothing is sealed again, and a
+ * changed content field is refused (`KeysLockedError`) before anything is sent: the rest of the content can't be sent with it.
+ */
+function sealedContentWrite<T extends object>(current: CalendarEvent, input: T): T {
+    const given = input as Record<string, unknown>;
+    if (!EVENT_CONTENT_FIELDS.some((field) => given[field] !== undefined)) {
+        return input;
+    }
+    const changes: Record<string, unknown> = { ...given };
+    if (!shownOpened(current)) {
+        for (const field of EVENT_CONTENT_FIELDS) {
+            if (field in changes && text(changes[field]) === text(current[field])) {
+                delete changes[field];
+            }
+        }
+        if (EVENT_CONTENT_FIELDS.some((field) => changes[field] !== undefined)) {
+            throw new KeysLockedError("This event is protected and your mailbox is locked. Unlock it to change its title, location or description.");
+        }
+        return changes as T;
+    }
+    for (const field of ["title", "location"] as const) {
+        if (changes[field] === undefined) {
+            changes[field] = current[field] ?? null;
+        }
+    }
+    if (changes.description === undefined && changes.descriptionHtml === undefined) {
+        changes.description = current.description ?? null;
+        changes.descriptionHtml = current.descriptionHtml ?? null;
+    }
+    const invitationContent = isProtectedRecord(current) ? invitationContentOf(current, changes) : undefined;
     return (invitationContent ? { ...changes, invitationContent } : changes) as T;
 }

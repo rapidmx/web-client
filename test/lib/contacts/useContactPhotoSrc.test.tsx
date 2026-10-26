@@ -77,12 +77,20 @@ describe("useContactPhotoSrc for a sealed picture", () => {
         vi.unstubAllGlobals();
     });
 
-    it("shows initials when it can't be opened here (the mailbox is locked), through the client too", async () => {
+    it("shows initials when it can't be opened here (not this device's key), through the client too", async () => {
         openSealedBytes.mockResolvedValue(undefined);
+        const { result } = renderHook(() => useContactPhoto(sealed("c2"), client));
+        await waitFor(() => expect(result.current.failed).toBe(true));
+        expect(result.current.src).toBeUndefined();
+        expect(openSealedBytes.mock.calls[0][0]).toBe("mb1");
+    });
+
+    it("shows initials without fetching it when its mailbox is locked (or unknown), as it couldn't be opened", async () => {
         const { result } = renderHook(() => useContactPhoto({ ...sealed("c2"), mailboxUid: undefined }, client));
         await waitFor(() => expect(result.current.failed).toBe(true));
         expect(result.current.src).toBeUndefined();
-        expect(openSealedBytes.mock.calls[0][0]).toBe("");
+        expect(fetchBlob).not.toHaveBeenCalled();
+        expect(openSealedBytes).not.toHaveBeenCalled();
     });
 
     it("drops a shown picture when its mailbox locks, revoking it, and keeps none for an avatar shown while it is locked", async () => {
@@ -93,13 +101,28 @@ describe("useContactPhotoSrc for a sealed picture", () => {
         act(() => destroyUnlockedKeys("mb1"));
 
         expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:photo-1");
-        // Fetched again, and opened just as the lock is checked: not kept, not shown.
+        // Tried again, but not fetched while locked: it couldn't be opened.
         await waitFor(() => expect(shown.result.current.failed).toBe(true));
         expect(shown.result.current.src).toBeUndefined();
         const later = renderHook(() => useContactPhoto(sealed("c1"), client));
         await waitFor(() => expect(later.result.current.failed).toBe(true));
         expect(later.result.current.src).toBeUndefined();
         expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+        expect(fetchBlob).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps nothing of a picture whose fetch was in flight when its mailbox locked", async () => {
+        let arrive!: () => void;
+        fetchBlob.mockImplementationOnce(() => new Promise<Blob>((resolve) => (arrive = () => resolve(new Blob([new Uint8Array(2)])))));
+        openSealedBytes.mockResolvedValue(new Uint8Array([1, 2]));
+        const view = renderHook(() => useContactPhoto(sealed("c1"), client));
+        await waitFor(() => expect(fetchBlob).toHaveBeenCalledTimes(1));
+
+        act(() => destroyUnlockedKeys("mb1"));
+        arrive();
+
+        await waitFor(() => expect(view.result.current.failed).toBe(true));
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
     });
 
     it("shows a picture that couldn't be opened once its mailbox unlocks, and ignores other mailboxes", async () => {
@@ -115,7 +138,8 @@ describe("useContactPhotoSrc for a sealed picture", () => {
         // Unlocked again (a re-unlock) while it is shown: nothing to do.
         unlock();
         expect(view.result.current.src).toBe("blob:photo-1");
-        expect(fetchBlob).toHaveBeenCalledTimes(2);
+        // Fetched once: not while it was locked.
+        expect(fetchBlob).toHaveBeenCalledTimes(1);
     });
 
     it("keeps a picture that isn't sealed across a lock", async () => {

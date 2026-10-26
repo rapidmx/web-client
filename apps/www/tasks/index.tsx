@@ -305,7 +305,9 @@ function TasksContent() {
             const updated = await openSealedRecord(await setTaskCompleted(task, nextCompleted, client));
             setTasks((prev) => prev.map((t) => (t.uid === task.uid ? updated : t)));
         } catch (err) {
-            setTasks((prev) => prev.map((t) => (t.uid === task.uid ? task : t)));
+            // Only the flag goes back, on the row there now: `task` is the row as it was shown, opened, and a lock since may have
+            // reloaded it with its placeholders (#224), which putting it back whole would undo.
+            setTasks((prev) => prev.map((t) => (t.uid === task.uid ? { ...t, completed: task.completed } : t)));
             notifyApiError(err, "Couldn't update the task");
         } finally {
             setTogglePending(task.uid, false);
