@@ -277,6 +277,8 @@ export interface SharedMaintenance {
     rotated: boolean;
     /** Wraps added for waiting members. */
     wrapped: number;
+    /** Wraps of older keys the server refused for waiting members (tried again on the next pass). */
+    refused: number;
     /** Departed users whose wraps were removed. */
     removed: number;
     /** Keys wrapped for the mailbox's escrow scope. */
@@ -290,11 +292,12 @@ export interface SharedMaintenance {
  * A mailbox without an owner and without a key gets one (unless the administrator disallows zero-access), wrapped for every member who has a
  * certificate. Once a user who held the active key has left (`rotationPending`), a new key replaces it - enrolled by the owner with their
  * master key (`provisionZeroAccessKey()`), or for a mailbox without an owner with the members' wraps - and then the departed users' wraps
- * are removed. Members still waiting (`pending`) get wraps of every key this client can open, and the escrow scope of a mailbox without an
- * owner gets copies of the keys it is missing (`escrowPending`).
+ * are removed. Members still waiting (`pending`) get wraps of every key this client can open, one write per key with the active key's
+ * first (a refused older key doesn't stop the rest), and the escrow scope of a mailbox without an owner gets copies of the keys it is
+ * missing (`escrowPending`).
  */
 export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: string, client?: ApiClient): Promise<SharedMaintenance> {
-    const result: SharedMaintenance = { provisioned: false, rotated: false, wrapped: 0, removed: 0, escrowed: 0 };
+    const result: SharedMaintenance = { provisioned: false, rotated: false, wrapped: 0, refused: 0, removed: 0, escrowed: 0 };
     let status: SharedKeyStatus = await getSharedKeyStatus(mailboxUid, client);
     if (!status.manager || (status.members.length === 0 && status.departed.length === 0)) {
         return result;
@@ -336,17 +339,30 @@ export async function maintainSharedMailbox(mailboxUid: string, mailboxAddress: 
     if (missing.length > 0 || escrowPending.length > 0) {
         const keys = await openPrivateKeys(mailboxUid, status, ownerUnlocked, client);
         try {
-            const wraps: MemberKeyWrap[] = [];
-            for (const member of missing) {
-                for (const [fingerprint, pkcs8] of keys) {
+            // One write per key, the active key's first: it alone opens new mail, so a refused backfill of an older key (the server bounds
+            // each key's wraps and the vault's total) never keeps a member from it. A failed older key is left for the next pass.
+            const order = keyOrder(status);
+            for (const [fingerprint, pkcs8] of [...keys].sort(([a], [b]) => order(a) - order(b))) {
+                const wraps: MemberKeyWrap[] = [];
+                for (const member of missing) {
                     if (!member.wrapped.includes(fingerprint)) {
                         wraps.push({ ...(await wrapFor(member, pkcs8)), zeroAccessKeyFingerprint: fingerprint });
                     }
                 }
-            }
-            if (wraps.length > 0) {
-                await putMemberKeyWraps(mailboxUid, wraps, client);
-                result.wrapped = wraps.length;
+                if (wraps.length === 0) {
+                    continue;
+                }
+                if (fingerprint === status.activeKeyFingerprint) {
+                    await putMemberKeyWraps(mailboxUid, wraps, client);
+                    result.wrapped += wraps.length;
+                } else {
+                    try {
+                        await putMemberKeyWraps(mailboxUid, wraps, client);
+                        result.wrapped += wraps.length;
+                    } catch {
+                        result.refused += wraps.length;
+                    }
+                }
             }
             const held: string[] = escrowPending.filter((fingerprint) => keys.has(fingerprint));
             if (held.length > 0) {

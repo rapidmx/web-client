@@ -273,6 +273,56 @@ describe("maintainSharedMailbox", () => {
         expect(await decryptEnvelopedDataWithKeys(fromBase64(wraps[0].cms), [reader])).toEqual(active.pkcs8);
     });
 
+    it("sends the active key's wraps in their own write first, and a refused older key neither stops the rest nor fails the pass", async () => {
+        const reader = await identity("fp-reader");
+        const newbie = await identity("fp-newbie");
+        const oldest = await identity("fp-oldest", 0);
+        api.getSharedKeyStatus.mockResolvedValue(
+            status({
+                manager: true,
+                activeKeyFingerprint: "fp-active",
+                zeroAccessKeys: [oldest.key, older.key, active.key],
+                members: [member("me", me, ["fp-active", "fp-older", "fp-oldest"], true), member("reader", reader, ["fp-oldest"]), member("newbie", newbie)],
+            }),
+        );
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("me", me, oldest), await wrap("me", me, older), await wrap("me", me, active)]);
+        api.putMemberKeyWraps.mockImplementation(async (_uid: string, wraps: any[]) => {
+            if (wraps[0].zeroAccessKeyFingerprint === "fp-older") {
+                throw new ApiRequestError("cannot hold more than 2000 member key wraps", 400);
+            }
+            return status();
+        });
+
+        const result = await maintainSharedMailbox("shared", "shared@example.com");
+
+        const calls = api.putMemberKeyWraps.mock.calls.map(([, wraps]) => wraps.map((w: any) => [w.memberUserUid, w.zeroAccessKeyFingerprint]));
+        expect(calls).toEqual([
+            [
+                ["reader", "fp-active"],
+                ["newbie", "fp-active"],
+            ],
+            [
+                ["reader", "fp-older"],
+                ["newbie", "fp-older"],
+            ],
+            [["newbie", "fp-oldest"]],
+        ]);
+        expect(result).toMatchObject({ wrapped: 3, refused: 2 });
+    });
+
+    it("fails the pass when the active key's wraps are refused, sending no older key", async () => {
+        const reader = await identity("fp-reader");
+        api.getSharedKeyStatus.mockResolvedValue(
+            status({ manager: true, activeKeyFingerprint: "fp-active", zeroAccessKeys: [older.key, active.key], members: [member("me", me, ["fp-active", "fp-older"], true), member("reader", reader)] }),
+        );
+        api.getMyMemberKeyWraps.mockResolvedValue([await wrap("me", me, older), await wrap("me", me, active)]);
+        api.putMemberKeyWraps.mockRejectedValue(new ApiRequestError("too many", 400));
+
+        await expect(maintainSharedMailbox("shared", "shared@example.com")).rejects.toThrow();
+        expect(api.putMemberKeyWraps).toHaveBeenCalledTimes(1);
+        expect(api.putMemberKeyWraps.mock.calls[0][1].map((w: any) => w.zeroAccessKeyFingerprint)).toEqual(["fp-active"]);
+    });
+
     it("never wraps a key the server lists with another key's certificate, from a member wrap or the owner's vault", async () => {
         const reader = await identity("fp-reader");
         const swapped = status({

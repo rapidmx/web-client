@@ -7,9 +7,9 @@
  * expansion happens entirely client-side (see `apps/shared/lib/recurrence.ts`) — the backend stores/returns
  * `RecurrenceRule` as-is and does no RFC5545 expansion of its own. */
 
-import { ApiClient, withClient } from "../util/api.js";
+import { ApiClient, ApiRequestError, withClient } from "../util/api.js";
 import { ListParams, buildQuery } from "../util/apiQuery.js";
-import { guardSealedMove } from "../zeroAccess/sealedMoves.js";
+import { INVALID_REQUEST_CODE, guardSealedMove } from "../zeroAccess/sealedMoves.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord, openSealedRecords } from "../zeroAccess/sealedRecords.js";
 import { EVENT_CONTENT_FIELDS, type InvitationContent, invitationContentOf, isSealedContentOpened, markSealedContentOpened, protectedEventWrite } from "./protectedEvents.js";
 import { meetingLinkSecrets } from "../videoconf/protectedMeetings.js";
@@ -282,6 +282,38 @@ export function updateCalendarEvent(input: UpdateCalendarEventInput, client?: Ap
     return guardSealedMove(current, input.mailboxUid, () => saveCalendarEvent(input, client, current));
 }
 
+/** The title restapi shows for an event whose title is sealed (its `PROTECTED_SUBJECT`). */
+const PLACEHOLDER_TITLE = "[...]";
+
+/** What `SealedEventContentError` says. */
+export const SEALED_EVENT_CONTENT_MESSAGE =
+    "This event came from an invitation to a zero-access mailbox and its details are sealed, so its location or description can only be changed together with its title. Unlock your mailbox, open the event again and make the change there.";
+
+/**
+ * restapi's refusal (409) of a location or description change to an event made from a zero-access invitation (`sealedContent`) sent
+ * with its placeholder title or none: resealing would lose the title. `saveCalendarEvent()` leaves out the placeholders of one it hasn't
+ * opened, so this comes back only when this device didn't know the event was sealed (it was filed sealed after it was loaded). An
+ * `ApiRequestError` (409), as `SealedMoveError` is, so the event dialog and the drag handler show its message.
+ */
+export class SealedEventContentError extends ApiRequestError {
+    constructor() {
+        super(SEALED_EVENT_CONTENT_MESSAGE, 409, "sealed-event-content");
+        this.name = "SealedEventContentError";
+    }
+}
+
+/** Whether `err` is restapi's refusal of `body`, a write carrying a location or description without a real title. */
+function isSealedContentTitleRefusal(err: unknown, body: Record<string, any>): boolean {
+    const hasValue = (field: string): boolean => body[field] !== undefined && body[field] !== null && body[field] !== "";
+    return (
+        err instanceof ApiRequestError &&
+        err.status === 409 &&
+        err.code === INVALID_REQUEST_CODE &&
+        (body.title === undefined || body.title === PLACEHOLDER_TITLE) &&
+        ["location", "description", "descriptionHtml"].some(hasValue)
+    );
+}
+
 async function saveCalendarEvent(input: UpdateCalendarEventInput, client: ApiClient | undefined, current: CalendarEvent | undefined): Promise<CalendarEvent> {
     current = await fullyOpenedEvent(current);
     const { invitationContent: given, ...changes } = input;
@@ -301,10 +333,15 @@ async function saveCalendarEvent(input: UpdateCalendarEventInput, client: ApiCli
     if (secrets) {
         body.invitationContent = { ...(body.invitationContent ?? {}), meetingLinkSecrets: secrets };
     }
-    const updated = await withClient<CalendarEvent>(client, `/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
-        method: "PUT",
-        body: JSON.stringify(body),
-    });
+    let updated: CalendarEvent;
+    try {
+        updated = await withClient<CalendarEvent>(client, `/mail/calendar-events/${encodeURIComponent(input.uid)}`, {
+            method: "PUT",
+            body: JSON.stringify(body),
+        });
+    } catch (err) {
+        throw isSealedContentTitleRefusal(err, body) ? new SealedEventContentError() : err;
+    }
     if (!updated.sealedContent || !isSealedContentOpened(current)) {
         return opened(updated);
     }

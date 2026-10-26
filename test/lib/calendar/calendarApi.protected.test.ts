@@ -17,7 +17,7 @@ vi.mock("../../../lib/zeroAccess/sealedRecords.js", async (importOriginal) => ({
     ...sealed,
 }));
 
-const { EVENT_LIST_FIELDS, fullyOpenedEvent, listCalendarEvents, respondToEvent, updateCalendarEvent } = await import("../../../lib/calendar/calendarApi.js");
+const { EVENT_LIST_FIELDS, SEALED_EVENT_CONTENT_MESSAGE, SealedEventContentError, fullyOpenedEvent, listCalendarEvents, respondToEvent, updateCalendarEvent } = await import("../../../lib/calendar/calendarApi.js");
 const { isSealedContentOpened, markSealedContentOpened } = await import("../../../lib/calendar/protectedEvents.js");
 
 const event: any = {
@@ -143,6 +143,39 @@ describe("calendarApi and protected events", () => {
             mockFetch(() => jsonResponse(200, { ...placeholders, sealedContent: null, title: "Offsite" }));
             expect(isSealedContentOpened(await updateCalendarEvent({ uid: "e1", version: 0, title: "Offsite" }, undefined, opened))).toBe(false);
             sealed.openSealedRecord.mockReset();
+        });
+
+        it("sends none of the placeholders of one it hasn't opened, so a full round trip keeps its sealed content", async () => {
+            sealed.openSealedRecord.mockImplementation(unmocked);
+            const fetchMock = mockFetch(() => jsonResponse(200, { ...placeholders, version: 1 }));
+            await updateCalendarEvent(
+                { uid: "e1", version: 0, title: "[...]", location: null, description: null, descriptionHtml: null, startDate: "2026-01-07T09:00:00.000Z" } as any,
+                undefined,
+                placeholders,
+            );
+            expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ uid: "e1", version: 0, startDate: "2026-01-07T09:00:00.000Z" });
+            sealed.openSealedRecord.mockReset();
+        });
+
+        it("says clearly why the server refused a location or description change sent without the opened title", async () => {
+            const refusal = { code: "api-003", message: "This event's details are sealed: a change of its location or description must be sent with its opened title." };
+            // An event this device loaded before it was filed sealed: nothing here knows to leave the location out.
+            const stale = { ...event, sealedFields: undefined, title: "[...]", location: null };
+            mockFetch(() => jsonResponse(409, refusal));
+            const save = updateCalendarEvent({ uid: "e1", version: 0, title: "[...]", location: "Room 9" }, undefined, stale);
+            await expect(save).rejects.toBeInstanceOf(SealedEventContentError);
+            await expect(save).rejects.toMatchObject({ status: 409, code: "sealed-event-content", message: SEALED_EVENT_CONTENT_MESSAGE });
+            await expect(updateCalendarEvent({ uid: "e1", version: 0, description: "Notes" }, undefined, undefined)).rejects.toBeInstanceOf(SealedEventContentError);
+
+            // Any other refusal is passed on as it came: another 409, one with a real title, one with no location or description.
+            const other = { code: "api-003", message: "This event's details are sealed to a key this mailbox no longer has, so they can't be changed." };
+            mockFetch(() => jsonResponse(409, other));
+            await expect(updateCalendarEvent({ uid: "e1", version: 0, title: "Real", location: "Room 9" }, undefined, stale)).rejects.toMatchObject({ message: other.message });
+            await expect(updateCalendarEvent({ uid: "e1", version: 0, location: "", description: null } as any, undefined, undefined)).rejects.toMatchObject({ message: other.message });
+            mockFetch(() => jsonResponse(409, { code: "api-012", message: "version" }));
+            await expect(updateCalendarEvent({ uid: "e1", version: 0, location: "Room 9" }, undefined, stale)).rejects.toMatchObject({ code: "api-012" });
+            mockFetch(() => jsonResponse(400, { code: "api-003", message: "bad" }));
+            await expect(updateCalendarEvent({ uid: "e1", version: 0, location: "Room 9" }, undefined, stale)).rejects.toMatchObject({ message: "bad" });
         });
     });
 });
