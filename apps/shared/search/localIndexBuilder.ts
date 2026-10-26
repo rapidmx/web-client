@@ -43,6 +43,7 @@
 import { getMessageRawContent, listFolders, listMessages, type Folder, type Message } from "../../../lib/mail/mailApi.js";
 import { type MessageSecurityResult, type SignerPinsInput, evaluateMessageSecurity, evaluateMessageSecurityWithSeal } from "../../../lib/crypto/messageSecurity.js";
 import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
+import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { getPinnedSigners } from "../components/mail/pinnedSigners.js";
 import { currentVerificationSeal, readVaultGeneration, sendVerificationSeal, verificationSealPending } from "../components/mail/verificationSeals.js";
@@ -369,6 +370,11 @@ async function runBuildPass(
     const generation = nextLocalIndexGeneration();
     const indexKey = await deriveLocalIndexKey(unlocked.masterKey, mailboxUid);
     signal.throwIfAborted();
+    // A lock during the derive doesn't fail it (WebCrypto copied the master key first), and the index client only counts locks from
+    // `initLocalIndex()`'s own call on: open nothing with the destroyed keys.
+    if (unlocked.destroyed) {
+        throw new KeysLockedError();
+    }
     await initLocalIndex({ mailboxUid, indexKey, generation });
     let { evictedBefore } = await setLocalIndexWindow(mailboxUid, windowConfig.timeFloorMonths, windowConfig.byteBudgetBytes, generation);
     await setLocalIndexBuilding(mailboxUid, true, { complete: false, generation });

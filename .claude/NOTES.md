@@ -1076,7 +1076,7 @@ own NOTES.md for Phase 0 (the restapi patch bridge) and Phase 1 (S3BlobStore, de
     records a destroy's generation synchronously on arrival (so an already-queued stale call is rejected too) and
     rejects older generations with `StaleGenerationError`; `destroyAll` records a global one. The builder also keeps
     one pass per mailbox (`AbortController`; a new pass aborts and awaits the old) and exports
-    `cancelLocalIndexBuild()`, which `LocalIndexLifecycle` calls on a lock transition. Final `setBuilding(false)`
+    `cancelLocalIndexBuild()`, which `localIndexRpcClient.ts`'s lock watcher calls on a lock (since #626; `LocalIndexLifecycle` no longer does, round 8 #805). Final `setBuilding(false)`
     failures are swallowed.
   - **Eviction watermark**: `applyEviction` stores `evicted_before` (newest cutoff deleted; never moves backwards);
     `indexEntities`/`setWindow` return it. The builder skips fetching messages strictly older than it and stops a
@@ -4119,3 +4119,10 @@ Left:
 - **Fixed by `resolutions`** in `package.json` (descriptor-scoped, as in restapi; drop each once the parent's own range picks up the fixed version): brace-expansion ^1.1.7 -> ^1.1.21 (minimatch 3.1.5) and ^5.0.8 -> ^5.0.12 (minimatch 10.2.6), source-map-js ^1.2.1 -> ^1.2.2 (@tailwindcss/node via postcss), undici ^8.4.1 / ^8.9.0 -> ^8.12.3 (jsdom). Direct ranges raised: `dompurify` ^3.4.17, `vite` ^8.3.5 (dev; 8.3.0-8.3.2 carry the launch-editor advisory).
 - **No audit exception.** Every flagged advisory has a fixed release, so `.yarnrc.yml` has no `npmAuditIgnoreAdvisories` (web-client has no node-forge, unlike restapi).
 - **Verified.** Both audits answer "No audit suggestions"; yarn build; full `vitest run` with coverage.
+
+## 2026-10-26: Review round 8 fixes
+
+Fixed (eighth-round review findings assigned to web-client):
+- **#805 A lock during the local index key's derive no longer leaves the index open.** `hkdfDerive()` copies the master key into `crypto.subtle.importKey()` before its awaits, so a lock (idle timeout, the Lock button) landing during `importKey`/`deriveBits` zeroes the key too late and the derive returns the real index key. The mailbox isn't in the index client's `openedMailboxes` yet, so its lock watcher destroys nothing, and `initLocalIndex()` read `lockCounts` after the lock (on a page's first open the watcher wasn't even subscribed yet), so it opened the index and kept it open after the lock (spec §11 destroy-on-lock). Before #712 the 5 s poll's present-to-absent branch cancelled and destroyed it; #712's `locked` subscription made that branch unreachable (keys only go away through `destroyUnlockedKeys()`, which always reports the lock). `runBuildPass()` (`localIndexBuilder.ts`) and `searchTier2.ts`'s `ensureInitialized()` (the same race, never covered by the poll) now throw `KeysLockedError` when `unlocked.destroyed` is set after the derive, before `initLocalIndex()`. No await sits between that check and `initLocalIndex()`'s synchronous read of `lockCounts` (whose watcher it subscribes first), so a later lock is caught there. The unreachable poll branch is removed from `LocalIndexLifecycle` (it no longer imports `destroyLocalIndex`), and its doc comment says where a lock is handled. Tests: new `localIndexLockDuringDerive.test.tsx` (real key session, lifecycle, builder, Tier 2 search, index client and HKDF; a recording transport; `deriveBits` wrapped to lock once its bits are computed) fails on the old code for both paths; `LocalIndexLifecycle.test.tsx` now reports every lock through the key session listener (`lockKeys()`), and its poll-branch tests were rewritten to the event (the cancel-failure test went with the branch).
+
+Review of these fixes: the independent reviewer reported no issues. Left: nothing (no unproven or unfixed findings).

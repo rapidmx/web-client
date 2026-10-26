@@ -18,6 +18,7 @@
  * search* fail just because this one, most novel piece had a bad moment.
  */
 import type { UnlockedKeys } from "../../../lib/crypto/keySession.js";
+import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
 import type { ParsedSearchQuery } from "../../../lib/search/queryGrammar.js";
 import type { SearchResult } from "../../../lib/search/searchApi.js";
 import { deriveLocalIndexKey } from "./localIndexKey.js";
@@ -41,6 +42,10 @@ export interface Tier2SearchOutcome {
  * wins, and the other is a cheap no-op. */
 async function ensureInitialized(mailboxUid: string, unlocked: UnlockedKeys): Promise<void> {
     const indexKey = await deriveLocalIndexKey(unlocked.masterKey, mailboxUid);
+    // Locked during the derive, which still succeeds: open nothing with the destroyed keys (the lock's own destroy found nothing open).
+    if (unlocked.destroyed) {
+        throw new KeysLockedError();
+    }
     await initLocalIndex({ mailboxUid, indexKey });
 }
 

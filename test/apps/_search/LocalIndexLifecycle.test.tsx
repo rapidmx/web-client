@@ -58,6 +58,14 @@ afterEach(() => {
     keyListeners.clear();
 });
 
+/** Destroys a mailbox's keys as `destroyUnlockedKeys()` does: gone from the store, and reported. */
+function lockKeys(uid: string) {
+    unlockedMailboxes.delete(uid);
+    for (const listener of [...keyListeners]) {
+        listener({ mailboxUid: uid, state: "locked" });
+    }
+}
+
 /** The builder is loaded with a dynamic import when a build is due, so its start is a few microtasks after the render. */
 async function flush() {
     await act(async () => {
@@ -98,7 +106,7 @@ describe("LocalIndexLifecycle", () => {
         late.unmount();
     });
 
-    it("destroys a built mailbox's index when its keys go away - even after switching to another mailbox, or a folders refresh in between", async () => {
+    it("forgets a built mailbox when its keys are locked - even after switching to another mailbox - and builds it again after a re-unlock", async () => {
         unlockedMailboxes.add("mb1");
         unlockedMailboxes.add("mb2");
         const { rerender } = render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
@@ -107,35 +115,20 @@ describe("LocalIndexLifecycle", () => {
         expect(buildLocalIndex).toHaveBeenCalledTimes(2);
 
         // Keys destroyed between polls, then an unrelated re-render before the next poll fires.
-        unlockedMailboxes.clear();
+        lockKeys("mb1");
+        lockKeys("mb2");
         rerender(<LocalIndexLifecycle mailboxUid="mb2" folders={[...folders]} />);
         await tick();
-        expect(destroyLocalIndex).toHaveBeenCalledWith("mb1");
-        expect(destroyLocalIndex).toHaveBeenCalledWith("mb2");
-        // Any pass still running with the destroyed keys is stopped too.
-        expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb1");
-        expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb2");
+        expect(buildLocalIndex).toHaveBeenCalledTimes(2);
+        // The cancel and destroy are the index client's (`localIndexRpcClient.ts`), on the same event.
+        expect(destroyLocalIndex).not.toHaveBeenCalled();
+        expect(cancelLocalIndexBuild).not.toHaveBeenCalled();
 
-        // Not destroyed twice; rebuilt after a re-unlock.
-        await tick();
-        expect(destroyLocalIndex).toHaveBeenCalledTimes(2);
         unlockedMailboxes.add("mb2");
         await tick();
         await flush();
         expect(buildLocalIndex).toHaveBeenCalledTimes(3);
-    });
-
-    it("never produces an unhandled rejection from a cancel that fails", async () => {
-        unlockedMailboxes.add("mb1");
-        cancelLocalIndexBuild.mockRejectedValue(new Error("worker gone"));
-        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
-        await tick();
-        await flush();
-        unlockedMailboxes.clear();
-        await tick();
-        await flush();
-        expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb1");
-        expect(destroyLocalIndex).toHaveBeenCalledWith("mb1");
+        expect(buildLocalIndex).toHaveBeenLastCalledWith("mb2", expect.anything(), folders, undefined, undefined);
     });
 
     it("never produces an unhandled rejection from a failed build", async () => {
@@ -198,12 +191,7 @@ describe("LocalIndexLifecycle - an explicit ApiClient is threaded through", () =
 // `destroyUnlockedKeys()` reports a lock synchronously, and the index client destroys the index at once (`localIndexRpcClient.ts`): a
 // re-unlock before the next poll tick must still build again, or the destroyed index stays unbuilt for the rest of the page load.
 describe("LocalIndexLifecycle - a lock reported by the key session", () => {
-    const lock = (uid: string) => {
-        unlockedMailboxes.delete(uid);
-        for (const listener of [...keyListeners]) {
-            listener({ mailboxUid: uid, state: "locked" });
-        }
-    };
+    const lock = lockKeys;
     const unlock = (uid: string) => {
         unlockedMailboxes.add(uid);
         for (const listener of [...keyListeners]) {
@@ -327,7 +315,7 @@ describe("LocalIndexLifecycle (zero-access sync)", () => {
         await flush();
         expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
 
-        unlockedMailboxes.delete("mb1");
+        lockKeys("mb1");
         await tick();
         unlockedMailboxes.add("mb1");
         await tick();
@@ -353,7 +341,7 @@ describe("LocalIndexLifecycle (zero-access sync)", () => {
         buildLocalIndex.mockImplementationOnce(() => new Promise<void>((resolve) => (finishBuild = resolve)));
         render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
         await flush();
-        unlockedMailboxes.delete("mb1");
+        lockKeys("mb1");
         await tick();
         await act(async () => {
             finishBuild!();
@@ -385,7 +373,7 @@ describe("LocalIndexLifecycle (zero-access sync)", () => {
         expect(syncZeroAccessIndex).not.toHaveBeenCalled();
 
         getUnlockedKeys.mockImplementation(zeroAccessUnlocked);
-        unlockedMailboxes.delete("mb1");
+        lockKeys("mb1");
         await tick();
         unlockedMailboxes.add("mb1");
         await tick();

@@ -12,14 +12,15 @@
  * whatever destroyed the keys (idle timeout, the manual button, a sign-out) and whether or not this component is still mounted. This
  * component subscribes to the same `locked` event to reset what it remembers of the mailbox (built, synced) at that moment, so a re-unlock
  * builds again - even one made before the next poll tick, which a poll alone would never see as a lock, leaving the destroyed index
- * unbuilt and every zero-access sync failing against it. The poll still watches `getUnlockedKeys()` for a present-to-absent transition as
- * a fallback; the destroy it also sends then finds nothing left open.
+ * unbuilt and every zero-access sync failing against it. Keys only ever go away through `destroyUnlockedKeys()`, which always reports
+ * the lock, so the poll doesn't watch for a lock itself. A lock while a build is still deriving its index key, before anything is open
+ * for the index client to destroy, is the builder's own to catch (`localIndexBuilder.ts`): it opens nothing with destroyed keys.
  *
  * Every mailbox this component has seen unlocked is tracked for the life of the mount - not just whichever
  * is active right now - so switching mailboxes (or a folders-list refresh re-running the build effect)
  * can never lose a pending unlocked-to-locked transition for a mailbox whose index was already built.
  *
- * **Explicit logout** navigates away immediately, which may not leave time for a poll tick - `AppShell.tsx`
+ * **Explicit logout** navigates away immediately, which may not leave time for the lock's asynchronous destroy - `AppShell.tsx`
  * handles that case itself via `destroyAllLocalIndexes()`.
  */
 import { useEffect, useRef } from "react";
@@ -48,7 +49,7 @@ const loadSyncer = () =>
         syncer = undefined;
         throw err;
     }));
-import { destroyLocalIndex, pruneInaccessibleLocalIndexes } from "./localIndexRpcClient.js";
+import { pruneInaccessibleLocalIndexes } from "./localIndexRpcClient.js";
 
 export const POLL_INTERVAL_MS = 5_000;
 
@@ -70,9 +71,8 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
     // apps, Electron), which keeps building the index against the default global cookie-based session exactly as before. A native,
     // multi-account host that renders this under an ApiClientContext.Provider gets its own account's client threaded through instead.
     const client = useApiClient();
-    // mailboxUid -> whether it was unlocked at the last check. An entry exists for every mailbox whose
-    // build this component started; only ever changed by a real observed transition, never reset by an
-    // effect re-run.
+    // mailboxUid -> whether it is unlocked as far as this component knows: set when its build starts, cleared by its lock. An entry exists
+    // for every mailbox whose build this component started; never reset by an effect re-run.
     const trackedRef = useRef(new Map<string, boolean>());
     // The latest props (and client), for the long-lived polling interval below.
     const latestRef = useRef({ mailboxUid, folders, client });
@@ -158,21 +158,6 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
 
     useEffect(() => {
         const interval = setInterval(() => {
-            for (const [trackedUid, wasUnlocked] of trackedRef.current) {
-                if (wasUnlocked && !getUnlockedKeys(trackedUid)) {
-                    // A present-to-absent transition the subscription above didn't report: something just destroyed this mailbox's keys.
-                    trackedRef.current.set(trackedUid, false);
-                    lastSyncRef.current.delete(trackedUid);
-                    builtRef.current.delete(trackedUid);
-                    syncingRef.current.delete(trackedUid);
-                    // Stop the pass still running with the now-destroyed keys; the destroy itself also makes
-                    // the Worker reject anything that pass still sends.
-                    loadBuilder()
-                        .then(({ cancelLocalIndexBuild }) => cancelLocalIndexBuild(trackedUid))
-                        .catch(() => undefined);
-                    void destroyLocalIndex(trackedUid);
-                }
-            }
             // The active mailbox was (re-)unlocked since the last check, e.g. via an on-demand unlock prompt.
             const { mailboxUid: activeUid, folders: activeFolders, client: activeClient } = latestRef.current;
             if (activeUid) {
