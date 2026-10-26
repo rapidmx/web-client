@@ -554,7 +554,8 @@ describe("ContactDetailPane photo badge", () => {
         badge.blur();
         ready(picture);
         await waitFor(() => expect(badge).toBeEnabled());
-        expect(screen.getByRole("button", { name: "Favorite" })).toBeEnabled();
+        // The editor reports it is no longer busy from an effect, a render after its own badge is enabled again.
+        await waitFor(() => expect(screen.getByRole("button", { name: "Favorite" })).toBeEnabled());
         expect(badge).toHaveFocus();
     });
 
