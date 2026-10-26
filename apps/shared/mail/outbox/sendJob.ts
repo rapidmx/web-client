@@ -12,6 +12,7 @@ import {
     assembleDraft,
     assembleDraftRaw,
     createDraft,
+    deleteMessage,
     forgetDraftImages,
     getMailbox,
     getMessage,
@@ -32,6 +33,7 @@ import { beginPendingSend, finishPendingSend, setPendingStage } from "./pendingS
 import { failOutgoing, forgetOutgoing, markOutgoingSending, markOutgoingSent, trackOutgoing } from "./outgoingReplies.js";
 import { openComposeFromOutside, requestUnlockFromOutside } from "./composeBridge.js";
 import { OutboxCountTracker, sendState } from "./sendState.js";
+import { notifySendFailure } from "./sendOutcomes.js";
 
 /** Everything the background send needs, captured when Send is clicked: the window it came from is gone by the time it runs. */
 export interface SendRequest {
@@ -270,7 +272,8 @@ async function completeContext(request: SendRequest, client: ApiClient | undefin
 /** Builds the message's final content into the draft (plain, signed, or signed and encrypted in this browser) and returns the stored
  * message(s) to send: one, or - for an encrypted message whose recipients need both formats (restapi `specs/end-to-end_encryption.md`
  * *OpenPGP Interoperability*) - an S/MIME copy (this draft) and an OpenPGP copy (a second draft), each listing every recipient but
- * delivered only to the recipients of its own format (`deliverTo`). Never a plaintext copy. */
+ * delivered only to the recipients of its own format (`deliverTo`). Never a plaintext copy. The second draft is added to `created` as soon as
+ * it exists, so an attempt that fails before handing it over can remove it. */
 async function assemble(
     request: SendRequest,
     mailbox: Mailbox | undefined,
@@ -278,6 +281,7 @@ async function assemble(
     statuses: (RecipientEncryptionStatus | undefined)[],
     withSignature: boolean,
     client: ApiClient | undefined,
+    created: Message[],
 ): Promise<Message[]> {
     const { draft, to, cc, bcc, subject, html } = request;
     if (mode === "plain") {
@@ -347,7 +351,11 @@ async function assemble(
             armorPublicKey(ownKey.toPublic()),
         );
         const rawMime = assembleOutboundMime(pgpOuter, part);
-        const target = smime.length > 0 ? await createDraft(request.mailboxUid, draft.folderUid, undefined, client) : draft;
+        let target = draft;
+        if (smime.length > 0) {
+            target = await createDraft(request.mailboxUid, draft.folderUid, undefined, client);
+            created.push(target);
+        }
         sent.push(await assembleDraftRaw(target.uid, { to, cc, bcc, subject: pgpOuter.subject, rawMime, intent: "send", ...deliverTo(pgp) }, client));
     }
     return sent;
@@ -358,13 +366,30 @@ function failureOf(err: unknown, fallback: string): Failure {
     return { message: failure.message, details: failure.lines };
 }
 
-/** Whether the server already holds `copy` as accepted (out of Drafts, or leased) - the answer to "did that request that never returned actually land?". */
+/** Whether `fresh`, `copy` as the server holds it now, was accepted (out of Drafts, or leased). */
+function isAccepted(copy: Message, fresh: Message): boolean {
+    return fresh.folderUid !== copy.folderUid || !!fresh.scheduledSendLeaseExpiresAt || !!fresh.scheduledSendRelayedAt;
+}
+
+/** Whether the server already holds `copy` as accepted - the answer to "did that request that never returned actually land?". */
 async function accepted(copy: Message, client: ApiClient | undefined): Promise<boolean> {
     try {
-        const fresh = await getMessage(copy.uid, client);
-        return fresh.folderUid !== copy.folderUid || !!fresh.scheduledSendLeaseExpiresAt || !!fresh.scheduledSendRelayedAt;
+        return isAccepted(copy, await getMessage(copy.uid, client));
     } catch {
         return false;
+    }
+}
+
+/** Deletes the draft of a copy of a message sent as several (the OpenPGP one's) that is not to be handed over any more - unless the server
+ * holds it as accepted after all. Best effort: never rejects. */
+async function discardCopy(copy: Message, client: ApiClient | undefined): Promise<void> {
+    try {
+        const fresh = await getMessage(copy.uid, client);
+        if (!isAccepted(copy, fresh)) {
+            await deleteMessage(fresh.uid, fresh.version, client);
+        }
+    } catch {
+        // Left in Drafts, where it can be deleted by hand.
     }
 }
 
@@ -422,8 +447,12 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
                     release(copyFates, left.uid);
                 }
             }
+            // The server has failed a copy handed over earlier (its report came while this one was on its way), and none is sent or on its
+            // way: nobody has the message - the whole message's failure, not some recipients'.
+            const fates = [...(copyFates?.values() ?? [])];
+            const nobodyHasIt = fates.includes("failed") && fates.every((fate) => fate === "failed" || fate === "unsent");
             // A copy that went in this attempt, or in an earlier one this retries.
-            const partial = index > 0 || !!request.partial;
+            const partial = !nobodyHasIt && (index > 0 || !!request.partial);
             return {
                 kind: "failed",
                 failure: partial
@@ -449,6 +478,9 @@ async function handOver(request: SendRequest, copies: Message[], client: ApiClie
 /** The whole client-side path of one send: settle, decide, assemble, hand over. Never rejects. `client` is the explicit `ApiClient` (from
  * `useApiClient()`) the window that built `request` was rendered under, `undefined` for the default global cookie-based session. */
 async function attempt(request: SendRequest, client: ApiClient | undefined): Promise<Outcome> {
+    // The copies' drafts `assemble()` created (the OpenPGP one's): an attempt that fails before handing them over deletes them - its Retry
+    // assembles the message again, creating its own, and one left behind would reach its recipients a second time if sent from Drafts.
+    const created: Message[] = [];
     try {
         await request.saved?.catch(() => undefined);
         // Built already by the attempt that failed part-way: only what didn't go is handed over. A copy whose request seemed to fail but
@@ -517,11 +549,24 @@ async function attempt(request: SendRequest, client: ApiClient | undefined): Pro
             return { kind: "failed", failure: { message: decision.message, details: [] } };
         }
 
-        const assembled = await assemble(request, mailbox, decision.action, statuses, decision.action === "sign" || (decision.action === "encrypt" && decision.sign), client);
+        const assembled = await assemble(
+            request,
+            mailbox,
+            decision.action,
+            statuses,
+            decision.action === "sign" || (decision.action === "encrypt" && decision.sign),
+            client,
+            created,
+        );
         const copies = request.requestReceipt ? await Promise.all(assembled.map((copy) => setMessageRequestReceipt(copy, true, client))) : assembled;
         setPendingStage(request.draft.uid, "queuing");
+        // Handed over from here: a copy the hand-over doesn't deliver is its failure's to retry.
+        created.length = 0;
         return await handOver(request, copies, client);
     } catch (err) {
+        for (const copy of created) {
+            await discardCopy(copy, client);
+        }
         return { kind: "failed", failure: failureOf(err, request.scheduledSendTime ? "Could not schedule this message." : "Could not send this message.") };
     }
 }
@@ -567,9 +612,32 @@ function failureNotificationId(draftUid: string): string {
     return `send-failed:${draftUid}`;
 }
 
+/** "Open draft" for a message sent as several copies none of which went, each still a draft (`unsentCopies()`): the message is written again in
+ * its own draft, and the other copies' drafts (the OpenPGP one's) are deleted, best effort - it is encrypted afresh when it is sent again,
+ * and a copy left in Drafts would reach its recipients a second time if ever sent from there. */
+function openDraftDroppingCopies(request: SendRequest, client: ApiClient | undefined): void {
+    if (!openDraftFromRequest(request)) {
+        return;
+    }
+    forgetCopies(request.copyFates!);
+    for (const copy of request.pendingCopies!.filter((copy) => copy.uid !== request.draft.uid)) {
+        forgetOutgoing(copy.uid);
+        void discardCopy(copy, client);
+    }
+}
+
 /** The sticky "This message wasn't sent" pop-up for a send that failed on this side, with what can be done about it. */
 function notifyFailure(request: SendRequest, failure: Failure, client: ApiClient | undefined): void {
     const uid = request.draft.uid;
+    // A message sent as several copies, none of which went: each was never handed over, or the server failed it (its report came while the
+    // next was being handed over). Then it is the whole message's failure as the server reports one: one pop-up, replacing the one its report
+    // showed, whose Retry hands every copy over again - the failed one from Outbox too - and whose "Open draft" writes the message again.
+    const copies = unsentCopies(request);
+    if (copies && [...request.copyFates!.values()].includes("failed")) {
+        const recipients = [...request.to, ...request.cc, ...request.bcc].map((recipient) => recipient.address);
+        notifySendFailure({ uid, mailboxUid: request.mailboxUid, subject: request.subject, recipients }, { message: failure.message, lines: failure.details }, request, client);
+        return;
+    }
     const actions: NotificationAction[] = [];
     const { block } = failure;
     if (block?.keysLocked && request.mailbox?.keys?.length) {
@@ -590,7 +658,7 @@ function notifyFailure(request: SendRequest, failure: Failure, client: ApiClient
     }
     // Part of it went: editing and sending the draft again would send those recipients a second copy.
     if (!failure.partial) {
-        actions.push({ label: "Open draft", onClick: () => void openDraftFromRequest(request) });
+        actions.push({ label: "Open draft", onClick: () => void (copies ? openDraftDroppingCopies(request, client) : openDraftFromRequest(request)) });
     }
     notify({
         id: failureNotificationId(uid),

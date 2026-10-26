@@ -10,8 +10,10 @@
  *
  * **Locks**: `localIndexRpcClient.ts` itself destroys an index it opened the moment `subscribeKeySession()` reports its mailbox locked,
  * whatever destroyed the keys (idle timeout, the manual button, a sign-out) and whether or not this component is still mounted. This
- * component also watches `getUnlockedKeys()` for a present-to-absent transition, to reset what it remembers of the mailbox (built,
- * synced) so a re-unlock builds again; the destroy it also sends then finds nothing left open.
+ * component subscribes to the same `locked` event to reset what it remembers of the mailbox (built, synced) at that moment, so a re-unlock
+ * builds again - even one made before the next poll tick, which a poll alone would never see as a lock, leaving the destroyed index
+ * unbuilt and every zero-access sync failing against it. The poll still watches `getUnlockedKeys()` for a present-to-absent transition as
+ * a fallback; the destroy it also sends then finds nothing left open.
  *
  * Every mailbox this component has seen unlocked is tracked for the life of the mount - not just whichever
  * is active right now - so switching mailboxes (or a folders-list refresh re-running the build effect)
@@ -21,7 +23,7 @@
  * handles that case itself via `destroyAllLocalIndexes()`.
  */
 import { useEffect, useRef } from "react";
-import { getUnlockedKeys } from "../../../lib/crypto/keySession.js";
+import { getUnlockedKeys, subscribeKeySession } from "../../../lib/crypto/keySession.js";
 import type { PublicKey } from "../../../lib/crypto/keyvaultApi.js";
 import type { Folder } from "../../../lib/mail/mailApi.js";
 import type { ApiClient } from "../../../lib/util/api.js";
@@ -137,11 +139,28 @@ export default function LocalIndexLifecycle({ mailboxUid, folders, accessibleMai
         }
     }, [mailboxUid, folders, client]);
 
+    // A lock forgets the mailbox at once: no build of this unlock counts as built any more (the cancelled build's end finds `buildsRef`
+    // cleared and starts no sync), and the next unlock's tick starts a new build. The cancel and destroy themselves are
+    // `localIndexRpcClient.ts`'s, which reacts to the same event.
+    useEffect(
+        () =>
+            subscribeKeySession(({ mailboxUid: lockedUid, state }) => {
+                if (state === "locked" && trackedRef.current.get(lockedUid)) {
+                    trackedRef.current.set(lockedUid, false);
+                    lastSyncRef.current.delete(lockedUid);
+                    builtRef.current.delete(lockedUid);
+                    syncingRef.current.delete(lockedUid);
+                    buildsRef.current.delete(lockedUid);
+                }
+            }),
+        [],
+    );
+
     useEffect(() => {
         const interval = setInterval(() => {
             for (const [trackedUid, wasUnlocked] of trackedRef.current) {
                 if (wasUnlocked && !getUnlockedKeys(trackedUid)) {
-                    // A present-to-absent transition: something just destroyed this mailbox's keys.
+                    // A present-to-absent transition the subscription above didn't report: something just destroyed this mailbox's keys.
                     trackedRef.current.set(trackedUid, false);
                     lastSyncRef.current.delete(trackedUid);
                     builtRef.current.delete(trackedUid);

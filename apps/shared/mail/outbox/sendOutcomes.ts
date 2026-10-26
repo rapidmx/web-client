@@ -54,9 +54,12 @@ function escapeHtml(text: string): string {
     return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** "Open draft" for a message the server failed to relay: back into Drafts, and into a compose window with what was written. */
-async function openFailedDraft(event: SendEvent, client: ApiClient | undefined): Promise<void> {
-    const request = retainedRequest(event.uid);
+/** The message a failure is about: as the server reports it (a `SendEvent`), or as this tab sent it. */
+export type FailedSend = Pick<SendEvent, "uid" | "mailboxUid" | "subject" | "recipients">;
+
+/** "Open draft" for a message the server failed to relay: back into Drafts, and into a compose window with what was written. `request`: the
+ * one it was queued from, when this tab holds it. */
+async function openFailedDraft(event: FailedSend, client: ApiClient | undefined, request: SendRequest | undefined): Promise<void> {
     // A message sent as several copies (one per encryption format) is written again only when none of them went: while another copy has
     // gone or may still go, the whole message sent again would reach its recipients a second time - however the action came to be offered.
     const copies = unsentCopies(request);
@@ -126,7 +129,7 @@ async function openFailedDraft(event: SendEvent, client: ApiClient | undefined):
 
 /** "Retry" for a message the server failed to relay: the same send call again - a failed message stays in Outbox and the server queues it afresh (with a new retry budget).
  * `request`: the one it was queued from, when this tab holds it - a copy of a message sent as several is then awaited again. */
-async function retryFailed(event: SendEvent, client: ApiClient | undefined, request: SendRequest | undefined): Promise<void> {
+async function retryFailed(event: FailedSend, client: ApiClient | undefined, request: SendRequest | undefined): Promise<void> {
     if (!beginPendingSend({ draftUid: event.uid, mailboxUid: event.mailboxUid ?? "", subject: event.subject, recipients: event.recipients, scheduled: false })) {
         return;
     }
@@ -170,14 +173,13 @@ export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
         return;
     }
     const failure = describeSendEventError(event.error, event.action === "send-failed" ? "The server couldn't send this message." : "The server couldn't send this message yet.");
-    const what = describeMessage(event.subject, summary(event.recipients));
     if (event.action === "send-retrying") {
         const next = event.nextAttemptAt ? Date.parse(event.nextAttemptAt) : NaN;
         notify({
             id: retryId(event.uid),
             kind: "info",
             title: "Retrying to send",
-            message: `${what} (attempt ${event.attempt + 1}${Number.isNaN(next) ? "" : `, at ${new Date(next).toLocaleTimeString()}`}). ${failure.message}`,
+            message: `${describeMessage(event.subject, summary(event.recipients))} (attempt ${event.attempt + 1}${Number.isNaN(next) ? "" : `, at ${new Date(next).toLocaleTimeString()}`}). ${failure.message}`,
             details: failure.lines,
             sticky: false,
             timeoutMs: 8_000,
@@ -187,6 +189,15 @@ export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
     dismiss(retryId(event.uid));
     const request = retainedRequest(event.uid);
     copyFailed(request, event.uid);
+    notifySendFailure(event, failure, request, client);
+}
+
+/**
+ * The sticky "This message wasn't sent" for a message that failed, `failure` saying why, with what can be done about it - for one the server
+ * failed to relay, and for a message sent as several copies (`SendRequest.copyUids`) of which this tab couldn't hand over the rest after the
+ * server had failed one (`sendJob.ts`'s `notifyFailure()`). `request`: the one it was queued from, when this tab holds it.
+ */
+export function notifySendFailure(event: FailedSend, failure: { message: string; lines: string[] }, request: SendRequest | undefined, client: ApiClient | undefined): void {
     // Every copy of a message sent as several (one per encryption format, `SendRequest.copyUids`) failed or never went: nobody has it, and it
     // is the whole message's failure - one pop-up, whose Retry hands each copy over again and whose "Open draft" writes the message again.
     const copies = unsentCopies(request);
@@ -198,7 +209,7 @@ export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
             void retryFailed({ ...event, uid }, client, request);
         }
     };
-    const actions = [{ label: "Retry", onClick: retry }, ...(oneCopy ? [] : [{ label: "Open draft", onClick: () => void openFailedDraft(event, client) }])];
+    const actions = [{ label: "Retry", onClick: retry }, ...(oneCopy ? [] : [{ label: "Open draft", onClick: () => void openFailedDraft(event, client, request) }])];
     const message: string = oneCopy ? `The copy for some of its recipients didn't go - the others' copy is sent on its own. ${failure.message}` : failure.message;
     // What an earlier copy's failure said of the others is no longer so: this pop-up stands for the whole message.
     for (const uid of copies?.filter((uid) => uid !== event.uid) ?? []) {
@@ -209,7 +220,7 @@ export function handleSendEvent(event: SendEvent, client?: ApiClient): void {
         id: failedId(event.uid),
         kind: "error",
         title: "This message wasn't sent",
-        message: `${what}: ${message}`,
+        message: `${describeMessage(event.subject, summary(event.recipients))}: ${message}`,
         details: failure.lines,
         actions,
     });

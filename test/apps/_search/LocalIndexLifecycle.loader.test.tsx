@@ -19,7 +19,10 @@ beforeEach(() => {
     state.syncLoads = 0;
     state.syncFailures = 0;
     state.syncs = [];
-    vi.doMock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys: () => ({ masterKey: new Uint8Array(32), zeroAccessKeys: [{}] }) }));
+    vi.doMock("../../../lib/crypto/keySession.js", () => ({
+        getUnlockedKeys: () => ({ masterKey: new Uint8Array(32), zeroAccessKeys: [{}] }),
+        subscribeKeySession: () => () => undefined,
+    }));
     vi.doMock("../../../apps/shared/search/zeroAccessIndexSync.js", () => {
         state.syncLoads++;
         if (state.syncFailures > 0) {

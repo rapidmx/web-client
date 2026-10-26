@@ -10,8 +10,17 @@ import type { ApiClient } from "../../../lib/util/api.js";
 import { ApiClientContext } from "../../../lib/util/apiClientContext.js";
 import LocalIndexLifecycle, { POLL_INTERVAL_MS, ZERO_ACCESS_SYNC_INTERVAL_MS } from "../../../apps/shared/search/LocalIndexLifecycle.js";
 
-const { getUnlockedKeys } = vi.hoisted(() => ({ getUnlockedKeys: vi.fn() }));
-vi.mock("../../../lib/crypto/keySession.js", () => ({ getUnlockedKeys }));
+const { getUnlockedKeys, keyListeners } = vi.hoisted(() => ({
+    getUnlockedKeys: vi.fn(),
+    keyListeners: new Set<(event: { mailboxUid: string; state: "unlocked" | "locked" }) => void>(),
+}));
+vi.mock("../../../lib/crypto/keySession.js", () => ({
+    getUnlockedKeys,
+    subscribeKeySession: (listener: (event: { mailboxUid: string; state: "unlocked" | "locked" }) => void) => {
+        keyListeners.add(listener);
+        return () => keyListeners.delete(listener);
+    },
+}));
 
 const { buildLocalIndex, cancelLocalIndexBuild } = vi.hoisted(() => ({ buildLocalIndex: vi.fn(), cancelLocalIndexBuild: vi.fn() }));
 vi.mock("../../../apps/shared/search/localIndexBuilder.js", () => ({ buildLocalIndex, cancelLocalIndexBuild }));
@@ -46,6 +55,7 @@ beforeEach(async () => {
 
 afterEach(() => {
     vi.useRealTimers();
+    keyListeners.clear();
 });
 
 /** The builder is loaded with a dynamic import when a build is due, so its start is a few microtasks after the render. */
@@ -182,6 +192,82 @@ describe("LocalIndexLifecycle - an explicit ApiClient is threaded through", () =
         unlockedMailboxes.add("mb1");
         await tick();
         expect(buildLocalIndex).toHaveBeenCalledWith("mb1", expect.anything(), folders, undefined, client);
+    });
+});
+
+// `destroyUnlockedKeys()` reports a lock synchronously, and the index client destroys the index at once (`localIndexRpcClient.ts`): a
+// re-unlock before the next poll tick must still build again, or the destroyed index stays unbuilt for the rest of the page load.
+describe("LocalIndexLifecycle - a lock reported by the key session", () => {
+    const lock = (uid: string) => {
+        unlockedMailboxes.delete(uid);
+        for (const listener of [...keyListeners]) {
+            listener({ mailboxUid: uid, state: "locked" });
+        }
+    };
+    const unlock = (uid: string) => {
+        unlockedMailboxes.add(uid);
+        for (const listener of [...keyListeners]) {
+            listener({ mailboxUid: uid, state: "unlocked" });
+        }
+    };
+
+    it("builds again after a lock and unlock that both fall between two poll ticks", async () => {
+        unlockedMailboxes.add("mb1");
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        expect(buildLocalIndex).toHaveBeenCalledTimes(1);
+
+        lock("mb1");
+        unlock("mb1");
+        await tick();
+        await flush();
+        expect(buildLocalIndex).toHaveBeenCalledTimes(2);
+        // The index client cancels and destroys on the lock itself; the poll never saw the keys missing, so sends neither.
+        expect(destroyLocalIndex).not.toHaveBeenCalled();
+        expect(cancelLocalIndexBuild).not.toHaveBeenCalled();
+    });
+
+    it("starts no sync from a build the lock overtook, only from the next unlock's own build", async () => {
+        getUnlockedKeys.mockImplementation((uid: string) =>
+            unlockedMailboxes.has(uid) ? { masterKey: new Uint8Array(32), zeroAccessKeys: [{}] } : undefined,
+        );
+        unlockedMailboxes.add("mb1");
+        let finishFirst: (() => void) | undefined;
+        let finishSecond: (() => void) | undefined;
+        buildLocalIndex
+            .mockImplementationOnce(() => new Promise<void>((resolve) => (finishFirst = resolve)))
+            .mockImplementationOnce(() => new Promise<void>((resolve) => (finishSecond = resolve)));
+        render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+
+        lock("mb1");
+        unlock("mb1");
+        await act(async () => {
+            finishFirst!();
+            await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(syncZeroAccessIndex).not.toHaveBeenCalled();
+        await tick();
+        await flush();
+        expect(buildLocalIndex).toHaveBeenCalledTimes(2);
+        expect(syncZeroAccessIndex).not.toHaveBeenCalled();
+        await act(async () => {
+            finishSecond!();
+            await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(syncZeroAccessIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores a lock of a mailbox it never built, and stops listening once unmounted", async () => {
+        unlockedMailboxes.add("mb1");
+        const { unmount } = render(<LocalIndexLifecycle mailboxUid="mb1" folders={folders} />);
+        await flush();
+        lock("mb2");
+        await tick();
+        await flush();
+        expect(buildLocalIndex).toHaveBeenCalledTimes(1);
+        unmount();
+        expect(keyListeners.size).toBe(0);
     });
 });
 

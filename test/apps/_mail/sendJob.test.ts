@@ -916,6 +916,139 @@ describe("startSend - OpenPGP recipients", () => {
         });
     });
 
+    describe("when the server fails the first copy while the next is still being handed over, and that hand-over fails too (#713)", () => {
+        const errors = () => toasts().filter((toast) => toast.kind === "error");
+        const sendRacing = async () => {
+            mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+            mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+            let refuseSecond: (err: unknown) => void = () => undefined;
+            mocks.queueMessageSend
+                .mockResolvedValueOnce({ queued: true, message: draft })
+                .mockImplementationOnce(() => new Promise((_resolve, reject) => (refuseSecond = reject)));
+            send({ cc: [{ address: "pat@proton.example" }] });
+            await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+            handleSendEvent({ action: "send-failed", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1, error: { message: "No such user." } });
+            expect(errors()[0].actions.map((action) => action.label)).toEqual(["Retry"]);
+            refuseSecond(new ApiRequestError("Unavailable", 503));
+            await settle();
+        };
+
+        it("says the whole message failed, never that some recipients were sent it, with a Retry that hands over both copies and Open draft", async () => {
+            await sendRacing();
+            expect(errors()).toHaveLength(1);
+            expect(errors()[0].message).not.toContain("Only some of its recipients");
+            expect(errors()[0].message).toContain("Unavailable");
+            expect(errors()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+
+            // Retry hands the failed copy over again from Outbox, and the OpenPGP copy for the first time, without building anything again.
+            mocks.queueMessageSend.mockReset().mockResolvedValue({ queued: true, message: draft });
+            errors()[0].actions[0].onClick!();
+            await vi.waitFor(() => expect(mocks.queueMessageSend).toHaveBeenCalledTimes(2));
+            await vi.waitFor(() => expect(isSendPending("m1") || isSendPending("m2")).toBe(false));
+            expect(mocks.queueMessageSend.mock.calls.map(([uid]) => uid).sort()).toEqual(["m1", "m2"]);
+            expect(mocks.createDraft).toHaveBeenCalledTimes(1);
+            expect(errors()).toEqual([]);
+            // Confirmed once both went.
+            handleSendEvent({ action: "send-succeeded", uid: "m1", mailboxUid: "mb1", subject: "Hello", recipients: ["bob@example.com"], attempt: 1 });
+            expect(toasts().some((toast) => toast.title === "Message sent")).toBe(false);
+            handleSendEvent({ action: "send-succeeded", uid: "m2", mailboxUid: "mb1", subject: "Hello", recipients: ["pat@proton.example"], attempt: 1 });
+            expect(toasts().map((toast) => toast.title)).toEqual(["Message sent"]);
+        });
+
+        it("writes the whole message again from Open draft, bringing the failed copy back from Outbox and removing the OpenPGP copy's draft", async () => {
+            const open = vi.fn();
+            const off = registerComposeOpener(open);
+            await sendRacing();
+            mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, version: 7, folderUid: uid === "m1" ? "outbox" : "drafts" }));
+            mocks.listFolders.mockResolvedValue([{ uid: "drafts", type: "drafts" }]);
+            mocks.cancelScheduledSend.mockImplementation(async (message: Message, folderUid: string) => ({ ...message, folderUid }));
+            mocks.deleteMessage.mockResolvedValue(undefined);
+            errors()[0].actions[1].onClick!();
+            await vi.waitFor(() => expect(open).toHaveBeenCalled());
+            expect(mocks.cancelScheduledSend.mock.calls.map(([message]) => message.uid)).toEqual(["m1"]);
+            expect(open.mock.calls[0][0].resume.draft).toMatchObject({ uid: "m1", folderUid: "drafts" });
+            expect(mocks.deleteMessage.mock.calls).toEqual([["m2", 7, undefined]]);
+            expect(errors()).toEqual([]);
+            expect(retainedRequest("m1")).toBeUndefined();
+            expect(retainedRequest("m2")).toBeUndefined();
+            off();
+        });
+    });
+
+    describe("Open draft after this tab couldn't hand over the first copy of a mixed-format message (#714)", () => {
+        const errors = () => toasts().filter((toast) => toast.kind === "error");
+        const sendRefused = async () => {
+            mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+            mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+            mocks.queueMessageSend.mockRejectedValueOnce(new ApiRequestError("Unavailable", 503));
+            send({ cc: [{ address: "pat@proton.example" }] });
+            await settle();
+            expect(errors()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+            expect(mocks.queueMessageSend).toHaveBeenLastCalledWith("m1", undefined);
+        };
+
+        it("deletes the OpenPGP copy's draft, which a send from the window opened would otherwise build again", async () => {
+            const open = vi.fn();
+            const off = registerComposeOpener(open);
+            await sendRefused();
+            mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, version: 5 }));
+            mocks.deleteMessage.mockResolvedValue(undefined);
+            errors()[0].actions[1].onClick!();
+            expect(open.mock.calls[0][0].resume.draft.uid).toBe("m1");
+            await vi.waitFor(() => expect(mocks.deleteMessage.mock.calls).toEqual([["m2", 5, undefined]]));
+            expect(mocks.getMessage.mock.calls.map(([uid]) => uid)).toEqual(["m2"]);
+            expect(errors()).toEqual([]);
+            off();
+        });
+
+        it("keeps a copy the server holds as accepted after all, and goes on when it can't be read", async () => {
+            const open = vi.fn();
+            const off = registerComposeOpener(open);
+            await sendRefused();
+            mocks.getMessage.mockResolvedValueOnce({ ...draft, uid: "m2", folderUid: "outbox" });
+            errors()[0].actions[1].onClick!();
+            await vi.waitFor(() => expect(mocks.getMessage).toHaveBeenCalledTimes(1));
+            await Promise.resolve();
+            expect(mocks.deleteMessage).not.toHaveBeenCalled();
+
+            dismissAll();
+            await sendRefused();
+            mocks.getMessage.mockRejectedValueOnce(new TypeError("network down"));
+            errors()[0].actions[1].onClick!();
+            await vi.waitFor(() => expect(mocks.getMessage).toHaveBeenCalledTimes(2));
+            expect(mocks.deleteMessage).not.toHaveBeenCalled();
+            expect(open).toHaveBeenCalledTimes(2);
+            off();
+        });
+
+        it("deletes nothing when no compose window can be opened", async () => {
+            await sendRefused();
+            errors()[0].actions[1].onClick!();
+            await Promise.resolve();
+            expect(mocks.getMessage).not.toHaveBeenCalled();
+            expect(mocks.deleteMessage).not.toHaveBeenCalled();
+            expect(errors()).toHaveLength(1);
+        });
+    });
+
+    it("deletes the OpenPGP copy's draft it created when building that copy fails, as the Retry builds it again (#714)", async () => {
+        mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
+        mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
+        mocks.assembleDraftRaw.mockImplementation(async (uid: string) => {
+            if (uid === "m2") {
+                throw new ApiRequestError("Unavailable", 503);
+            }
+            return { ...draft, uid, version: 4 };
+        });
+        mocks.getMessage.mockImplementation(async (uid: string) => ({ ...draft, uid, version: 2 }));
+        mocks.deleteMessage.mockResolvedValue(undefined);
+        send({ cc: [{ address: "pat@proton.example" }] });
+        await settle();
+        expect(mocks.queueMessageSend).not.toHaveBeenCalled();
+        expect(mocks.deleteMessage.mock.calls).toEqual([["m2", 2, undefined]]);
+        expect(toasts()[0].actions.map((action) => action.label)).toEqual(["Retry", "Open draft"]);
+    });
+
     it("waits for the first copy's report when the copy a Retry was for turns out to have gone already", async () => {
         mocks.getUnlockedKeys.mockReturnValue(unlockedOpenPgp);
         mocks.lookupKeys.mockImplementation(async (_mailboxUid: string, address: string) => ({ keys: address === "bob@example.com" ? [peerKey] : [pgpKey], encryptPreference: MUTUAL }));
