@@ -428,6 +428,60 @@ describe("SettingsPrivacyPage", () => {
         expect(screen.getByText("Couldn't upload the file")).toBeInTheDocument();
     });
 
+    describe("a mailbox whose mail is zero-access", () => {
+        const zeroAccessMailbox = { ...mailbox, zeroAccessKeys: [{ fingerprint: "fp", useType: "zero-access" }] };
+        const IMPORT_REFUSED = /Importing an archive isn't available while zero-access encryption protects this mailbox's mail/;
+        const shell = (policy: () => Response) =>
+            mockShell((url) => {
+                if (url === "/api/mail/mailboxes" || url.startsWith("/api/mail/mailboxes?")) return jsonResponse(200, [zeroAccessMailbox]);
+                if (url.startsWith("/api/system/encryption-policy")) return policy();
+                return undefined;
+            });
+
+        it("offers no server-side import, saying why, while the administrator allows zero-access", async () => {
+            shell(() => jsonResponse(200, { allowZeroAccess: true }));
+            render(<SettingsPrivacyPage userUid="u1" />);
+            expect(await screen.findByText(IMPORT_REFUSED)).toBeInTheDocument();
+            expect(screen.queryByLabelText("Upload mail archive")).not.toBeInTheDocument();
+            expect(screen.queryByRole("button", { name: "Upload Mbox or PST file" })).not.toBeInTheDocument();
+            // The request list is still shown.
+            expect(await screen.findByText("No import requests yet.")).toBeInTheDocument();
+        });
+
+        it("still says why when the policy can't be read, as the server would refuse the upload", async () => {
+            const fetchMock = shell(() => jsonResponse(500, { message: "down" }));
+            render(<SettingsPrivacyPage userUid="u1" />);
+            expect(await screen.findByText(IMPORT_REFUSED)).toBeInTheDocument();
+            expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/system/encryption-policy"))).toBe(true);
+            expect(screen.queryByLabelText("Upload mail archive")).not.toBeInTheDocument();
+        });
+
+        it("offers the upload once the administrator turned zero-access off for the server", async () => {
+            shell(() => jsonResponse(200, { allowZeroAccess: false }));
+            render(<SettingsPrivacyPage userUid="u1" />);
+            expect(await screen.findByRole("button", { name: "Upload Mbox or PST file" })).toBeInTheDocument();
+            expect(screen.queryByText(IMPORT_REFUSED)).not.toBeInTheDocument();
+        });
+    });
+
+    it("shows the server's 409 refusal in place of the upload (zero-access turned on since the page loaded)", async () => {
+        mockShell((url, init) => {
+            if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") {
+                return jsonResponse(409, { message: "Server-side import isn't available for a zero-access mailbox." });
+            }
+            return undefined;
+        });
+        render(<SettingsPrivacyPage userUid="u1" />);
+        await screen.findByLabelText("Destination folder");
+
+        const user = userEvent.setup();
+        await user.upload(screen.getByLabelText("Upload mail archive"), new File(["..."], "archive.mbox"));
+
+        expect(await screen.findByText("Server-side import isn't available for a zero-access mailbox.")).toBeInTheDocument();
+        expect(screen.queryByLabelText("Upload mail archive")).not.toBeInTheDocument();
+        expect(screen.queryByText("Couldn't upload the file")).not.toBeInTheDocument();
+    });
+
     it("shows a generic message when uploading fails with a non-API error", async () => {
         mockShell((url, init) => {
             if (url.startsWith("/api/mail/mailbox-import-requests") && init?.method === "POST") throw new TypeError("network down");

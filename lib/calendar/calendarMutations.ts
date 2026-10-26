@@ -31,6 +31,7 @@ import { ApiClient, ApiRequestError } from "../util/api.js";
 import { KeysLockedError } from "../crypto/masterKey.js";
 import { isOpenedRecord, isProtectedRecord, openSealedRecord } from "../zeroAccess/sealedRecords.js";
 import { followMeetingKeyExpiry } from "../videoconf/protectedMeetings.js";
+import { markSealedContentOpened } from "./protectedEvents.js";
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
  * account of a multi-account app) to call instead of the default global `apiFetch()` - see `withClient()`'s
@@ -44,13 +45,14 @@ const PROTECTED_TITLE = "[...]";
 
 /** What `SealedOccurrenceError` says. */
 export const SEALED_OCCURRENCE_MESSAGE =
-    "This event came from an invitation to a zero-access mailbox, so one occurrence of it can't be changed on its own. Change the entire series, or ask the organizer to.";
+    "This event came from an invitation to a zero-access mailbox, so one occurrence of it can't be changed on its own when it moves to another calendar or the server can't keep it protected. Change the entire series, or ask the organizer to.";
 
 /**
- * One occurrence of an event made from an invitation that reached a zero-access mailbox (`sealedContent`), refused by `detachOccurrence()`
- * before anything is sent: its content is sealed to the mailbox's key, and a detached copy is a new event, which restapi stores readable
- * unless the mailbox protects its calendar - it would keep the invitation's real title, location and description in the clear. An
- * `ApiRequestError` (409), as `SealedMoveError` is, so the event dialog and the drag handler show its message.
+ * One occurrence of an event made from an invitation that reached a zero-access mailbox (`sealedContent`) that `detachOccurrence()` can't
+ * split off without its content being stored readable: one moved to another calendar (restapi re-seals a detached occurrence's content
+ * only in the calendar of the series it belongs to; it refuses to move a sealed event for the same reason), or one a server stored
+ * unsealed (one from before restapi re-sealed such a create - the copy is deleted at once). An `ApiRequestError` (409), as
+ * `SealedMoveError` is, so the event dialog and the drag handler show its message.
  */
 export class SealedOccurrenceError extends ApiRequestError {
     constructor() {
@@ -176,8 +178,10 @@ export async function saveEventSeries(
  *
  * A protected occurrence (zero-access) is copied from its opened content: one that can't be opened here - its mailbox is locked - holds
  * only placeholders, which the new event would store as its real title, location and description. It throws `KeysLockedError` instead,
- * before anything is written. One of an event made from a zero-access invitation (`sealedContent`) throws `SealedOccurrenceError`, opened
- * or not: the create would store its opened content readable (restapi re-seals that content only on an update of the event that holds it).
+ * before anything is written. One of an event made from a zero-access invitation (`sealedContent`) is sent opened too: restapi's create
+ * seals it again to the series' key (`prepareCreate()` finds the series by `icalUid` in the same mailbox), storing only placeholders, and
+ * the event returned is marked opened with the content sent. Moved to another calendar it throws `SealedOccurrenceError` before anything
+ * is sent (the series isn't there to seal it to), and a copy the server returns unsealed is deleted and refused the same way.
  */
 export async function detachOccurrence(
     occurrence: CalendarOccurrence,
@@ -191,8 +195,13 @@ export async function detachOccurrence(
     if ((isProtectedRecord(occurrence) && !isOpenedRecord(occurrence)) || (occurrence.sealedContent && occurrence.title === PROTECTED_TITLE)) {
         throw new KeysLockedError("This event is protected and your mailbox is locked. Unlock it to change one occurrence of the event.");
     }
-    // Opened, its content would go to the server readable in a new event's create (see `SealedOccurrenceError`).
-    if (occurrence.sealedContent) {
+    const sealedContent: boolean = !!occurrence.sealedContent;
+    // Sealed again only in the series' own calendar (see `SealedOccurrenceError`).
+    if (
+        sealedContent &&
+        ((fields.mailboxUid !== undefined && fields.mailboxUid !== occurrence.mailboxUid) ||
+            (fields.folderUid !== undefined && fields.folderUid !== occurrence.folderUid))
+    ) {
         throw new SealedOccurrenceError();
     }
     const originalStart = occurrence.recurrenceId!;
@@ -227,13 +236,27 @@ export async function detachOccurrence(
         recurrenceId: originalStart,
     };
     const created = await createCalendarEvent(input, client);
+    if (sealedContent && !created.sealedContent) {
+        // A server that stored the opened content readable: taken back at once, and the occurrence left as it was.
+        await deleteCalendarEvent(created.uid, created.version, client).catch(() => undefined);
+        throw new SealedOccurrenceError();
+    }
     try {
         await addException(occurrence, originalStart, client);
     } catch (err) {
         await deleteCalendarEvent(created.uid, created.version, client).catch(() => undefined);
         throw err;
     }
-    return created;
+    // Stored with placeholders: shown with the content it was given, as an opened event.
+    return sealedContent
+        ? markSealedContentOpened({
+              ...created,
+              title: input.title,
+              location: input.location,
+              description: input.description ?? null,
+              descriptionHtml: input.descriptionHtml ?? null,
+          })
+        : created;
 }
 
 /** Deletes an entire recurring series (or a genuinely non-recurring event) outright. */

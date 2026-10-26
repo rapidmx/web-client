@@ -11,6 +11,7 @@
  */
 import { ApiClient, withClient, withClientRaw } from "../util/api.js";
 import { RequestListParams, buildRequestListQuery } from "../util/apiQuery.js";
+import type { Mailbox } from "./mailApi.js";
 
 export type { RequestListParams };
 
@@ -78,4 +79,27 @@ export function listImportRequests(params: RequestListParams = {}, client?: ApiC
 
 export function getImportRequest(uid: string, client?: ApiClient): Promise<MailboxImportRequest> {
     return withClient(client, `/mail/mailbox-import-requests/${encodeURIComponent(uid)}`);
+}
+
+/** Why server-side import is refused for a mailbox whose mail is zero-access (restapi answers such an upload 409). */
+export const ZERO_ACCESS_IMPORT_MESSAGE =
+    "Importing an archive isn't available while zero-access encryption protects this mailbox's mail: the server would have to keep " +
+    "the uploaded archive readable until the import ran, which zero-access encryption doesn't allow.";
+
+/**
+ * Whether `mailbox`'s mail is stored zero-access encrypted, so restapi refuses a server-side import into it (`specs/search.md` §3: the
+ * uploaded archive would wait readable in the blob store). Decided as restapi's `zeroAccessStatus()` decides it for mail: the
+ * administrator's "Allow zero-access encryption" (`allowZeroAccess`; unknown counts as allowed, so an import is never offered only to be
+ * refused), the owner's switch (unset is on), mail among the protected types (undecided is on), and a key that isn't revoked.
+ */
+export function mailIsZeroAccess(
+    mailbox: Pick<Mailbox, "zeroAccessEnabled" | "zeroAccessTypes" | "zeroAccessKeys">,
+    allowZeroAccess: boolean | undefined,
+): boolean {
+    return (
+        allowZeroAccess !== false &&
+        mailbox.zeroAccessEnabled !== false &&
+        mailbox.zeroAccessTypes?.mail !== false &&
+        (mailbox.zeroAccessKeys ?? []).some((key) => !key.revokedAt)
+    );
 }

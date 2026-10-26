@@ -75,6 +75,18 @@ describe("openSealedEvents", () => {
         expect((await openSealedEvent(event("b", sealed))).title).toBe("[...]");
     });
 
+    it("treats an empty sealed title as none, so the title the row's per-field sealed copy opened to shows instead", async () => {
+        const key = await zeroAccessKey();
+        getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });
+        // A newer revision without SUMMARY: sealed with an empty title over a row that keeps its title in `sealedFields`.
+        const sealed = await seal({ title: "", location: "Room 9" }, key.certDer);
+        const perField = { ...event("b", sealed), title: "Opened per-field title", sealedFields: { title: "c2VhbGVk" } };
+
+        expect(await openSealedEvent(perField)).toMatchObject({ title: "Opened per-field title", location: "Room 9" });
+        // The cache is shared by every row with this content: one still showing its placeholder keeps it.
+        expect((await openSealedEvent(event("c", sealed))).title).toBe("[...]");
+    });
+
     it("forgets what it opened when a mailbox locks", async () => {
         const key = await zeroAccessKey();
         getUnlockedKeys.mockReturnValue({ zeroAccessKeys: [key] });

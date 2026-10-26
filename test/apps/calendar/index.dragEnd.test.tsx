@@ -295,13 +295,16 @@ describe("CalendarPage handleDragEnd", () => {
         expect(fetchMock.mock.calls.some(([, init]) => ["PUT", "POST"].includes((init as RequestInit | undefined)?.method ?? "GET"))).toBe(false);
     });
 
-    it("refuses to move one occurrence of an event made from a zero-access invitation, as a warning, writing nothing", async () => {
+    it("refuses to move one occurrence of an event made from a zero-access invitation that the server stored unprotected, as a warning, taking the copy back", async () => {
         // As the page holds it once opened: the real title beside the sealed content.
         const invited = { ...event, title: "Acquisition talks", sealedContent: { keyFingerprint: "fp", sealed: "c2VhbGVk" }, recurrenceRule: { freq: "daily", interval: 1, exceptions: [] } };
         const fetchMock = mockFetch((url, init) => {
             if (url.startsWith("/api/mail/mailboxes")) return jsonResponse(200, [mailbox]);
             if (url.startsWith("/api/mail/folders")) return jsonResponse(200, [calendarFolder]);
             if (url.startsWith("/api/mail/calendar-events") && (init?.method ?? "GET") === "GET") return jsonResponse(200, [invited]);
+            // A server that doesn't seal a detached occurrence again: it answers the create unsealed.
+            if (url === "/api/mail/calendar-events" && init?.method === "POST") return jsonResponse(200, { ...JSON.parse(init.body as string), uid: "e2", version: 0 });
+            if (url.startsWith("/api/mail/calendar-events/e2") && init?.method === "DELETE") return new Response(null, { status: 204 });
             throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
         });
         render(<CalendarPage userUid="u1" />);
@@ -312,7 +315,9 @@ describe("CalendarPage handleDragEnd", () => {
         });
 
         expect(await screen.findByText(/one occurrence of it can't be changed on its own/)).toBeInTheDocument();
-        expect(fetchMock.mock.calls.some(([, init]) => ["PUT", "POST"].includes((init as RequestInit | undefined)?.method ?? "GET"))).toBe(false);
+        const methods = fetchMock.mock.calls.map(([, init]) => (init as RequestInit | undefined)?.method ?? "GET");
+        expect(methods).toContain("DELETE");
+        expect(methods).not.toContain("PUT");
     });
 
     it("shows a generic error message when the mutation fails with a non-API error", async () => {

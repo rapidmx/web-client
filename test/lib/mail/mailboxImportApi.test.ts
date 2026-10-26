@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
-import { getImportRequest, listImportRequests, uploadMailboxImport } from "../../../lib/mail/mailboxImportApi.js";
+import { getImportRequest, listImportRequests, mailIsZeroAccess, uploadMailboxImport } from "../../../lib/mail/mailboxImportApi.js";
 import { configureApiBaseUrl, createApiClient } from "../../../lib/util/api.js";
 
 const request = {
@@ -183,5 +183,23 @@ describe("uploadMailboxImport with a client", () => {
         await uploadMailboxImport(new File(["From x\n"], "a.mbox"), { format: "mbox", targetFolderUid: "f1" }, client);
         expect(fetchMock.mock.calls[0][0]).toMatch(/^https:\/\/a\.example\.com\/api\//);
         expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("Authorization")).toBe("jwt tok");
+    });
+});
+
+describe("mailIsZeroAccess", () => {
+    const key = { fingerprint: "fp" } as any;
+
+    it("is true for a mailbox with a key that isn't revoked, unless the administrator, the owner or the mail type turned it off", () => {
+        expect(mailIsZeroAccess({ zeroAccessKeys: [key] }, true)).toBe(true);
+        // An unknown policy counts as allowed: the server would refuse the upload otherwise.
+        expect(mailIsZeroAccess({ zeroAccessKeys: [key], zeroAccessTypes: { calendar: false } }, undefined)).toBe(true);
+        expect(mailIsZeroAccess({ zeroAccessKeys: [key] }, false)).toBe(false);
+        expect(mailIsZeroAccess({ zeroAccessKeys: [key], zeroAccessEnabled: false }, true)).toBe(false);
+        expect(mailIsZeroAccess({ zeroAccessKeys: [key], zeroAccessTypes: { mail: false } }, true)).toBe(false);
+    });
+
+    it("is false without a key, or with only revoked ones", () => {
+        expect(mailIsZeroAccess({}, true)).toBe(false);
+        expect(mailIsZeroAccess({ zeroAccessKeys: [{ ...key, revokedAt: 1 }] }, true)).toBe(false);
     });
 });

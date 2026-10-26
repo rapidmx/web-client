@@ -17,6 +17,7 @@ import {
 } from "../../../lib/calendar/calendarMutations.js";
 import type { ApiClient } from "../../../lib/util/api.js";
 import { KeysLockedError } from "../../../lib/crypto/masterKey.js";
+import { isSealedContentOpened } from "../../../lib/calendar/protectedEvents.js";
 
 /** A minimal `ApiClient` whose own `fetch()` is a plain mock, distinct from the global `fetch()` the
  * default (no-client) path uses - lets a test assert an explicit client's calls never touch the global one. */
@@ -236,14 +237,69 @@ describe("detachOccurrence", () => {
         expect(fetchMock).toHaveBeenCalled();
     });
 
-    it("refuses, writing nothing, to detach an opened occurrence of an event made from a zero-access invitation", async () => {
-        const fetchMock = mockFetch(() => jsonResponse(200, occurrence()));
-        const opened = occurrence({ title: "Acquisition talks", location: "Room 4", description: "Project X", sealedContent: { keyFingerprint: "fp", sealed: "x" } });
-        // The create would store the opened title, location and description readable: never sent, whichever way the occurrence is changed.
-        await expect(detachOccurrence(opened, { title: "Acquisition talks (moved)" })).rejects.toThrow(SealedOccurrenceError);
-        await expect(moveOccurrence(opened, 60 * 60_000)).rejects.toThrow(SEALED_OCCURRENCE_MESSAGE);
-        await expect(resizeOccurrenceEnd(opened, new Date("2026-06-03T16:00:00.000Z"))).rejects.toMatchObject({ status: 409, code: "sealed-occurrence" });
-        expect(fetchMock).not.toHaveBeenCalled();
+    describe("an opened occurrence of an event made from a zero-access invitation", () => {
+        const opened = () =>
+            occurrence({ title: "Acquisition talks", location: "Room 4", description: "Project X", sealedContent: { keyFingerprint: "fp", sealed: "x" } });
+        /** The server's answers: the create sealed again (restapi `prepareCreate()`), unless `unsealed`. */
+        const server = (options: { unsealed?: boolean; deleteFails?: boolean } = {}) =>
+            mockFetch((url, init) => {
+                if (url === "/api/mail/calendar-events" && init?.method === "POST") {
+                    const body = JSON.parse(init.body as string);
+                    return jsonResponse(
+                        200,
+                        options.unsealed
+                            ? { ...body, uid: "e2", version: 0 }
+                            : { ...body, uid: "e2", version: 0, title: "[...]", location: null, description: null, sealedContent: { keyFingerprint: "fp", sealed: "y" } },
+                    );
+                }
+                if (url === "/api/mail/calendar-events/e1" && init?.method === "PUT") {
+                    return jsonResponse(200, occurrence());
+                }
+                if (url.startsWith("/api/mail/calendar-events/e2") && init?.method === "DELETE") {
+                    return options.deleteFails ? jsonResponse(500, { message: "down" }) : emptyResponse(204);
+                }
+                throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+            });
+
+        it("sends its opened content for the server to seal again, and returns the copy shown opened", async () => {
+            const fetchMock = server();
+
+            const created = await moveOccurrence(opened(), 60 * 60_000);
+
+            const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST")!;
+            expect(JSON.parse((post[1] as RequestInit).body as string)).toMatchObject({
+                mailboxUid: "mb1",
+                folderUid: "f1",
+                title: "Acquisition talks",
+                location: "Room 4",
+                description: "Project X",
+                icalUid: "abc",
+                recurrenceId: "2026-06-03T15:00:00.000Z",
+            });
+            expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/mail/calendar-events/e1" && (init as RequestInit).method === "PUT")).toBe(true);
+            expect(created).toMatchObject({ uid: "e2", title: "Acquisition talks", location: "Room 4", description: "Project X", descriptionHtml: null });
+            expect(isSealedContentOpened(created)).toBe(true);
+        });
+
+        it("refuses, writing nothing, to move it to another calendar, where the series isn't there to seal it to", async () => {
+            const fetchMock = server();
+            await expect(detachOccurrence(opened(), { mailboxUid: "mb2", folderUid: "f9" })).rejects.toThrow(SealedOccurrenceError);
+            await expect(detachOccurrence(opened(), { folderUid: "f9" })).rejects.toThrow(SEALED_OCCURRENCE_MESSAGE);
+            await expect(detachOccurrence(opened(), { mailboxUid: "mb2" })).rejects.toMatchObject({ status: 409, code: "sealed-occurrence" });
+            expect(fetchMock).not.toHaveBeenCalled();
+            // Its own calendar named explicitly is no move.
+            await detachOccurrence(opened(), { mailboxUid: "mb1", folderUid: "f1" });
+            expect(fetchMock).toHaveBeenCalled();
+        });
+
+        it("deletes a copy a server stored unsealed at once and refuses, adding no exception, even when the delete fails", async () => {
+            for (const deleteFails of [false, true]) {
+                const fetchMock = server({ unsealed: true, deleteFails });
+                await expect(resizeOccurrenceEnd(opened(), new Date("2026-06-03T16:00:00.000Z"))).rejects.toThrow(SealedOccurrenceError);
+                const methods = fetchMock.mock.calls.map(([url, init]) => `${(init as RequestInit | undefined)?.method ?? "GET"} ${url}`);
+                expect(methods).toEqual(["POST /api/mail/calendar-events", expect.stringMatching(/^DELETE \/api\/mail\/calendar-events\/e2/)]);
+            }
+        });
     });
 
     it("adds an exception to the master and creates a standalone event with the edited fields", async () => {

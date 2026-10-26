@@ -62,7 +62,10 @@ async function openFields(event: CalendarEvent): Promise<Partial<CalendarEvent> 
         const fields = JSON.parse(new TextDecoder().decode(await decryptEnvelopedDataWithKeys(fromBase64(sealed), keys))) as SealedEventFields;
         const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
         const result: Partial<CalendarEvent> = {
-            title: text(fields.title) ?? event.title,
+            // An empty sealed title is no title: a newer revision without SUMMARY over a row that keeps its title sealed field by field
+            // (`sealedFields.title`) is sealed with an empty one, and the title opened from that copy (or the row's own) shows instead.
+            // Left out here, not copied from `event`, as the cache is shared by every row with this sealed content.
+            ...(text(fields.title) ? { title: text(fields.title) } : {}),
             location: text(fields.location),
             description: text(fields.description) ?? null,
             descriptionHtml: text(fields.descriptionHtml) ?? null,

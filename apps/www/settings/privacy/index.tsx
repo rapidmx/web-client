@@ -15,15 +15,18 @@ import {
 import {
     MailboxImportFormat,
     MailboxImportRequest,
+    ZERO_ACCESS_IMPORT_MESSAGE,
     listImportRequests,
+    mailIsZeroAccess,
     uploadMailboxImport,
 } from "../../../../lib/mail/mailboxImportApi.js";
+import { getEncryptionPolicy } from "../../../../lib/crypto/keyvaultApi.js";
 import {
     DataSubjectErasureRequest,
     createErasureRequest,
     listErasureRequests,
 } from "../../../../lib/mail/erasureRequestApi.js";
-import { Folder, listFolders } from "../../../../lib/mail/mailApi.js";
+import { Folder, Mailbox, listFolders } from "../../../../lib/mail/mailApi.js";
 import { useApiClient } from "../../../../lib/util/apiClientContext.js";
 import SettingsShell, { SettingsShellProps, useSettingsShell } from "../../../shared/components/settings/layout/SettingsShell.js";
 import Alert from "../../../../lib/components/feedback/Alert.js";
@@ -89,7 +92,7 @@ function PrivacyContent({ userUid }: { userUid?: string }) {
                 {selectedIsOwn ? (
                     <>
                         <ExportSection mailboxUid={mailboxUid} mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />
-                        <ImportSection mailboxUid={mailboxUid} />
+                        <ImportSection mailboxUid={mailboxUid} mailbox={selected} />
                         <ErasureSection mailboxLabel={`${selected.displayName} (${selected.primarySmtpAddress})`} />
                     </>
                 ) : (
@@ -238,8 +241,35 @@ function ExportSection({ mailboxUid, mailboxLabel }: { mailboxUid?: string; mail
     );
 }
 
-function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
+/**
+ * Uploads a mail archive for restapi's server-side import. Not offered for a mailbox whose mail is zero-access (`mailIsZeroAccess()`):
+ * restapi refuses it (409), since the archive would wait readable in its blob store until the import ran, and the reason is shown
+ * instead. A 409 the server gives anyway (zero-access turned on since the page loaded) is shown in its place too.
+ */
+function ImportSection({ mailboxUid, mailbox }: { mailboxUid?: string; mailbox: Mailbox }) {
     const client = useApiClient();
+    // Only when the mailbox's own fields say its mail is zero-access is the administrator's policy asked: `undefined` until it answers
+    // (counted as allowed), and a failed read counts as allowed too, so the upload is never offered only to be refused.
+    const zeroAccessCandidate = mailIsZeroAccess(mailbox, undefined);
+    const [allowZeroAccess, setAllowZeroAccess] = useState<boolean | undefined>(undefined);
+    const [refused, setRefused] = useState<string | null>(null);
+    useEffect(() => {
+        if (!zeroAccessCandidate) {
+            return;
+        }
+        let cancelled = false;
+        void getEncryptionPolicy(client)
+            .then((policy) => {
+                if (!cancelled) {
+                    setAllowZeroAccess(policy.allowZeroAccess);
+                }
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [zeroAccessCandidate, client]);
+    const zeroAccess = mailIsZeroAccess(mailbox, allowZeroAccess);
     const [folders, setFolders] = useState<Folder[]>([]);
     const [targetFolderUid, setTargetFolderUid] = useState("");
     const [foldersError, setFoldersError] = useState<string | null>(null);
@@ -294,7 +324,14 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
         setUploading(true);
         uploadMailboxImport(file, { format: importFormatFromFilename(file.name), targetFolderUid, mailboxUid: mailboxUid! }, client)
             .then(() => loadRequests())
-            .catch((err) => notifyApiError(err, "Couldn't upload the file"))
+            .catch((err) => {
+                if (err instanceof ApiRequestError && err.status === 409) {
+                    // The server refuses an import into this mailbox (its mail is zero-access): say why, in place of the upload.
+                    setRefused(err.message);
+                } else {
+                    notifyApiError(err, "Couldn't upload the file");
+                }
+            })
             .finally(() => setUploading(false));
     }
 
@@ -306,42 +343,48 @@ function ImportSection({ mailboxUid }: { mailboxUid?: string }) {
                 choose below. This runs in the background — check back here for its progress.
             </p>
 
-            {folders.length > 0 && (
-                <label className="flex flex-col gap-1.5 text-sm mb-3 max-w-xs">
-                    <span className="font-semibold">Destination folder</span>
-                    <select
-                        aria-label="Destination folder"
-                        className="text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
-                        value={targetFolderUid}
-                        onChange={(e) => setTargetFolderUid(e.target.value)}
-                    >
-                        {folders.map((folder) => (
-                            <option key={folder.uid} value={folder.uid}>
-                                {folder.name}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-            )}
+            {zeroAccess || refused ? (
+                <Alert>{refused ?? ZERO_ACCESS_IMPORT_MESSAGE}</Alert>
+            ) : (
+                <>
+                    {folders.length > 0 && (
+                        <label className="flex flex-col gap-1.5 text-sm mb-3 max-w-xs">
+                            <span className="font-semibold">Destination folder</span>
+                            <select
+                                aria-label="Destination folder"
+                                className="text-sm border border-border rounded-sm py-1.5 px-2 bg-surface"
+                                value={targetFolderUid}
+                                onChange={(e) => setTargetFolderUid(e.target.value)}
+                            >
+                                {folders.map((folder) => (
+                                    <option key={folder.uid} value={folder.uid}>
+                                        {folder.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    )}
 
-            <Button
-                type="button"
-                variant="secondary"
-                className="!w-auto mb-3"
-                loading={uploading}
-                disabled={uploading || !targetFolderUid}
-                onClick={() => fileInputRef.current?.click()}
-            >
-                Upload Mbox or PST file
-            </Button>
-            <input
-                ref={fileInputRef}
-                type="file"
-                accept=".mbox,.pst"
-                aria-label="Upload mail archive"
-                className="hidden"
-                onChange={handleFileChange}
-            />
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        className="!w-auto mb-3"
+                        loading={uploading}
+                        disabled={uploading || !targetFolderUid}
+                        onClick={() => fileInputRef.current?.click()}
+                    >
+                        Upload Mbox or PST file
+                    </Button>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".mbox,.pst"
+                        aria-label="Upload mail archive"
+                        className="hidden"
+                        onChange={handleFileChange}
+                    />
+                </>
+            )}
 
             {foldersError && <Alert>{foldersError}</Alert>}
             {loadError && <Alert>{loadError}</Alert>}
