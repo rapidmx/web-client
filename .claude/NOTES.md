@@ -9,6 +9,18 @@ any one machine's global Claude memory), so it travels with the code.
 decision, finding, or reverted approach worth remembering, add a dated entry under Session Log.
 Keep entries terse — this is a reference, not a transcript.
 
+## Agent model assignments (JP, 2026-10-28)
+
+Standing rule for every AI agent working on this project (applies to all RapidMX and RapidREST repositories):
+
+| Kind of work | Model |
+|---|---|
+| Design (specs, plans, architecture proposals) | Opus 5.5 (`claude-opus-5-5`) |
+| Architectural review | Opus 5.5 (`claude-opus-5-5`) |
+| Code review (finding and verifying defects in diffs or code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Fixes (implementing review findings and other code changes) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Simple operations (file operations, renames, project initialization and similar mechanical tasks) | Haiku 5.5 (`claude-haiku-5-5`) |
+
 ## Standing decisions
 
 - **Commit discipline.** Don't `git commit` unless explicitly asked for *that specific piece of
@@ -4131,15 +4143,3 @@ Review of these fixes: the independent reviewer reported no issues. Left: nothin
 
 - **Publish only from the tag's own green Build** (ported from activesync's 9c0f71d). A release pushes `main` and its tag at the same commit, and each push runs Build. The old Publish ran after *any* green Build of a tagged commit, so v0.37.0 published although `main`'s Build had failed, and the second Publish run failed as a duplicate. `.github/workflows/publish.yml`'s `check` job now runs only for a tag push's Build, requires the tag to point at that commit on `main`, and waits until every Build of the commit has finished, refusing if any did not succeed (a green rerun triggers Publish again). The npm publish steps are unchanged.
 - **The flaky test** (CI run 40379487894): `test/apps/settings/privacy/index.test.tsx` "still says why when the policy can't be read". `ImportSection` shows the zero-access refusal from its first render (a policy not yet read counts as allowed) and asks for the policy from a `useEffect`. Inside `findByText`'s `waitFor` (act environment off) React runs passive effects after the commit, so the MutationObserver could find the text before the effect had called `fetch`, and the "policy was requested" assertion failed. The component is correct; the test now waits for the policy response's body to be read, flushes the failure with `act` + a macrotask, then checks the refusal is still shown and no upload is offered. It now also fails if a failed read were counted as "not allowed" (checked by mutating the `.catch`). 30 consecutive runs of the file passed.
-
-## Agent model assignments (JP, 2026-10-28)
-
-Standing rule for every AI agent working on this project (applies to all RapidMX and RapidREST repositories):
-
-| Kind of work | Model |
-|---|---|
-| Design (specs, plans, architecture proposals) | Opus 5.5 (`claude-opus-5-5`) |
-| Architectural review | Opus 5.5 (`claude-opus-5-5`) |
-| Code review (finding and verifying defects in diffs or code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Fixes (implementing review findings and other code changes) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Simple operations (file operations, renames, project initialization and similar mechanical tasks) | Haiku 5.5 (`claude-haiku-5-5`) |
