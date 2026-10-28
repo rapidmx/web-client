@@ -31,6 +31,9 @@ export interface Domain {
     /** When set, this domain is a pure alias of the domain named here - it has no mailboxes of its own; mail
      * addressed to it is delivered to the matching mailbox on the domain it aliases instead. */
     aliasOf?: string;
+    /** Where the domain came from: `"seed"` for one the server added at start-up from the installation's own list, `"console"` for one added through
+     * the API. Unset on a domain from before this was recorded, which counts as added through the console. Server-managed. */
+    origin?: "seed" | "console" | null;
     /** The DNS provider config (`system/dns-providers`) that publishes this domain's records, `null` or unset for "manual": the administrator adds
      * them by hand. Changes only through `assignDnsProvider()`. */
     dnsProviderUid?: string | null;

@@ -164,6 +164,51 @@ describe("SetupPage", () => {
         expect(await screen.findByText("Could not add the domain.")).toBeInTheDocument();
     });
 
+    it("lists the domains the installation added as already added, each with its DNS panel", async () => {
+        const seeded = (name: string) => ({ ...domain, uid: name, name, origin: "seed" });
+        const fetchMock = mockSetup({ currentStep: "domain", domains: [seeded("example.com"), seeded("example.net")] });
+        const user = userEvent.setup();
+        renderPage();
+
+        const group = await screen.findByRole("region", { name: "Added from your installation" });
+        // The domains are headed one level under the region's heading, so a screen reader reads them as its children.
+        expect(screen.getByRole("heading", { level: 3, name: "Added from your installation" })).toBeInTheDocument();
+        expect(within(group).getByRole("heading", { level: 4, name: "example.com" })).toBeInTheDocument();
+        expect(within(group).getByRole("heading", { level: 4, name: "example.net" })).toBeInTheDocument();
+        expect(await within(group).findAllByText(/to prove ownership, then verify/)).toHaveLength(2);
+        expect(calls(fetchMock, "/api/mail/domains/example.com/dns-setup", "GET").length).toBeGreaterThan(0);
+        expect(calls(fetchMock, "/api/mail/domains/example.net/dns-setup", "GET").length).toBeGreaterThan(0);
+
+        // A seeded domain is enough to go on, and another can still be added.
+        expect(screen.queryByText("Add a domain to continue.")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "3. Server settings" })).toBeEnabled();
+        expect(screen.queryByLabelText("Domain name")).not.toBeInTheDocument();
+
+        await user.type(screen.getByLabelText("Add another domain"), "added.example");
+        await user.click(screen.getByRole("button", { name: "Add domain" }));
+        const added = await screen.findByRole("region", { name: "Domains you added" });
+        expect(screen.getByRole("heading", { level: 3, name: "Domains you added" })).toBeInTheDocument();
+        expect(within(added).getByRole("heading", { level: 4, name: "added.example" })).toBeInTheDocument();
+        // The domain added here isn't one of the installation's.
+        expect(within(screen.getByRole("region", { name: "Added from your installation" })).queryByText("added.example")).not.toBeInTheDocument();
+    });
+
+    it("keeps a domain that wasn't seeded out of the installation's list", async () => {
+        mockSetup({
+            currentStep: "domain",
+            domains: [{ ...domain, uid: "old.example", name: "old.example" }, { ...domain, uid: "console.example", name: "console.example", origin: "console" }],
+        });
+        renderPage();
+
+        expect(await screen.findByRole("heading", { level: 3, name: "old.example" })).toBeInTheDocument();
+        expect(screen.getByRole("heading", { level: 3, name: "console.example" })).toBeInTheDocument();
+        // With nothing seeded the step reads as before: no headings over the domains.
+        expect(screen.queryByRole("region", { name: "Added from your installation" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("region", { name: "Domains you added" })).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Add another domain")).toBeInTheDocument();
+    });
+
     it("still offers escrow when the encryption policy can't be read", async () => {
         mockSetup({
             currentStep: "escrow",

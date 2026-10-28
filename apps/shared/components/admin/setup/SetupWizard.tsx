@@ -343,6 +343,9 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
     const [name, setName] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    // The installation adds the domains it was installed with before anyone signs in: they're shown as already added.
+    const seeded = domains.filter((domain) => domain.origin === "seed");
+    const added = domains.filter((domain) => domain.origin !== "seed");
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -364,12 +367,31 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
 
     return (
         <div className="flex flex-col gap-5 max-w-3xl">
-            {domains.map((domain) => (
-                <div key={domain.uid} className="flex flex-col gap-3">
-                    <h3 className="text-base font-bold">{domain.name}</h3>
-                    <DomainDnsSetup uid={domain.uid} />
-                </div>
-            ))}
+            {seeded.length > 0 && (
+                <section aria-labelledby="setupSeededDomains" className="flex flex-col gap-5">
+                    <div className="flex flex-col gap-1">
+                        <h3 id="setupSeededDomains" className="text-sm font-bold uppercase tracking-wide">
+                            Added from your installation
+                        </h3>
+                        <p className="text-sm text-text-muted">Your installation already added these domains. Publish the DNS records for each one.</p>
+                    </div>
+                    {seeded.map((domain) => (
+                        <DomainPanel key={domain.uid} domain={domain} grouped />
+                    ))}
+                </section>
+            )}
+            {seeded.length > 0 && added.length > 0 ? (
+                <section aria-labelledby="setupAddedDomains" className="flex flex-col gap-5">
+                    <h3 id="setupAddedDomains" className="text-sm font-bold uppercase tracking-wide">
+                        Domains you added
+                    </h3>
+                    {added.map((domain) => (
+                        <DomainPanel key={domain.uid} domain={domain} grouped />
+                    ))}
+                </section>
+            ) : (
+                added.map((domain) => <DomainPanel key={domain.uid} domain={domain} />)
+            )}
             {error && <Alert>{error}</Alert>}
             <form onSubmit={handleSubmit} className={CARD_CLASS}>
                 <FormField label={domains.length === 0 ? "Domain name" : "Add another domain"} htmlFor="setupDomainName">
@@ -386,6 +408,17 @@ function DomainStep({ domains, onCreated }: { domains: Domain[]; onCreated: (dom
                     Add domain
                 </Button>
             </form>
+        </div>
+    );
+}
+
+// `grouped`: the panel sits under a region's own heading, so its domain heading is one level lower.
+function DomainPanel({ domain, grouped = false }: { domain: Domain; grouped?: boolean }) {
+    const Heading = grouped ? "h4" : "h3";
+    return (
+        <div className="flex flex-col gap-3">
+            <Heading className="text-base font-bold">{domain.name}</Heading>
+            <DomainDnsSetup uid={domain.uid} />
         </div>
     );
 }
