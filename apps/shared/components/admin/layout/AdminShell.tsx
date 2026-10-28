@@ -14,6 +14,7 @@ import {
     HiOutlineGlobeAlt,
     HiOutlineInboxStack,
     HiOutlineKey,
+    HiOutlineLink,
     HiOutlineLockClosed,
     HiOutlinePaintBrush,
     HiOutlinePuzzlePiece,
@@ -69,7 +70,8 @@ export type AdminSection =
     | "plugins"
     | "diagnostics"
     | "branding"
-    | "signingCertificates";
+    | "signingCertificates"
+    | "integrations";
 
 /** A core `AdminSection`, or a plugin's `adminNav` item id (see `PluginNav`). */
 export type AdminShellActive = AdminSection | (string & {});
@@ -150,6 +152,7 @@ const NAV_ITEMS: NavItem[] = [
         label: "Signing Certificates",
         icon: HiOutlineDocumentCheck,
     },
+    { id: "integrations", href: "/admin/integrations", label: "Integrations", icon: HiOutlineLink },
     { id: "plugins", href: "/admin/plugins", label: "Plugins", icon: HiOutlinePuzzlePiece },
     { id: "diagnostics", href: "/admin/diagnostics", label: "Diagnostics", icon: HiOutlineCpuChip },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
