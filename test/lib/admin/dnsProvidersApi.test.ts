@@ -14,6 +14,8 @@ import {
     listDnsProviders,
     listDnsProviderTypes,
     takeoverDnsRecords,
+    takeoverDnsHosts,
+    listDnsHostPublications,
     testDnsProvider,
     updateDnsProvider,
 } from "../../../lib/admin/dnsProvidersApi.js";
@@ -83,6 +85,22 @@ describe("dnsProvidersApi", () => {
         ]);
     });
 
+    it("queues a takeover of the deployment's hosts, all of them or the names asked for", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "op1" }));
+        await takeoverDnsHosts("cloudflare-ab12cd34");
+        await takeoverDnsHosts("cloudflare-ab12cd34", ["mail.example.com", "auth.example.com"]);
+        expect(fetchMock.mock.calls.map((call) => [call[0], call[1].method, call[1].body])).toEqual([
+            ["/api/system/dns-providers/cloudflare-ab12cd34/takeover", "POST", JSON.stringify({ hosts: true })],
+            ["/api/system/dns-providers/cloudflare-ab12cd34/takeover", "POST", JSON.stringify({ hosts: true, records: ["mail.example.com", "auth.example.com"] })],
+        ]);
+    });
+
+    it("lists how the deployment's hosts are published", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, [{ recordName: "mail.example.com" }]));
+        expect(await listDnsHostPublications()).toEqual([{ recordName: "mail.example.com" }]);
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/system/dns-providers/hosts");
+    });
+
     it("escapes a uid in the path", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, provider));
         await getDnsProvider("a/b");
@@ -101,8 +119,10 @@ describe("dnsProvidersApi", () => {
         await updateDnsProvider("p", { enabled: false }, client);
         await testDnsProvider("p", client);
         await takeoverDnsRecords("p", "example.com", ["mx"], client);
+        await takeoverDnsHosts("p", undefined, client);
+        await listDnsHostPublications(client);
         await deleteDnsProvider("p", client);
         expect(fetchMock.mock.calls.every((call) => String(call[0]).startsWith("https://mail.example.com/api/system/dns-providers"))).toBe(true);
-        expect(fetchMock).toHaveBeenCalledTimes(10);
+        expect(fetchMock).toHaveBeenCalledTimes(12);
     });
 });

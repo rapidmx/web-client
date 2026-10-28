@@ -272,9 +272,11 @@ export default function DnsProviderForm({ types, provider, submitLabel, onSave }
                 <span>
                     <span className="font-semibold block">Allow taking over existing records</span>
                     <span className="text-xs text-text-muted">
-                        Lets this provider replace records that something else created at the names it publishes, such as an MX record added by hand. Without
-                        it, such records show as conflicts, with a Take over action on their domain. A domain&rsquo;s root TXT records (SPF) are never taken
-                        over this way.
+                        Lets this provider replace records that something else created at the names it publishes, such as an MX record added by hand: such
+                        records are taken over automatically a few minutes after they are found, for the domains and for this server&rsquo;s own host names.
+                        A domain&rsquo;s root TXT records (SPF) are never taken over this way, only through the root TXT opt-in on the domain. Records of
+                        another type in the way are never taken over: they are listed for you to delete at your DNS host. Without it, such records
+                        show as conflicts, with a Take over action on their domain and, for the host names, on this provider&rsquo;s page.
                     </span>
                 </span>
             </label>

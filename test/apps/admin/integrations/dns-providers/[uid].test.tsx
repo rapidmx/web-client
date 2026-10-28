@@ -43,7 +43,27 @@ const queuedTest = {
     dateCreated: "2026-10-27T10:05:00.000Z",
 };
 
+const queuedTakeover = {
+    uid: "op-2",
+    type: "takeover",
+    providerUid: "cloudflare-ab12cd34",
+    endpointSetId: "hosts-cloudflare-ab12cd34",
+    state: "queued",
+    dateCreated: "2026-10-27T10:05:00.000Z",
+};
+
+const host = (recordName: string, recordKind: string, over: Record<string, unknown> = {}) => ({
+    type: recordKind === "CNAME" ? "host_cname" : "host_a",
+    recordName,
+    recordKind,
+    state: "published",
+    providerUid: "cloudflare-ab12cd34",
+    ...over,
+});
+
 interface Handlers {
+    hosts?: () => Response;
+    takeover?: (body: any) => Response;
     provider?: () => Response;
     types?: () => Response;
     operations?: () => Response;
@@ -62,6 +82,10 @@ function mockProvider(provider: any, handlers: Handlers = {}) {
         const base = `/api/system/dns-providers/${provider.uid}`;
         if (url === "/api/system/dns-providers/types") {
             return handlers.types ? handlers.types() : jsonResponse(200, providerTypes);
+        }
+        if (url === "/api/system/dns-providers/hosts") return handlers.hosts ? handlers.hosts() : jsonResponse(200, []);
+        if (url === `${base}/takeover` && method === "POST") {
+            return handlers.takeover ? handlers.takeover(JSON.parse(init.body as string)) : jsonResponse(200, queuedTakeover);
         }
         if (url === `${base}/operations`) return handlers.operations ? handlers.operations() : jsonResponse(200, []);
         if (url === `${base}/test` && method === "POST") {
@@ -413,5 +437,140 @@ describe("DnsProviderPage", () => {
         expect(screen.getByText(/This console doesn’t know this type/)).toBeInTheDocument();
         expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Delete DNS provider" })).toBeInTheDocument();
+    });
+});
+
+describe("the deployment's hosts", () => {
+    const hosts = [
+        host("mail.example.com", "A", { state: "published" }),
+        host("auth.example.com", "CNAME", {
+            state: "conflict",
+            conflictReason: "type_mismatch",
+            existing: [
+                { type: "A", value: "203.0.113.7" },
+                { type: "AAAA", value: "2001:db8::7" },
+            ],
+        }),
+        host("autodiscover.example.com", "CNAME", { state: "conflict", conflictReason: "not_owned" }),
+        host("openpgpkey.example.com", "CNAME", { state: "pending" }),
+        host("other.example.net", "A", { state: "conflict", conflictReason: "not_owned", providerUid: "someone-else" }),
+        host("mx.example.org", "A", { state: "manual", manualReason: "no_addresses" }),
+        host("target.example.org", "CNAME", { state: "manual", manualReason: "no_target" }),
+        host("zone.example.org", "A", { state: "manual", manualReason: "outside_zones" }),
+    ];
+
+    it("lists only the hosts this config publishes, with each one's state", async () => {
+        mockProvider(cloudflareProvider, { hosts: () => jsonResponse(200, hosts) });
+        renderPage();
+
+        const table = within(await screen.findByRole("table", { name: "Host names" }));
+        expect(table.getByText("mail.example.com")).toBeInTheDocument();
+        expect(table.queryByText("other.example.net")).not.toBeInTheDocument();
+        expect(within(table.getByText("mail.example.com").closest("tr")!).getByText("Published")).toBeInTheDocument();
+        expect(within(table.getByText("openpgpkey.example.com").closest("tr")!).getByText("Pending")).toBeInTheDocument();
+        expect(within(table.getByText("mx.example.org").closest("tr")!).getByText(/no public address/i)).toBeInTheDocument();
+        expect(within(table.getByText("target.example.org").closest("tr")!).getByText(/no mail host/i)).toBeInTheDocument();
+        expect(within(table.getByText("zone.example.org").closest("tr")!).getByText(/outside the zones/i)).toBeInTheDocument();
+    });
+
+    it("shows the records to delete for a type mismatch, and never a takeover for it", async () => {
+        mockProvider(cloudflareProvider, { hosts: () => jsonResponse(200, hosts) });
+        renderPage();
+
+        const authRow = (await screen.findByText("auth.example.com")).closest("tr")!;
+        expect(within(authRow).getByText(/Records of another type are in the way/)).toBeInTheDocument();
+        expect(within(authRow).getByText("A 203.0.113.7")).toBeInTheDocument();
+        expect(within(authRow).getByText("AAAA 2001:db8::7")).toBeInTheDocument();
+        expect(within(authRow).queryByRole("button")).not.toBeInTheDocument();
+    });
+
+    it("asks first, then queues a takeover of the hosts that are not owned and nothing else", async () => {
+        const user = userEvent.setup();
+        const calls = mockProvider(cloudflareProvider, { hosts: () => jsonResponse(200, hosts) });
+        renderPage();
+
+        await user.click(await screen.findByRole("button", { name: "Take over host names" }));
+        const dialog = within(screen.getByRole("dialog", { name: "Take over host names" }));
+        expect(dialog.getByText("autodiscover.example.com")).toBeInTheDocument();
+        expect(dialog.queryByText("auth.example.com")).not.toBeInTheDocument();
+        expect(calls.some((call) => call.url.endsWith("/takeover"))).toBe(false);
+
+        await user.click(dialog.getByRole("button", { name: "Take over" }));
+        expect(await screen.findByText(/Takeover queued/)).toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(calls.find((call) => call.url.endsWith("/takeover"))).toMatchObject({
+            method: "POST",
+            body: { hosts: true, records: ["autodiscover.example.com"] },
+        });
+        expect(screen.getByRole("button", { name: "Take over host names" })).toBeDisabled();
+    });
+
+    it("keeps the dialog open with the server's reason when the takeover is refused, and cancelling queues nothing", async () => {
+        const user = userEvent.setup();
+        const calls = mockProvider(cloudflareProvider, {
+            hosts: () => jsonResponse(200, hosts),
+            takeover: () => jsonResponse(400, { code: "api-100", message: "There is no host of this DNS provider to take over." }),
+        });
+        renderPage();
+
+        await user.click(await screen.findByRole("button", { name: "Take over host names" }));
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Take over" }));
+        expect(await within(screen.getByRole("dialog")).findByText(/no host of this DNS provider/)).toBeInTheDocument();
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(screen.queryByText(/Takeover queued/)).not.toBeInTheDocument();
+        expect(calls.filter((call) => call.url.endsWith("/takeover"))).toHaveLength(1);
+    });
+
+    it("offers no takeover when nothing is in conflict", async () => {
+        mockProvider(cloudflareProvider, { hosts: () => jsonResponse(200, [host("mail.example.com", "A")]) });
+        renderPage();
+        await screen.findByRole("table", { name: "Host names" });
+        expect(screen.queryByRole("button", { name: "Take over host names" })).not.toBeInTheDocument();
+    });
+
+    it("says nothing on a server without the route, or for a config that publishes no host", async () => {
+        mockProvider(cloudflareProvider, { hosts: () => jsonResponse(404, { code: "api-404", message: "Not found" }) });
+        const { unmount } = renderPage();
+        await screen.findByText("No operations yet.");
+        expect(screen.queryByRole("table", { name: "Host names" })).not.toBeInTheDocument();
+        expect(screen.queryByText(/Host names/)).not.toBeInTheDocument();
+        unmount();
+
+        mockProvider(cloudflareProvider, { hosts: () => jsonResponse(200, [host("mail.example.com", "A", { providerUid: "someone-else" })]) });
+        renderPage();
+        await screen.findByText("No operations yet.");
+        expect(screen.queryByRole("table", { name: "Host names" })).not.toBeInTheDocument();
+    });
+
+    it("never names a host in the takeover when one of its records is of another type", async () => {
+        const user = userEvent.setup();
+        const calls = mockProvider(cloudflareProvider, {
+            hosts: () =>
+                jsonResponse(200, [
+                    host("mail.example.com", "A", { state: "conflict", conflictReason: "not_owned" }),
+                    host("mail.example.com", "AAAA", { state: "conflict", conflictReason: "type_mismatch", existing: [{ type: "CNAME", value: "x.example.net" }] }),
+                    host("autodiscover.example.com", "CNAME", { state: "conflict", conflictReason: "not_owned" }),
+                ]),
+        });
+        renderPage();
+
+        await user.click(await screen.findByRole("button", { name: "Take over host names" }));
+        const dialog = within(screen.getByRole("dialog", { name: "Take over host names" }));
+        await user.click(dialog.getByRole("button", { name: "Take over" }));
+        await screen.findByText(/Takeover queued/);
+        expect(calls.find((call) => call.url.endsWith("/takeover"))?.body).toEqual({ hosts: true, records: ["autodiscover.example.com"] });
+    });
+
+    it("reports a failure to load the hosts", async () => {
+        mockProvider(cloudflareProvider, { hosts: () => jsonResponse(500, { code: "api-500", message: "boom" }) });
+        renderPage();
+        expect(await screen.findByText("boom")).toBeInTheDocument();
+    });
+
+    it("names a hosts takeover in the operations list", async () => {
+        mockProvider(cloudflareProvider, { operations: () => jsonResponse(200, [queuedTakeover]) });
+        renderPage();
+        expect(await screen.findByText("Take over (host names)")).toBeInTheDocument();
     });
 });

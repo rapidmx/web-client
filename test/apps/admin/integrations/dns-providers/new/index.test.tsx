@@ -53,7 +53,10 @@ describe("NewDnsProviderPage", () => {
         expect(screen.queryByText("Not yet live-tested")).not.toBeInTheDocument();
         expect(screen.getByLabelText(/Publish through this provider/)).toBeChecked();
         expect(screen.getByLabelText(/Allow taking over existing records/)).not.toBeChecked();
-        expect(screen.getByText(/show as conflicts, with a Take over action on their domain/)).toBeInTheDocument();
+        expect(screen.getByText(/taken over automatically/)).toBeInTheDocument();
+        expect(screen.getByText(/root TXT records \(SPF\) are never taken over this way/)).toBeInTheDocument();
+        expect(screen.getByText(/Records of another type in the way are never taken over/)).toBeInTheDocument();
+        expect(screen.getByText(/show as conflicts, with a Take over action/)).toBeInTheDocument();
     });
 
     it("says credentials are saved encrypted with the config, not in a separate secret store, and are never shown again", async () => {

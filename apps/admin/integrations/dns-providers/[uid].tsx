@@ -18,6 +18,7 @@ import { ApiRequestError } from "../../../../lib/util/api.js";
 import Modal from "../../../../lib/components/overlays/Modal.js";
 import AdminShell, { AdminShellProps } from "../../../shared/components/admin/layout/AdminShell.js";
 import DnsProviderForm from "../../../shared/components/admin/integrations/DnsProviderForm.js";
+import DnsProviderHosts from "../../../shared/components/admin/integrations/DnsProviderHosts.js";
 import DnsProviderOperations from "../../../shared/components/admin/integrations/DnsProviderOperations.js";
 import IntegrationsLayout from "../../../shared/components/admin/integrations/IntegrationsLayout.js";
 import { Badge, dnsProviderStatus, domainsText, formatTime } from "../../../shared/components/admin/integrations/dnsProviderParts.js";
@@ -152,6 +153,8 @@ function DnsProviderDetail({ uid }: { uid: string }) {
                     This console doesn&rsquo;t know this type, so its settings can&rsquo;t be edited here. A newer admin console can edit it.
                 </p>
             )}
+
+            <DnsProviderHosts uid={provider.uid} />
 
             <DnsProviderOperations uid={provider.uid} />
 

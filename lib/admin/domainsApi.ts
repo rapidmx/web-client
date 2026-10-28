@@ -124,6 +124,17 @@ export type DnsRecordType =
  * doesn't own is there) or `manual` (the administrator adds it, see `DnsManualReason`). */
 export type DnsPublicationState = "published" | "pending" | "conflict" | "manual";
 
+/** Why a published record is in conflict: a record of the same type is there that this deployment doesn't own (`not_owned`, which a takeover can
+ * overwrite), or records of another type that can't stand next to it (`type_mismatch`: a CNAME wanted where other records are, or other records wanted
+ * where a CNAME is), which RapidMX never deletes or takes over and the administrator deletes at their DNS host. */
+export type DnsConflictReason = "not_owned" | "type_mismatch";
+
+/** A live record in the way of a published one (`type_mismatch`): its type and its value as text. */
+export interface DnsExistingRecord {
+    type: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "SRV";
+    value: string;
+}
+
 /** Why a record is `manual`: no provider is assigned, the provider can't hold the record's kind, the name lies outside the provider's zones, or the
  * record belongs to the root TXT set, which RapidMX manages only on the administrator's opt-in. */
 export type DnsManualReason = "no_provider" | "kind_unsupported" | "outside_zones" | "apex_txt_unmanaged";
@@ -145,6 +156,10 @@ export interface DnsRecordCheck {
     /** Whether, and how, the DNS controller publishes this record. Present only on a server that publishes, and only for a configured record. */
     publication?: DnsPublicationState;
     manualReason?: DnsManualReason;
+    /** With `publication: "conflict"`: why. A server that doesn't say means `not_owned`. */
+    conflictReason?: DnsConflictReason;
+    /** With `conflictReason: "type_mismatch"`: the live records the administrator has to delete. */
+    existing?: DnsExistingRecord[];
     /** `ownership` only: the token is (still) at the domain's root, where it lived before `_rapidmx-verify.<domain>`. */
     legacyApex?: boolean;
 }

@@ -10,6 +10,7 @@ import Button from "../../../../../lib/components/buttons/Button.js";
 import CopyableValue from "./CopyableValue.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { actionErrorMessage } from "../elevation.js";
+import { TypeMismatchNotice } from "../integrations/dnsProviderParts.js";
 
 const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     ownership: "Ownership (TXT)",
@@ -387,7 +388,8 @@ function PublishedCell({ check, queued, onTakeOver }: { check: DnsRecordCheck; q
             >
                 Automatic: {state}
             </span>
-            {state === "conflict" && (
+            {state === "conflict" && check.conflictReason === "type_mismatch" && <TypeMismatchNotice existing={check.existing} />}
+            {state === "conflict" && check.conflictReason !== "type_mismatch" && (
                 <div className="text-xs mt-1 max-w-xs">
                     {check.actualValue ? (
                         <>

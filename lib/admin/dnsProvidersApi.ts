@@ -8,7 +8,7 @@
  * controller last said about itself. Reads need a trusted role; every write a trusted role and an elevated token. Credentials are write-only.
  */
 import { ApiClient, withClient } from "../util/api.js";
-import type { DnsRecordType } from "./domainsApi.js";
+import type { DnsConflictReason, DnsExistingRecord, DnsManualReason, DnsPublicationState, DnsRecordType } from "./domainsApi.js";
 import type { SecretMask } from "./integrationsApi.js";
 
 export type DnsProviderType = "cloudflare" | "route53" | "rfc2136" | "google" | "azure";
@@ -116,6 +116,8 @@ export interface DnsOperation {
     type: DnsOperationType;
     providerUid: string;
     domainUid?: string;
+    /** `hosts-<provider uid>` for the takeover of the deployment's own host names, which has no domain. */
+    endpointSetId?: string;
     state: DnsOperationState;
     /** The controller's result, or why the operation was cancelled (`Cancelled: ...`). */
     message?: string;
@@ -200,6 +202,37 @@ export function takeoverDnsRecords(uid: string, domainUid: string, records?: Dns
         method: "POST",
         body: JSON.stringify({ domainUid, ...(records ? { records } : {}) }),
     });
+}
+
+/** Queues the takeover of the deployment's own host names (`mail.<domain>`, `auth.<domain>` and the like) that this config publishes and that something
+ * else created: the DNS controller overwrites them with the wanted values. `records` are the host names to take over, all the config publishes when left
+ * out; a host whose records of another type are in the way (`type_mismatch`) is left out, or refused when named. Answers the queued operation. */
+export function takeoverDnsHosts(uid: string, records?: string[], client?: ApiClient): Promise<DnsOperation> {
+    return withClient(client, `${providerPath(uid)}/takeover`, {
+        method: "POST",
+        body: JSON.stringify({ hosts: true, ...(records ? { records } : {}) }),
+    });
+}
+
+/** Why a host name isn't published automatically: a domain record's reasons, or no public address or no mail host to point at. */
+export type DnsHostManualReason = DnsManualReason | "no_addresses" | "no_target";
+
+/** How one record of the deployment's own host names is published (`GET /system/dns-providers/hosts`, restapi `DnsRecordPublication`). */
+export interface DnsHostPublication {
+    type: string;
+    recordName: string;
+    recordKind: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "SRV";
+    state: DnsPublicationState;
+    manualReason?: DnsHostManualReason;
+    conflictReason?: DnsConflictReason;
+    existing?: DnsExistingRecord[];
+    /** The config that publishes it, which a takeover names. */
+    providerUid?: string;
+}
+
+/** The publication of each of the deployment's own host names, looked up live. Needs a trusted role; a server without DNS publishing answers 404. */
+export function listDnsHostPublications(client?: ApiClient): Promise<DnsHostPublication[]> {
+    return withClient(client, `${BASE}/hosts`);
 }
 
 /** The config's latest operations, newest first. */

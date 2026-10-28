@@ -94,7 +94,7 @@ export default function DnsProviderOperations({ uid }: { uid: string }) {
                         {operations.map((operation) => (
                             <tr key={operation.uid}>
                                 <td className="py-2 px-2.5 border-b border-border">
-                                    {TYPE_LABELS[operation.type] + (operation.domainUid ? ` (${operation.domainUid})` : "")}
+                                    {TYPE_LABELS[operation.type] + (operation.domainUid ? ` (${operation.domainUid})` : operation.endpointSetId?.startsWith("hosts-") ? " (host names)" : "")}
                                 </td>
                                 <td className="py-2 px-2.5 border-b border-border">{STATE_LABELS[operation.state]}</td>
                                 <td className="py-2 px-2.5 border-b border-border text-text-muted">{operation.message}</td>

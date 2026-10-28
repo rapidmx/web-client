@@ -271,6 +271,52 @@ describe("Take over", () => {
     });
 });
 
+describe("a record of another type in the way", () => {
+    const mismatch = (over: Record<string, unknown> = {}) =>
+        check("openpgpkey_cname", {
+            publication: "conflict",
+            conflictReason: "type_mismatch",
+            matches: false,
+            actualValue: undefined,
+            existing: [
+                { type: "A", value: "203.0.113.7" },
+                { type: "AAAA", value: "2001:db8::7" },
+            ],
+            ...over,
+        });
+
+    it("lists the records to delete at the DNS host and offers no takeover", async () => {
+        mockApi({ checks: [mismatch()] });
+        renderPage();
+        await screen.findByText("DNS setup checklist");
+
+        const cell = within(row("openpgpkey_cname.example.com"));
+        expect(cell.getByText("Automatic: conflict")).toBeInTheDocument();
+        expect(cell.getByText(/Records of another type are in the way/)).toBeInTheDocument();
+        expect(cell.getByText(/RapidMX never deletes them/)).toBeInTheDocument();
+        expect(cell.getByText("A 203.0.113.7")).toBeInTheDocument();
+        expect(cell.getByText("AAAA 2001:db8::7")).toBeInTheDocument();
+        expect(cell.queryByRole("button", { name: /Take over/ })).not.toBeInTheDocument();
+    });
+
+    it("still says to delete them when the server names none", async () => {
+        mockApi({ checks: [mismatch({ existing: undefined })] });
+        renderPage();
+        await screen.findByText("DNS setup checklist");
+        const cell = within(row("openpgpkey_cname.example.com"));
+        expect(cell.getByText(/Records of another type are in the way/)).toBeInTheDocument();
+        expect(cell.queryByRole("button", { name: /Take over/ })).not.toBeInTheDocument();
+    });
+
+    it("keeps the takeover for a conflict the server says is not_owned", async () => {
+        mockApi({ checks: [check("mx", { publication: "conflict", conflictReason: "not_owned", matches: false, actualValue: "5 old.example.net" })] });
+        renderPage();
+        await screen.findByText("DNS setup checklist");
+        expect(within(row("mx.example.com")).getByRole("button", { name: "Take over MX" })).toBeInTheDocument();
+        expect(within(row("mx.example.com")).queryByText(/another type/)).not.toBeInTheDocument();
+    });
+});
+
 describe("the ownership record", () => {
     it("says where to publish the token, and that the root value can go, while it is still at the domain's root", async () => {
         mockApi({ checks: [check("ownership", { recordName: "_rapidmx-verify.example.com", legacyApex: true })] });
