@@ -6,6 +6,7 @@ import "../../../styles/app.css";
 import React, { PropsWithChildren, ReactNode, useEffect, useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
 import {
+    HiOutlineArrowPathRoundedSquare,
     HiOutlineClipboardDocumentList,
     HiOutlineClock,
     HiOutlineCpuChip,
@@ -71,7 +72,8 @@ export type AdminSection =
     | "diagnostics"
     | "branding"
     | "signingCertificates"
-    | "integrations";
+    | "integrations"
+    | "configurationEncryption";
 
 /** A core `AdminSection`, or a plugin's `adminNav` item id (see `PluginNav`). */
 export type AdminShellActive = AdminSection | (string & {});
@@ -153,6 +155,12 @@ const NAV_ITEMS: NavItem[] = [
         icon: HiOutlineDocumentCheck,
     },
     { id: "integrations", href: "/admin/integrations", label: "Integrations", icon: HiOutlineLink },
+    {
+        id: "configurationEncryption",
+        href: "/admin/configuration-encryption",
+        label: "Configuration Encryption",
+        icon: HiOutlineArrowPathRoundedSquare,
+    },
     { id: "plugins", href: "/admin/plugins", label: "Plugins", icon: HiOutlinePuzzlePiece },
     { id: "diagnostics", href: "/admin/diagnostics", label: "Diagnostics", icon: HiOutlineCpuChip },
     { id: "branding", href: "/admin/branding", label: "Branding", icon: HiOutlinePaintBrush },
