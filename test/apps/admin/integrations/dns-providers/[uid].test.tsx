@@ -591,7 +591,7 @@ describe("the deployment's hosts", () => {
         ["a host list", () => jsonResponse(200, [host("mail.example.com", "A")])],
         ["a failure", () => jsonResponse(500, { code: "api-500", message: "late boom" })],
     ])("ignores %s that arrives after the page was left", async (_name, late) => {
-        let release: () => void = () => {};
+        let release!: () => void;
         const gate = new Promise<void>((resolve) => {
             release = resolve;
         });
