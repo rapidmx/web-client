@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import useBranding from "../../../lib/branding/useBranding.js";
@@ -16,6 +16,8 @@ function Harness() {
 }
 
 afterEach(() => {
+    // Unmount first: an effect still pending when a test ends (the title) runs during the unmount, after the reset below otherwise, and leaked into the next test.
+    cleanup();
     vi.unstubAllGlobals();
     document.title = "";
     document.getElementById("branding-stylesheet")?.remove();
