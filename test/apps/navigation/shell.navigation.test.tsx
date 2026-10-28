@@ -318,13 +318,18 @@ afterEach(async () => {
     for (const { target, type, handler } of listeners.splice(0)) {
         target.removeEventListener(type, handler);
     }
+    // Closing the push client tells the shell's still-mounted components its status changed. That update belongs inside the act: outside it React runs it
+    // from a timer, which can fire after the file is done and the environment is gone ("window is not defined", an unhandled error of the whole run).
     await act(async () => {
+        resetPushClient();
         document.body.innerHTML = "";
     });
     vi.unstubAllGlobals();
-    resetPushClient();
     document.title = originalTitle;
     window.history.replaceState(null, "", "/");
+    // React runs an update made outside an act from the scheduler's immediate; letting one turn of the event loop pass runs what the test left pending now, in
+    // this environment, rather than after the last test when the environment is torn down.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 });
 
 describe("the webmail's app shell under the client router", () => {
