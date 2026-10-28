@@ -8,6 +8,7 @@
  * controller last said about itself. Reads need a trusted role; every write a trusted role and an elevated token. Credentials are write-only.
  */
 import { ApiClient, withClient } from "../util/api.js";
+import type { DnsRecordType } from "./domainsApi.js";
 import type { SecretMask } from "./integrationsApi.js";
 
 export type DnsProviderType = "cloudflare" | "route53" | "rfc2136" | "google" | "azure";
@@ -189,6 +190,16 @@ export function deleteDnsProvider(uid: string, client?: ApiClient): Promise<void
 /** Queues a credentials test the DNS controller runs; answers the queued operation. */
 export function testDnsProvider(uid: string, client?: ApiClient): Promise<DnsOperation> {
     return withClient(client, `${providerPath(uid)}/test`, { method: "POST" });
+}
+
+/** Queues the takeover of a domain's records that this deployment doesn't own yet: the DNS controller overwrites them with the wanted values. `records`
+ * are the record types to take over, all the domain publishes through the config when left out; never the root TXT set (`spf`). Answers the queued
+ * operation. */
+export function takeoverDnsRecords(uid: string, domainUid: string, records?: DnsRecordType[], client?: ApiClient): Promise<DnsOperation> {
+    return withClient(client, `${providerPath(uid)}/takeover`, {
+        method: "POST",
+        body: JSON.stringify({ domainUid, ...(records ? { records } : {}) }),
+    });
 }
 
 /** The config's latest operations, newest first. */

@@ -31,6 +31,18 @@ export interface Domain {
     /** When set, this domain is a pure alias of the domain named here - it has no mailboxes of its own; mail
      * addressed to it is delivered to the matching mailbox on the domain it aliases instead. */
     aliasOf?: string;
+    /** The DNS provider config (`system/dns-providers`) that publishes this domain's records, `null` or unset for "manual": the administrator adds
+     * them by hand. Changes only through `assignDnsProvider()`. */
+    dnsProviderUid?: string | null;
+    /** Whether RapidMX owns the domain's root TXT records (to publish SPF there) and which other values it keeps in them. Unset means not managed;
+     * `keep` and `spf` stay after an opt-out. Changes only through `updateApexTxt()`. */
+    apexTxt?: ApexTxtSettings | null;
+}
+
+export interface ApexTxtSettings {
+    managed: boolean;
+    keep: string[];
+    spf?: string;
 }
 
 /** `client`, given by every function below, is an explicit `ApiClient` from `createApiClient()` (e.g. one
@@ -90,7 +102,25 @@ export function verifyDomain(uid: string, client?: ApiClient): Promise<Domain> {
     return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/verify`, { method: "POST" });
 }
 
-export type DnsRecordType = "ownership" | "mx" | "spf" | "dkim" | "dmarc" | "openpgpkey_cname" | "autodiscover_cname" | "autodiscover_srv";
+export type DnsRecordType =
+    | "ownership"
+    | "mx"
+    | "spf"
+    | "dkim"
+    | "dkim_next"
+    | "dkim_previous"
+    | "dmarc"
+    | "openpgpkey_cname"
+    | "autodiscover_cname"
+    | "autodiscover_srv";
+
+/** How a record is published: `published` (the DNS controller applied it and the live lookup sees it), `pending`, `conflict` (a record this deployment
+ * doesn't own is there) or `manual` (the administrator adds it, see `DnsManualReason`). */
+export type DnsPublicationState = "published" | "pending" | "conflict" | "manual";
+
+/** Why a record is `manual`: no provider is assigned, the provider can't hold the record's kind, the name lies outside the provider's zones, or the
+ * record belongs to the root TXT set, which RapidMX manages only on the administrator's opt-in. */
+export type DnsManualReason = "no_provider" | "kind_unsupported" | "outside_zones" | "apex_txt_unmanaged";
 
 /** One mail-related DNS record this server recommends for a domain, live-checked against real DNS —
  * purely diagnostic, never mutates anything (unlike `verifyDomain`). The two `autodiscover_*` types are only
@@ -106,8 +136,45 @@ export interface DnsRecordCheck {
     found: boolean;
     matches: boolean;
     actualValue?: string;
+    /** Whether, and how, the DNS controller publishes this record. Present only on a server that publishes, and only for a configured record. */
+    publication?: DnsPublicationState;
+    manualReason?: DnsManualReason;
+    /** `ownership` only: the token is (still) at the domain's root, where it lived before `_rapidmx-verify.<domain>`. */
+    legacyApex?: boolean;
 }
 
 export function getDnsSetup(uid: string, client?: ApiClient): Promise<DnsRecordCheck[]> {
     return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dns-setup`);
+}
+
+/** Assigns the domain to a DNS provider config, or back to manual (`null`). Needs an elevated token; the provider must cover the domain more specifically
+ * than any other (a 400 otherwise). Answers the domain. */
+export function assignDnsProvider(uid: string, dnsProviderUid: string | null, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dns-provider`, {
+        method: "PUT",
+        body: JSON.stringify({ dnsProviderUid }),
+    });
+}
+
+/** What `GET /:id/apex-txt` answers: the managed state and what the opt-in form starts from. */
+export interface ApexTxtView {
+    managed: boolean;
+    keep: string[];
+    spf?: string;
+    /** The values at the domain's root now, as a live lookup sees them. */
+    current: string[];
+    /** `current` without SPF records and RapidMX ownership tokens: what the list of values to keep starts as. */
+    suggestedKeep: string[];
+    /** The lookup couldn't be answered, so `current` and `suggestedKeep` say nothing about what is there: the opt-in must not be offered. */
+    lookupFailed?: true;
+}
+
+export function getApexTxt(uid: string, client?: ApiClient): Promise<ApexTxtView> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/apex-txt`);
+}
+
+/** Opts the domain's root TXT records into RapidMX's management (`managed: true` with the values to keep), edits the kept values while managed, or
+ * opts out (`managed: false`). Needs an elevated token. Answers the domain. */
+export function updateApexTxt(uid: string, input: { managed: boolean; keep?: string[] }, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/apex-txt`, { method: "PUT", body: JSON.stringify(input) });
 }

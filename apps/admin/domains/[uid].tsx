@@ -6,6 +6,8 @@ import React, { useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
 import { deleteDomain, Domain, updateDomain } from "../../../lib/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
+import DomainApexTxt from "../../shared/components/admin/settings/DomainApexTxt.js";
+import DomainDnsProvider from "../../shared/components/admin/settings/DomainDnsProvider.js";
 import DomainDnsSetup from "../../shared/components/admin/settings/DomainDnsSetup.js";
 import Alert from "../../shared/components/admin/ActionAlert.js";
 import Button from "../../../lib/components/buttons/Button.js";
@@ -36,9 +38,10 @@ function DomainDetailContent({ uid }: { uid: string }) {
     const [savingAlias, setSavingAlias] = useState(false);
     const [aliasError, setAliasError] = useState<string | null>(null);
     const [aliasSaved, setAliasSaved] = useState(false);
-    // Bumped after a successful aliasOf save to force `DomainDnsSetup` (which owns its own `domain` state,
+    // Bumped after a successful save (the alias, the DNS provider, the root TXT records) to force `DomainDnsSetup` (which owns its own `domain` state,
     // fetched only on mount/uid change) to reload and reflect the new value in its own status panel.
     const [refreshCount, setRefreshCount] = useState(0);
+    const refresh = () => setRefreshCount((c) => c + 1);
 
     function closeDeleteModal() {
         setConfirmingDelete(false);
@@ -72,7 +75,7 @@ function DomainDetailContent({ uid }: { uid: string }) {
             setDomain(updated);
             setAliasInput(updated.aliasOf ?? "");
             setAliasSaved(true);
-            setRefreshCount((c) => c + 1);
+            refresh();
         } catch (err) {
             setAliasError(actionErrorMessage(err, "Could not update this domain."));
         } finally {
@@ -102,6 +105,10 @@ function DomainDetailContent({ uid }: { uid: string }) {
             )}
 
             <DomainDnsSetup key={refreshCount} uid={uid} onLoaded={handleLoaded} />
+
+            {domain && <DomainDnsProvider domain={domain} onChanged={refresh} />}
+
+            {domain?.dnsProviderUid && <DomainApexTxt domain={domain} onChanged={refresh} />}
 
             {domain && (
                 <div className="bg-surface border border-border rounded-md p-6">

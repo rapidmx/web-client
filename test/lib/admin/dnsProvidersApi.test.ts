@@ -13,6 +13,7 @@ import {
     listDnsProviderOperations,
     listDnsProviders,
     listDnsProviderTypes,
+    takeoverDnsRecords,
     testDnsProvider,
     updateDnsProvider,
 } from "../../../lib/admin/dnsProvidersApi.js";
@@ -72,6 +73,16 @@ describe("dnsProvidersApi", () => {
         ]);
     });
 
+    it("queues a takeover of a domain's records, all of them or the types asked for", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, { uid: "op1" }));
+        await takeoverDnsRecords("cloudflare-ab12cd34", "example.com");
+        await takeoverDnsRecords("cloudflare-ab12cd34", "example.com", ["mx", "dmarc"]);
+        expect(fetchMock.mock.calls.map((call) => [call[0], call[1].method, call[1].body])).toEqual([
+            ["/api/system/dns-providers/cloudflare-ab12cd34/takeover", "POST", JSON.stringify({ domainUid: "example.com" })],
+            ["/api/system/dns-providers/cloudflare-ab12cd34/takeover", "POST", JSON.stringify({ domainUid: "example.com", records: ["mx", "dmarc"] })],
+        ]);
+    });
+
     it("escapes a uid in the path", async () => {
         const fetchMock = mockFetch(() => jsonResponse(200, provider));
         await getDnsProvider("a/b");
@@ -89,8 +100,9 @@ describe("dnsProvidersApi", () => {
         await createDnsProvider({ name: "n", type: "route53", zones: ["example.com"] }, client);
         await updateDnsProvider("p", { enabled: false }, client);
         await testDnsProvider("p", client);
+        await takeoverDnsRecords("p", "example.com", ["mx"], client);
         await deleteDnsProvider("p", client);
         expect(fetchMock.mock.calls.every((call) => String(call[0]).startsWith("https://mail.example.com/api/system/dns-providers"))).toBe(true);
-        expect(fetchMock).toHaveBeenCalledTimes(9);
+        expect(fetchMock).toHaveBeenCalledTimes(10);
     });
 });

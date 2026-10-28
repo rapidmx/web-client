@@ -6,11 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import { createApiClient } from "../../../lib/util/api.js";
 import {
+    assignDnsProvider,
     createDomain,
     deleteDomain,
+    getApexTxt,
     getDnsSetup,
     getDomain,
     listDomains,
+    updateApexTxt,
     updateDomain,
     verifyDomain,
 } from "../../../lib/admin/domainsApi.js";
@@ -123,6 +126,37 @@ describe("getDnsSetup", () => {
     });
 });
 
+describe("assignDnsProvider", () => {
+    it("puts the provider's uid, or null for manual, to the domain's dns-provider route", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, domain));
+        await assignDnsProvider("example.com", "cloudflare-ab12cd34");
+        await assignDnsProvider("example.com", null);
+        expect(fetchMock.mock.calls.map((call) => [call[0], call[1].method, call[1].body])).toEqual([
+            ["/api/mail/domains/example.com/dns-provider", "PUT", JSON.stringify({ dnsProviderUid: "cloudflare-ab12cd34" })],
+            ["/api/mail/domains/example.com/dns-provider", "PUT", JSON.stringify({ dnsProviderUid: null })],
+        ]);
+    });
+});
+
+describe("the apex TXT routes", () => {
+    it("reads the managed state and the values at the apex", async () => {
+        const view = { managed: false, keep: [], current: ["v=spf1 -all"], suggestedKeep: [] };
+        const fetchMock = mockFetch(() => jsonResponse(200, view));
+        expect(await getApexTxt("example.com")).toEqual(view);
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains/example.com/apex-txt", expect.anything());
+    });
+
+    it("puts the opt-in with its values to keep, and the opt-out without any", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, domain));
+        await updateApexTxt("example.com", { managed: true, keep: ["google-site-verification=abc"] });
+        await updateApexTxt("example.com", { managed: false });
+        expect(fetchMock.mock.calls.map((call) => [call[0], call[1].method, call[1].body])).toEqual([
+            ["/api/mail/domains/example.com/apex-txt", "PUT", JSON.stringify({ managed: true, keep: ["google-site-verification=abc"] })],
+            ["/api/mail/domains/example.com/apex-txt", "PUT", JSON.stringify({ managed: false })],
+        ]);
+    });
+});
+
 describe("with an explicit ApiClient", () => {
     it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
         const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
@@ -135,8 +169,11 @@ describe("with an explicit ApiClient", () => {
         await deleteDomain("example.com", 0, client);
         await verifyDomain("example.com", client);
         await getDnsSetup("example.com", client);
+        await assignDnsProvider("example.com", null, client);
+        await getApexTxt("example.com", client);
+        await updateApexTxt("example.com", { managed: false }, client);
 
-        expect(fetchMock).toHaveBeenCalledTimes(7);
+        expect(fetchMock).toHaveBeenCalledTimes(10);
         for (const call of fetchMock.mock.calls) {
             expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
             expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");

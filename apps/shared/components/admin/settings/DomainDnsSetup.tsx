@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useEffect, useState } from "react";
-import { DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "../../../../../lib/admin/domainsApi.js";
+import { takeoverDnsRecords } from "../../../../../lib/admin/dnsProvidersApi.js";
+import { DnsManualReason, DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "../../../../../lib/admin/domainsApi.js";
 import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
 import CopyIconButton from "../../../../../lib/components/buttons/CopyIconButton.js";
+import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { actionErrorMessage } from "../elevation.js";
 
 const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
@@ -14,6 +16,8 @@ const RECORD_TYPE_LABELS: Record<DnsRecordCheck["type"], string> = {
     mx: "MX",
     spf: "SPF",
     dkim: "DKIM",
+    dkim_next: "DKIM (new key)",
+    dkim_previous: "DKIM (previous key)",
     dmarc: "DMARC",
     openpgpkey_cname: "OpenPGP keys (CNAME)",
     autodiscover_cname: "Autodiscover (CNAME)",
@@ -26,6 +30,8 @@ const RECORD_TYPE_NAMES: Record<DnsRecordCheck["type"], string> = {
     mx: "MX",
     spf: "SPF",
     dkim: "DKIM",
+    dkim_next: "new DKIM key",
+    dkim_previous: "previous DKIM key",
     dmarc: "DMARC",
     openpgpkey_cname: "OpenPGP keys CNAME",
     autodiscover_cname: "Autodiscover CNAME",
@@ -41,6 +47,14 @@ const RECORD_TYPE_HELP: Partial<Record<DnsRecordCheck["type"], string>> = {
         "So EAS and Outlook clients can find this server automatically from just an email address. This hostname also needs to be covered by this server's TLS certificate.",
     autodiscover_srv:
         "Same purpose as the CNAME above, for clients that check DNS SRV instead - and, unlike the CNAME, needs no extra TLS certificate, since it points at a hostname already covered. Prefer this one when a second certificate is hard to obtain.",
+};
+
+/** Why a record is added by hand, shown under "Manual" in the Published column. */
+const MANUAL_REASONS: Record<DnsManualReason, string> = {
+    no_provider: "No DNS provider is assigned to this domain.",
+    kind_unsupported: "The DNS provider can't hold this kind of record.",
+    outside_zones: "This name is outside the zones of the DNS provider.",
+    apex_txt_unmanaged: "Shares the domain's root TXT records, which you opt in to manage below.",
 };
 
 /** An MX record's recommended value is `"<priority> <mail server>"` - two separate fields in a DNS provider's form. */
@@ -82,6 +96,11 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
     const [error, setError] = useState<string | null>(null);
     const [verifying, setVerifying] = useState(false);
     const [verifyError, setVerifyError] = useState<string | null>(null);
+    // The conflicting record the administrator is being asked to take over, the request in flight, why it failed, and the records whose takeover was queued.
+    const [takeOver, setTakeOver] = useState<DnsRecordCheck | null>(null);
+    const [takingOver, setTakingOver] = useState(false);
+    const [takeOverError, setTakeOverError] = useState<string | null>(null);
+    const [takeOverQueued, setTakeOverQueued] = useState<DnsRecordCheck["type"][]>([]);
 
     function reload(id: string) {
         setLoading(true);
@@ -119,6 +138,22 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
         }
     }
 
+    // The record is taken over through the provider the domain is assigned to (a conflict only exists with one). Only the DNS controller applies it, so
+    // the list shows the result some time later: "Check again" rather than a refresh that would still show the conflict.
+    async function handleTakeOver() {
+        setTakingOver(true);
+        setTakeOverError(null);
+        try {
+            await takeoverDnsRecords(domain!.dnsProviderUid!, domain!.uid, [takeOver!.type]);
+            setTakeOverQueued((queued) => [...queued, takeOver!.type]);
+            setTakeOver(null);
+        } catch (err) {
+            setTakeOverError(actionErrorMessage(err, "Could not queue the takeover."));
+        } finally {
+            setTakingOver(false);
+        }
+    }
+
     if (loading) {
         return <p className="text-sm text-text-muted">Loading&hellip;</p>;
     }
@@ -129,6 +164,9 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
     const ownership = dnsSetup.find((c) => c.type === "ownership");
     const ownershipValue = ownership?.recommendedValue ?? `rapidmx-domain-verification=${domain.verificationToken}`;
     const ownershipName = ownership?.recordName || domain.name;
+    // A server that doesn't publish says nothing about how a record gets published, so the column stays out.
+    const showPublished = dnsSetup.some((c) => c.publication);
+    const openpgpkey = dnsSetup.find((c) => c.type === "openpgpkey_cname");
 
     return (
         <div className="flex flex-col gap-5">
@@ -192,11 +230,38 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
             {dnsSetup.length > 0 && (
                 <div className="bg-surface border border-border rounded-md p-6">
                     <h2 className="text-sm font-bold uppercase tracking-wide mb-3">DNS setup checklist</h2>
+                    {openpgpkey?.configured && !openpgpkey.matches && (
+                        <div role="note" aria-label="OpenPGP key host warning" className="text-sm rounded-sm py-3 px-3.5 mb-3 bg-warning text-warning-contrast">
+                            {openpgpkey.recordName} doesn't resolve to this deployment yet. Until it does, other people's OpenPGP apps can't find your
+                            users' keys (Web Key Directory), and this server can't get a certificate for it.
+                            {openpgpkey.publication === "pending" && " It is being published automatically."}
+                        </div>
+                    )}
+                    {takeOverQueued.length > 0 && (
+                        <p className="text-sm mb-3">
+                            Takeover queued for the {takeOverQueued.map((type) => RECORD_TYPE_NAMES[type]).join(", ")} record. The DNS controller overwrites it
+                            shortly, and it shows as published here once it is live. If it stays in conflict, the result of the takeover is under Operations on{" "}
+                            <a href={`/admin/integrations/dns-providers/${encodeURIComponent(domain.dnsProviderUid!)}`} className="text-primary-dark hover:underline">
+                                the DNS provider's page
+                            </a>
+                            .{" "}
+                            <button
+                                type="button"
+                                className="font-semibold underline"
+                                onClick={() => {
+                                    setTakeOverQueued([]);
+                                    void reload(uid);
+                                }}
+                            >
+                                Check again
+                            </button>
+                        </p>
+                    )}
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm border-collapse">
                             <thead>
                                 <tr>
-                                    {["Record", "Status", "Name / host", "Recommended value"].map((h) => (
+                                    {["Record", "Status", ...(showPublished ? ["Published"] : []), "Name / host", "Recommended value"].map((h) => (
                                         <th
                                             key={h}
                                             className="text-left text-xs uppercase tracking-wide text-text-muted py-2 px-2.5 border-b border-border"
@@ -215,6 +280,12 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                                             {RECORD_TYPE_HELP[check.type] && (
                                                 <div className="text-xs text-text-muted mt-1 max-w-xs">{RECORD_TYPE_HELP[check.type]}</div>
                                             )}
+                                            {check.legacyApex && (
+                                                <div className="text-xs text-text-muted mt-1 max-w-xs">
+                                                    Found at the domain's root (the old location). Publish it at <strong>{check.recordName}</strong>; the root
+                                                    value can then be removed.
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="py-2.5 px-2.5 border-b border-border">
                                             {!check.configured ? (
@@ -229,6 +300,18 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                                                 </span>
                                             )}
                                         </td>
+                                        {showPublished && (
+                                            <td className="py-2.5 px-2.5 border-b border-border">
+                                                <PublishedCell
+                                                    check={check}
+                                                    queued={takeOverQueued.includes(check.type)}
+                                                    onTakeOver={() => {
+                                                        setTakeOverError(null);
+                                                        setTakeOver(check);
+                                                    }}
+                                                />
+                                            </td>
+                                        )}
                                         {/* A floor on the name column: beside a long DKIM key (which breaks anywhere) the table gave it a few characters, and a name wrapped one letter to a line. */}
                                         <td className="py-2.5 px-2.5 border-b border-border text-text-muted min-w-[10rem]">
                                             {check.recordName ? (
@@ -258,7 +341,89 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
                     </p>
                 </div>
             )}
+
+            <Modal open={takeOver !== null} onClose={() => setTakeOver(null)} title="Take over this record">
+                {takeOver && (
+                    <>
+                        <p className="text-sm mb-3">
+                            Taking over overwrites the record at <code className="text-xs break-all">{takeOver.recordName}</code> with the value below. From then
+                            on RapidMX manages it, and whatever relied on the old value stops getting it.
+                        </p>
+                        <dl className="text-sm flex flex-col gap-1 mb-3">
+                            <dt className="text-text-muted">Existing value</dt>
+                            <dd>{takeOver.actualValue ? <code className="text-xs break-all">{takeOver.actualValue}</code> : "(none found)"}</dd>
+                            <dt className="text-text-muted mt-2">New value</dt>
+                            <dd>
+                                <code className="text-xs break-all">{takeOver.recommendedValue}</code>
+                            </dd>
+                        </dl>
+                        {takeOverError && <Alert>{takeOverError}</Alert>}
+                        <div className="flex gap-3 justify-end mt-5">
+                            <Button type="button" variant="secondary" className="!w-auto" disabled={takingOver} onClick={() => setTakeOver(null)}>
+                                Cancel
+                            </Button>
+                            <Button type="button" className="!w-auto" loading={takingOver} disabled={takingOver} onClick={handleTakeOver}>
+                                Take over
+                            </Button>
+                        </div>
+                    </>
+                )}
+            </Modal>
         </div>
+    );
+}
+
+/** How a record is published, for the Published column: automatically (with its state; for a conflict also the value in the way and the takeover), or
+ * by hand, with the reason. */
+function PublishedCell({ check, queued, onTakeOver }: { check: DnsRecordCheck; queued: boolean; onTakeOver: () => void }) {
+    if (!check.publication) {
+        return <span className="text-xs text-text-muted">&mdash;</span>;
+    }
+    if (check.publication === "manual") {
+        return (
+            <>
+                <span className="text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill bg-surface-alt text-text-muted">Manual</span>
+                {check.manualReason && <div className="text-xs text-text-muted mt-1 max-w-xs">{MANUAL_REASONS[check.manualReason]}</div>}
+            </>
+        );
+    }
+    const state = check.publication;
+    return (
+        <>
+            <span
+                className={`text-xs font-bold uppercase tracking-wide py-0.5 px-2 rounded-pill ${
+                    state === "published" ? "bg-success text-white" : state === "conflict" ? "bg-danger-bg text-danger" : "bg-surface-alt text-text-muted"
+                }`}
+            >
+                Automatic: {state}
+            </span>
+            {state === "conflict" && (
+                <div className="text-xs mt-1 max-w-xs">
+                    {check.actualValue ? (
+                        <>
+                            Not published by RapidMX, and in the way: <code className="break-all">{check.actualValue}</code>
+                        </>
+                    ) : (
+                        "A record is there that this deployment doesn't own."
+                    )}
+                    {/* The root TXT set is taken over only through its own opt-in. */}
+                    {check.type !== "spf" && (
+                        <div className="mt-1.5">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="!w-auto !py-1"
+                                aria-label={`Take over ${RECORD_TYPE_NAMES[check.type]}`}
+                                disabled={queued}
+                                onClick={onTakeOver}
+                            >
+                                {queued ? "Queued" : "Take over"}
+                            </Button>
+                        </div>
+                    )}
+                </div>
+            )}
+        </>
     );
 }
 
