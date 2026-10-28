@@ -15,7 +15,10 @@ import { apiFetch } from "../../../../../lib/util/api.js";
  * machine figures are those of the node running the server, read from inside its own container.
  */
 
-/** The components of a RapidMX install that run beside the server itself, in the order the server lists them. */
+/**
+ * The components of a RapidMX install that run beside the server itself, in the order the server lists them. `dns-controller` (one pod) and
+ * `external-dns` (one pod per DNS provider config) are DNS publishing's and come after the eight others, only from a server that runs it.
+ */
 export type DiagnosticsComponentName =
     | "postfix"
     | "postfix-bridge"
@@ -24,7 +27,9 @@ export type DiagnosticsComponentName =
     | "redis"
     | "coturn"
     | "rspamd"
-    | "clamav";
+    | "clamav"
+    | "dns-controller"
+    | "external-dns";
 
 export interface DiagnosticsContainer {
     name: string;
@@ -70,7 +75,7 @@ export interface DiagnosticsVersions {
     };
     /** Sorted by name. */
     packages: { name: string; version: string; direct: boolean }[];
-    /** Always all eight, in the order of `DiagnosticsComponentName`. */
+    /** The eight others, in the order of `DiagnosticsComponentName`, and the two of DNS publishing when the server runs it. */
     components: DiagnosticsComponent[];
     kubernetes: { available: boolean; reason?: string };
 }
@@ -83,12 +88,19 @@ export interface DiagnosticsSetting {
     name: string;
     value?: string;
     redacted: boolean;
+    /** A saved secret the server holds but could not decrypt (a key missing from its keyring), so it is not in use: set with `redacted`, and the administrator enters it again. */
+    unreadable?: boolean;
 }
 
 /** The server's environment variables and effective configuration, each sorted by name. */
 export interface DiagnosticsInformation {
     environment: DiagnosticsSetting[];
     configuration: DiagnosticsSetting[];
+    /**
+     * The integrations config layer as a source of its own: what is saved on the console's Integrations pages and applied without a restart, a secret
+     * redacted. Left out by a server that predates it (nothing is shown), an empty list when nothing is saved there.
+     */
+    integrations?: DiagnosticsSetting[];
 }
 
 /** A node that runs some of this install's pods, derived from the pods: nothing else about the node is readable. */

@@ -13,6 +13,12 @@ export const SETTINGS_PAGE_SIZE = 100;
 /** What stands where the server withheld a value. Drawn here from `redacted`: the server never sends the value (or any text for it). */
 export const HIDDEN_VALUE = "•••• (hidden)";
 
+/** What stands where a secret of the integrations layer is saved: whether it is set is all that is shown of it. */
+export const SET_VALUE = "•••• (set)";
+
+/** What stands where a saved secret could not be decrypted, so it is not in use. */
+export const UNREADABLE_VALUE = "Set, but can't be read: enter it again";
+
 const INPUT_CLASS =
     "w-full text-sm py-2 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
 
@@ -24,13 +30,17 @@ export interface SettingsTableProps {
     /** Also the prefix of the heading's element id. */
     id: string;
     settings: DiagnosticsSetting[];
+    /** What a `redacted` value is: `hidden` (default) where the server withholds it, `set` where it is a saved secret and the setting says only that it is set. */
+    secrets?: "hidden" | "set";
+    /** What an empty list says. Defaults to "Nothing is set." */
+    emptyText?: string;
 }
 
 /**
  * A filterable, paged list of settings (name and value). A value the server withheld is shown as "•••• (hidden)", never as
  * anything it could have held. The filter matches names, and the values that are shown: a hidden value can't be searched for.
  */
-export default function SettingsTable({ title, description, id, settings }: SettingsTableProps) {
+export default function SettingsTable({ title, description, id, settings, secrets = "hidden", emptyText = "Nothing is set." }: SettingsTableProps) {
     const [query, setQuery] = useState("");
     const [limit, setLimit] = useState(SETTINGS_PAGE_SIZE);
 
@@ -39,7 +49,9 @@ export default function SettingsTable({ title, description, id, settings }: Sett
         return settings.filter((item) => needle === "" || `${item.name} ${item.redacted ? "" : (item.value ?? "")}`.toLowerCase().includes(needle));
     }, [settings, query]);
     const shown = matching.slice(0, limit);
-    const hiddenCount = settings.filter((item) => item.redacted).length;
+    const unreadableCount = settings.filter((item) => item.unreadable).length;
+    const hiddenCount = settings.filter((item) => item.redacted && !item.unreadable).length;
+    const hiddenText = secrets === "set" ? `${hiddenCount} ${hiddenCount === 1 ? "secret" : "secrets"} set` : `${hiddenCount} with a hidden value`;
 
     return (
         <section aria-labelledby={`${id}-heading`} className="rounded-md border border-border bg-surface p-4">
@@ -62,10 +74,11 @@ export default function SettingsTable({ title, description, id, settings }: Sett
             </div>
             <p role="status" className="mb-2 text-xs text-text-muted">
                 {(matching.length === settings.length ? `${settings.length} settings` : `${matching.length} of ${settings.length} settings match`) +
-                    (hiddenCount > 0 ? `, ${hiddenCount} with a hidden value` : "")}
+                    (hiddenCount > 0 ? `, ${hiddenText}` : "") +
+                    (unreadableCount > 0 ? `, ${unreadableCount} that can't be read` : "")}
             </p>
             {matching.length === 0 ? (
-                <p className="text-sm text-text-muted">{settings.length === 0 ? "Nothing is set." : "No settings match."}</p>
+                <p className="text-sm text-text-muted">{settings.length === 0 ? emptyText : "No settings match."}</p>
             ) : (
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm border-collapse">
@@ -89,8 +102,10 @@ export default function SettingsTable({ title, description, id, settings }: Sett
                                         <CopyIconButton value={item.name} label={`Copy the name of ${item.name}`} />
                                     </td>
                                     <td className="py-2 px-2.5 border-b border-border font-mono break-all">
-                                        {item.redacted ? (
-                                            <span className="text-text-muted">{HIDDEN_VALUE}</span>
+                                        {item.unreadable ? (
+                                            <span className="text-danger">{UNREADABLE_VALUE}</span>
+                                        ) : item.redacted ? (
+                                            <span className="text-text-muted">{secrets === "set" ? SET_VALUE : HIDDEN_VALUE}</span>
                                         ) : (
                                             <>
                                                 {item.value}

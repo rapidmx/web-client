@@ -19,10 +19,12 @@ import ServerVersionCard from "../../../../apps/shared/components/admin/diagnost
 import InformationPanel from "../../../../apps/shared/components/admin/diagnostics/InformationPanel.js";
 import SettingsTable, {
     HIDDEN_VALUE,
+    SET_VALUE,
     SETTINGS_PAGE_SIZE,
+    UNREADABLE_VALUE,
 } from "../../../../apps/shared/components/admin/diagnostics/SettingsTable.js";
 import type { DiagnosticsComponent, DiagnosticsVersions } from "../../../../apps/shared/components/admin/diagnostics/diagnosticsApi.js";
-import { informationFixture, runningComponent, versionsFixture } from "./fixtures.js";
+import { configKeysFixture, dnsComponents, informationFixture, runningComponent, versionsFixture } from "./fixtures.js";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -165,6 +167,39 @@ describe("ComponentsTable", () => {
         // A tag already in the image is not written twice; no tag and no digest is just the image.
         expect(screen.getByText(/mongodb: mongo:8.0 . not ready/)).toBeInTheDocument();
         expect(screen.getByText(/bare: bare . ready . 1 restart$/)).toBeInTheDocument();
+    });
+
+    it("lists the DNS controller and each external-dns pod with the other containers", async () => {
+        const user = userEvent.setup();
+        render(<ComponentsTable components={[...versionsFixture().components, ...dnsComponents()]} kubernetes={{ available: true }} />);
+        const rows = screen.getAllByRole("row");
+        expect(rows).toHaveLength(11);
+
+        const controller = within(rows.find((row) => within(row).queryByText("dns-controller"))!);
+        expect(controller.getByText("Running")).toBeInTheDocument();
+        expect(controller.getByText("0.1.0")).toBeInTheDocument();
+        expect(controller.getByText("registry.k8s.io/dns-controller")).toBeInTheDocument();
+        expect(controller.getByText("1 pod")).toBeInTheDocument();
+
+        const externalDns = within(rows.find((row) => within(row).queryByText("external-dns"))!);
+        expect(externalDns.getByText("v0.23.0")).toBeInTheDocument();
+        expect(externalDns.getByText("2 pods")).toBeInTheDocument();
+        expect(externalDns.getByText("node-1, node-2")).toBeInTheDocument();
+        await user.click(externalDns.getByText("2 pods"));
+        expect(screen.getByText("rapidmx-external-dns-aaaa-5c4d")).toBeInTheDocument();
+        expect(screen.getByText("rapidmx-external-dns-bbbb-6e5f")).toBeInTheDocument();
+    });
+
+    it("shows a controller that is not ready, and one whose pod is missing", () => {
+        const [controller, externalDns] = dnsComponents({
+            controller: { status: "not-ready", pods: [{ ...dnsComponents()[0].pods[0], ready: false, restarts: 4 }] },
+            externalDns: { status: "missing", version: undefined, pods: [] },
+        });
+        render(<ComponentsTable components={[controller, externalDns]} kubernetes={{ available: true }} />);
+        const rows = screen.getAllByRole("row");
+        expect(within(rows[1]).getByText("Not ready")).toBeInTheDocument();
+        expect(within(rows[1]).getByText("4")).toBeInTheDocument();
+        expect(within(rows[2]).getByText("Not found")).toBeInTheDocument();
     });
 
     it("names one pod in the singular", () => {
@@ -324,41 +359,93 @@ describe("InformationPanel", () => {
                 versions={{ data: versionsFixture(), error: undefined, loading: false }}
                 plugins={{ data: { plugins: [plugin({ name: "@rapidmx/mapi", packageVersion: "1.1.0" })], status: statusFixture() }, error: undefined, loading: false }}
                 information={{ data: informationFixture(), error: undefined, loading: false }}
+                keyring={{ data: configKeysFixture(Date.now()), error: undefined, loading: false }}
             />
         );
-        for (const name of ["Server", "Other containers", "Installed plugins", "Environment variables", "Configuration", "Installed packages"]) {
+        for (const name of ["Server", "Other containers", "Installed plugins", "Environment variables", "Configuration", "Configuration keyring", "Installed packages"]) {
             expect(screen.getByRole("region", { name })).toBeInTheDocument();
         }
+        // The server sent no integrations layer, so there is no section for it.
+        expect(screen.queryByRole("region", { name: "Integrations" })).not.toBeInTheDocument();
+    });
+
+    it("shows the integrations layer as a source of its own, with its secrets only as set", () => {
+        const versions = { data: versionsFixture(), error: undefined, loading: false };
+        const information = informationFixture({
+            integrations: [
+                { name: "giphy:api_key", redacted: true },
+                { name: "giphy:enabled", value: "true", redacted: false },
+                { name: "integrations:stun:urls", value: "stun:stun.example.com:3478", redacted: false },
+                { name: "system:plugins:registry_token", redacted: true, unreadable: true },
+            ],
+        });
+        render(<InformationPanel versions={versions} plugins={idle} information={{ data: information, error: undefined, loading: false }} keyring={idle} />);
+        const section = within(screen.getByRole("region", { name: "Integrations" }));
+        expect(section.getByText(/Saved in the Integrations pages of the admin console/)).toBeInTheDocument();
+        expect(section.getByText("giphy:api_key")).toBeInTheDocument();
+        expect(section.getByText(SET_VALUE)).toBeInTheDocument();
+        expect(section.getByText("stun:stun.example.com:3478")).toBeInTheDocument();
+        expect(section.getByText(UNREADABLE_VALUE)).toBeInTheDocument();
+        expect(section.queryByText(HIDDEN_VALUE)).not.toBeInTheDocument();
+        expect(section.getAllByRole("status")[0]).toHaveTextContent("4 settings, 1 secret set, 1 that can't be read");
+        // It comes between the effective configuration and the packages.
+        const names = screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent);
+        expect(names.indexOf("Configuration")).toBeLessThan(names.indexOf("Integrations"));
+        expect(names.indexOf("Integrations")).toBeLessThan(names.indexOf("Installed packages"));
+    });
+
+    it("says the integrations layer is empty when nothing is saved there", () => {
+        const versions = { data: versionsFixture(), error: undefined, loading: false };
+        render(<InformationPanel versions={versions} plugins={idle} information={{ data: informationFixture({ integrations: [] }), error: undefined, loading: false }} keyring={idle} />);
+        expect(within(screen.getByRole("region", { name: "Integrations" })).getByText("Nothing is saved in the Integrations pages.")).toBeInTheDocument();
+    });
+
+    it("shows the keyring after the configuration, and why it could not be read beside the rest of the tab", () => {
+        const versions = { data: versionsFixture(), error: undefined, loading: false };
+        const { rerender } = render(<InformationPanel versions={versions} plugins={idle} information={idle} keyring={{ ...idle, error: "Could not read the configuration keyring." }} />);
+        expect(screen.getByText("Could not read the configuration keyring.")).toBeInTheDocument();
+        expect(screen.getByRole("region", { name: "Server" })).toBeInTheDocument();
+        rerender(<InformationPanel versions={versions} plugins={idle} information={idle} keyring={{ data: null, error: undefined, loading: false }} />);
+        expect(screen.getByText(/This server doesn.t offer configuration encryption yet/)).toBeInTheDocument();
     });
 
     it("says the environment is loading, and shows why it could not be read, beside the rest of the tab", () => {
         const versions = { data: versionsFixture(), error: undefined, loading: false };
-        const { rerender } = render(<InformationPanel versions={versions} plugins={idle} information={{ ...idle, loading: true }} />);
+        const { rerender } = render(<InformationPanel versions={versions} plugins={idle} information={{ ...idle, loading: true }} keyring={idle} />);
         expect(screen.getByText(/Loading the environment/)).toBeInTheDocument();
-        rerender(<InformationPanel versions={versions} plugins={idle} information={{ ...idle, error: "Not found." }} />);
+        rerender(<InformationPanel versions={versions} plugins={idle} information={{ ...idle, error: "Not found." }} keyring={idle} />);
         expect(screen.getByText("Not found.")).toBeInTheDocument();
         expect(screen.queryByText(/Loading the environment/)).not.toBeInTheDocument();
         expect(screen.queryByRole("region", { name: "Environment variables" })).not.toBeInTheDocument();
         expect(screen.getByRole("region", { name: "Server" })).toBeInTheDocument();
     });
 
+    it("shows the keyring, or why it could not be read, when the versions could not be read", () => {
+        const { rerender } = render(<InformationPanel versions={{ ...idle, error: "Versions broke." }} plugins={idle} information={idle} keyring={{ data: configKeysFixture(Date.now()), error: undefined, loading: false }} />);
+        expect(screen.getByText("Versions broke.")).toBeInTheDocument();
+        expect(screen.getByText("aaaa1111")).toBeInTheDocument();
+        expect(screen.queryByRole("region", { name: "Installed packages" })).not.toBeInTheDocument();
+        rerender(<InformationPanel versions={{ ...idle, error: "Versions broke." }} plugins={idle} information={idle} keyring={{ ...idle, error: "Keyring broke." }} />);
+        expect(screen.getByText("Keyring broke.")).toBeInTheDocument();
+    });
+
     it("copes with an information answer that leaves out the lists", () => {
         const versions = { data: versionsFixture(), error: undefined, loading: false };
-        render(<InformationPanel versions={versions} plugins={idle} information={{ data: {} as never, error: undefined, loading: false }} />);
+        render(<InformationPanel versions={versions} plugins={idle} information={{ data: {} as never, error: undefined, loading: false }} keyring={idle} />);
         expect(screen.getAllByText("Nothing is set.")).toHaveLength(2);
     });
 
     it("says it is loading, and shows an error", () => {
-        const { rerender } = render(<InformationPanel versions={{ ...idle, loading: true }} plugins={idle} information={idle} />);
+        const { rerender } = render(<InformationPanel versions={{ ...idle, loading: true }} plugins={idle} information={idle} keyring={idle} />);
         expect(screen.getByText(/Loading/)).toBeInTheDocument();
-        rerender(<InformationPanel versions={{ ...idle, error: "Nope." }} plugins={idle} information={idle} />);
+        rerender(<InformationPanel versions={{ ...idle, error: "Nope." }} plugins={idle} information={idle} keyring={idle} />);
         expect(screen.getByText("Nope.")).toBeInTheDocument();
         expect(screen.queryByText(/Loading/)).not.toBeInTheDocument();
     });
 
     it("copes with a server that leaves out the lists", () => {
         const sparse = { server: versionsFixture().server } as DiagnosticsVersions;
-        render(<InformationPanel versions={{ data: sparse, error: undefined, loading: false }} plugins={idle} information={idle} />);
+        render(<InformationPanel versions={{ data: sparse, error: undefined, loading: false }} plugins={idle} information={idle} keyring={idle} />);
         expect(screen.getByText("0 packages")).toBeInTheDocument();
         // No kubernetes field is read as Kubernetes being unavailable.
         expect(screen.getByText("Kubernetes information is not available on this server.")).toBeInTheDocument();
@@ -381,6 +468,45 @@ describe("SettingsTable", () => {
         expect(section.getByText("DB_PASSWORD")).toBeInTheDocument();
         expect(section.getByText(HIDDEN_VALUE)).toBeInTheDocument();
         expect(section.getAllByRole("status")[0]).toHaveTextContent("3 settings, 1 with a hidden value");
+    });
+
+    it("shows a secret of the integrations layer as set, and one it can't decrypt as such", () => {
+        render(
+            <SettingsTable
+                {...props}
+                secrets="set"
+                emptyText="Nothing is saved."
+                settings={[
+                    { name: "giphy:api_key", redacted: true },
+                    { name: "giphy:enabled", value: "true", redacted: false },
+                    { name: "system:plugins:registry_token", redacted: true, unreadable: true },
+                ]}
+            />
+        );
+        const section = within(screen.getByRole("region", { name: "Test settings" }));
+        expect(section.getByText(SET_VALUE)).toBeInTheDocument();
+        expect(section.getByText(UNREADABLE_VALUE)).toBeInTheDocument();
+        expect(section.queryByText(HIDDEN_VALUE)).not.toBeInTheDocument();
+        expect(section.getAllByRole("status")[0]).toHaveTextContent("3 settings, 1 secret set, 1 that can't be read");
+        // Neither has a value to copy.
+        expect(section.queryByRole("button", { name: "Copy the value of giphy:api_key" })).not.toBeInTheDocument();
+        expect(section.queryByRole("button", { name: "Copy the value of system:plugins:registry_token" })).not.toBeInTheDocument();
+    });
+
+    it("counts two secrets as set in the plural, and keeps the hidden wording by default", () => {
+        const secrets = [{ name: "a", redacted: true }, { name: "b", redacted: true }];
+        const { rerender } = render(<SettingsTable {...props} secrets="set" settings={secrets} />);
+        expect(screen.getAllByRole("status")[0]).toHaveTextContent("2 settings, 2 secrets set");
+        rerender(<SettingsTable {...props} settings={secrets} />);
+        expect(screen.getAllByRole("status")[0]).toHaveTextContent("2 settings, 2 with a hidden value");
+        expect(screen.getAllByText(HIDDEN_VALUE)).toHaveLength(2);
+    });
+
+    it("says what an empty list means in the words it is given", () => {
+        const { rerender } = render(<SettingsTable {...props} settings={[]} />);
+        expect(screen.getByText("Nothing is set.")).toBeInTheDocument();
+        rerender(<SettingsTable {...props} emptyText="Nothing is saved." settings={[]} />);
+        expect(screen.getByText("Nothing is saved.")).toBeInTheDocument();
     });
 
     it("has a copy button for the name and for the shown value of each setting, none for a withheld value", async () => {

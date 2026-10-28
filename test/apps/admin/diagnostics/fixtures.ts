@@ -9,6 +9,7 @@ import type {
     DiagnosticsRuntime,
     DiagnosticsVersions,
 } from "../../../../apps/shared/components/admin/diagnostics/diagnosticsApi.js";
+import type { ConfigKeys } from "../../../../lib/admin/configKeysApi.js";
 
 const COMPONENTS: DiagnosticsComponentName[] = ["postfix", "postfix-bridge", "mongodb", "postgresql", "redis", "coturn", "rspamd", "clamav"];
 
@@ -173,6 +174,54 @@ export function informationFixture(overrides: Partial<DiagnosticsInformation> = 
             { name: "datastores:cache:url", value: "redis://cache:6379", redacted: false },
             { name: "datastores:mongo:password", redacted: true },
         ],
+        ...overrides,
+    };
+}
+
+/**
+ * The two components of DNS publishing as the server lists them after the other eight when publishing is on: the controller (one pod) and
+ * external-dns (one pod per DNS provider config).
+ */
+export function dnsComponents(overrides: { controller?: Partial<DiagnosticsComponent>; externalDns?: Partial<DiagnosticsComponent> } = {}): DiagnosticsComponent[] {
+    const pod = (name: string, image: string, tag: string, node: string) => ({
+        name,
+        phase: "Running",
+        ready: true,
+        restarts: 0,
+        node,
+        startedAt: "2026-09-20T08:00:00.000Z",
+        containers: [{ name: image, image: `registry.k8s.io/${image}`, tag, digest: "sha256:fedcba9876543210fedcba9876543210", ready: true, restartCount: 0 }],
+    });
+    return [
+        {
+            component: "dns-controller",
+            status: "running",
+            version: "0.1.0",
+            pods: [pod("rapidmx-dns-controller-7d9f", "dns-controller", "0.1.0", "node-1")],
+            ...overrides.controller,
+        },
+        {
+            component: "external-dns",
+            status: "running",
+            version: "v0.23.0",
+            pods: [pod("rapidmx-external-dns-aaaa-5c4d", "external-dns", "v0.23.0", "node-1"), pod("rapidmx-external-dns-bbbb-6e5f", "external-dns", "v0.23.0", "node-2")],
+            ...overrides.externalDns,
+        },
+    ];
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** What `GET /api/system/config-keys` answers for a deployment on its original key that has never rotated, `now` days after `createdAt`'s zero. */
+export function configKeysFixture(now: number, overrides: Partial<ConfigKeys> = {}): ConfigKeys {
+    return {
+        available: true,
+        activeKid: "aaaa1111",
+        keys: [{ kid: "aaaa1111", createdAt: new Date(now - 190 * DAY_MS - 3_600_000).toISOString(), active: true, envelopes: 12 }],
+        countedAt: new Date(now - 5 * 60_000).toISOString(),
+        rotation: null,
+        reencryption: null,
+        pluginSecrets: null,
         ...overrides,
     };
 }

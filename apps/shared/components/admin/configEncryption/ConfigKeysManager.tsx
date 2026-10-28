@@ -5,7 +5,6 @@
 import React, { ReactNode, useEffect, useRef, useState } from "react";
 import {
     activateConfigKey,
-    ConfigKeyRotation,
     ConfigKeys,
     configKeysOfRefusal,
     getConfigKeys,
@@ -17,8 +16,7 @@ import { ApiRequestError } from "../../../../../lib/util/api.js";
 import Alert from "../ActionAlert.js";
 import { actionErrorMessage } from "../elevation.js";
 import { Badge, formatTime } from "../integrations/dnsProviderParts.js";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+import { activeKidOf, ageText, isRunning } from "./keyringParts.js";
 
 /** How often the progress of a rotation in progress is read again. The server's job looks at a rotation every 30 seconds, and the copies report every 30. */
 export const POLL_MS = 10_000;
@@ -26,38 +24,8 @@ export const POLL_MS = 10_000;
 /** What an administrator asked for that the dialogs confirm. */
 type Confirming = "compromised" | "activate";
 
-/** Whole days from `iso` to `now`, as the age of a key. */
-function ageText(iso: string, now: number): string {
-    const days = Math.max(0, Math.floor((now - new Date(iso).getTime()) / DAY_MS));
-    return days < 1 ? "less than a day" : days === 1 ? "1 day" : `${days} days`;
-}
-
 function copiesText(count: number): string {
     return count === 1 ? "1 copy" : `${count} copies`;
-}
-
-/** Whether `rotation` is still going: a finished or failed one is only shown. */
-function isRunning(rotation: ConfigKeyRotation | null | undefined): rotation is ConfigKeyRotation {
-    return !!rotation && rotation.phase !== "done" && rotation.phase !== "failed";
-}
-
-/**
- * The key the deployment encrypts with. A key's own `active` is only what the copy that answered encrypts with, which differs between copies while they
- * reload the keyring, so once the rotation has activated its new key that is the one, and before then it is the one the copy reports other than the new key.
- */
-function activeKidOf(keys: ConfigKeys): string | null {
-    const rotation = keys.rotation;
-    if (rotation?.kid && rotation.activatedAt) {
-        return rotation.kid;
-    }
-    if (rotation?.kid && (rotation.phase === "adding" || rotation.phase === "activating")) {
-        return (
-            keys.keys.find((key) => key.active && key.kid !== rotation.kid)?.kid ??
-            keys.keys.find((key) => key.kid !== rotation.kid)?.kid ??
-            null
-        );
-    }
-    return keys.keys.find((key) => key.active)?.kid ?? keys.activeKid;
 }
 
 /** The server copies a rotation is waiting for, one per line. */

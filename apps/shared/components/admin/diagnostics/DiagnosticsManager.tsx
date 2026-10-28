@@ -13,9 +13,11 @@ import {
     getDiagnosticsVersions,
 } from "./diagnosticsApi.js";
 import { saveTextFile, SaveFile, timestampedFilename } from "./download.js";
+import { activeKidOf } from "../configEncryption/keyringParts.js";
 import { describeError } from "./format.js";
 import InformationPanel from "./InformationPanel.js";
 import { loadInstalledPlugins } from "./InstalledPlugins.js";
+import { loadKeyring } from "./KeyringCard.js";
 import type { LogSocketFactory } from "./logClient.js";
 import LogsPanel from "./LogsPanel.js";
 import RuntimePanel from "./RuntimePanel.js";
@@ -57,6 +59,7 @@ export default function DiagnosticsManager({ createLogSocket, saveFile = saveTex
     const information = useDiagnosticsResource(getDiagnosticsInformation, reloadKey, "Could not read the server's environment and configuration.");
     const runtime = useDiagnosticsResource(getDiagnosticsRuntime, reloadKey, "Could not read the runtime.");
     const plugins = useDiagnosticsResource(loadInstalledPlugins, reloadKey, "Could not read the installed plugins.");
+    const keyring = useDiagnosticsResource(loadKeyring, reloadKey, "Could not read the configuration keyring.");
     const polling = useMetricsPolling(tab === "system");
     const logStream = useLogStream({ createSocket: createLogSocket });
     const logsOpened = useRef(false);
@@ -69,7 +72,7 @@ export default function DiagnosticsManager({ createLogSocket, saveFile = saveTex
         }
     }, [tab]);
 
-    const refreshing = versions.loading || information.loading || runtime.loading || plugins.loading;
+    const refreshing = versions.loading || information.loading || runtime.loading || plugins.loading || keyring.loading;
 
     function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
         const index = TABS.findIndex((item) => item.id === tab);
@@ -91,8 +94,8 @@ export default function DiagnosticsManager({ createLogSocket, saveFile = saveTex
     }
 
     /**
-     * Saves the versions, the environment and configuration (the server has already withheld every secret), the runtime and the
-     * latest metrics sample (asking for one if the System tab has not sampled): no logs.
+     * Saves the versions, the environment and configuration (the server has already withheld every secret), the runtime, the
+     * keyring's key ids, ages and counts and the latest metrics sample (asking for one if the System tab has not sampled): no logs.
      */
     async function downloadReport() {
         setPreparingReport(true);
@@ -118,12 +121,25 @@ export default function DiagnosticsManager({ createLogSocket, saveFile = saveTex
                       status: plugins.data.status ?? null,
                   }
                 : null,
+            // The key ids, when each was made and how many values it encrypts: never anything of a key itself, which the server doesn't send.
+            keyring: keyring.data
+                ? {
+                      activeKid: activeKidOf({ ...keyring.data, keys: keyring.data.keys ?? [] }),
+                      countedAt: keyring.data.countedAt ?? null,
+                      keys: (keyring.data.keys ?? []).map(({ kid, createdAt, envelopes }) => ({ kid, createdAt, envelopes })),
+                      rotationPhase: keyring.data.rotation?.phase ?? null,
+                      // As of the re-encryption pass that made the list: a value entered again stays counted until a later pass.
+                      unreadableValues: keyring.data.reencryption?.unreadable?.length ?? 0,
+                      unreadableAsOf: keyring.data.reencryption?.finishedAt ?? null,
+                  }
+                : null,
             metrics: metrics ?? null,
             errors: {
                 versions: versions.error ?? null,
                 information: information.error ?? null,
                 runtime: runtime.error ?? null,
                 plugins: plugins.error ?? null,
+                keyring: keyring.error ?? null,
                 metrics: metricsError ?? null,
             },
         };
@@ -175,7 +191,7 @@ export default function DiagnosticsManager({ createLogSocket, saveFile = saveTex
             </div>
 
             <div role="tabpanel" id={panelId(tab)} aria-labelledby={tabId(tab)}>
-                {tab === "information" && <InformationPanel versions={versions} plugins={plugins} information={information} />}
+                {tab === "information" && <InformationPanel versions={versions} plugins={plugins} information={information} keyring={keyring} />}
                 {tab === "runtime" && <RuntimePanel runtime={runtime} />}
                 {tab === "system" && <SystemPanel polling={polling} />}
                 {tab === "logs" && <LogsPanel stream={logStream} saveFile={saveFile} />}

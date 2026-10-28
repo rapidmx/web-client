@@ -10,7 +10,7 @@ import { jsonResponse, mockFetch } from "../../testUtils.js";
 import DiagnosticsManager from "../../../../apps/shared/components/admin/diagnostics/DiagnosticsManager.js";
 import { ELEVATION_MESSAGE } from "../../../../apps/shared/components/admin/diagnostics/format.js";
 import type { LogSocket } from "../../../../apps/shared/components/admin/diagnostics/logClient.js";
-import { informationFixture, metricsSample, runtimeFixture, versionsFixture } from "./fixtures.js";
+import { configKeysFixture, informationFixture, metricsSample, runtimeFixture, versionsFixture } from "./fixtures.js";
 
 class FakeSocket implements LogSocket {
     static instances: FakeSocket[] = [];
@@ -48,6 +48,7 @@ interface Options {
     runtime?: () => Response;
     metrics?: () => Response;
     plugins?: () => Response;
+    keyring?: () => Response;
 }
 
 function mockApi(options: Options = {}) {
@@ -65,6 +66,8 @@ function mockApi(options: Options = {}) {
                 return options.plugins?.() ?? jsonResponse(200, [plugin]);
             case "/api/system/plugins/status":
                 return jsonResponse(200, { hash: "h", instances: [] });
+            case "/api/system/config-keys":
+                return options.keyring?.() ?? jsonResponse(200, configKeysFixture(Date.now()));
             default:
                 throw new Error(`unexpected ${url}`);
         }
@@ -94,10 +97,38 @@ describe("DiagnosticsManager", () => {
         expect(calls(fetchMock, "/api/admin/diagnostics/information")).toBe(1);
         expect(calls(fetchMock, "/api/admin/diagnostics/runtime")).toBe(1);
         expect(calls(fetchMock, "/api/system/plugins")).toBe(1);
+        expect(await screen.findByRole("region", { name: "Configuration keyring" })).toBeInTheDocument();
+        expect(calls(fetchMock, "/api/system/config-keys")).toBe(1);
         // Information and Runtime are never polled, and nothing else is running on this tab.
         expect(setIntervalSpy.mock.calls.some((call) => call[1] === 5000)).toBe(false);
         expect(calls(fetchMock, "/api/admin/diagnostics/metrics")).toBe(0);
         expect(FakeSocket.instances).toHaveLength(0);
+    });
+
+    it("shows the keyring's keys, and reads it again on Refresh", async () => {
+        const user = userEvent.setup();
+        const fetchMock = mockApi();
+        render(<DiagnosticsManager createLogSocket={createLogSocket} saveFile={vi.fn()} />);
+        const card = within(await screen.findByRole("region", { name: "Configuration keyring" }));
+        expect(await card.findByText("aaaa1111")).toBeInTheDocument();
+        expect(card.getByText("190 days")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Refresh" }));
+        await waitFor(() => expect(calls(fetchMock, "/api/system/config-keys")).toBe(2));
+    });
+
+    it("says a server without the keyring route doesn't offer it, and shows the rest of the tab", async () => {
+        mockApi({ keyring: () => jsonResponse(404, { message: "Not found." }) });
+        render(<DiagnosticsManager createLogSocket={createLogSocket} saveFile={vi.fn()} />);
+        expect(await screen.findByText(/This server doesn.t offer configuration encryption yet/)).toBeInTheDocument();
+        expect(screen.getByRole("region", { name: "Server" })).toBeInTheDocument();
+    });
+
+    it("shows the integrations layer when the server sends it", async () => {
+        mockApi({ information: () => jsonResponse(200, informationFixture({ integrations: [{ name: "giphy:api_key", redacted: true }] })) });
+        render(<DiagnosticsManager createLogSocket={createLogSocket} saveFile={vi.fn()} />);
+        const section = within(await screen.findByRole("region", { name: "Integrations" }));
+        expect(section.getByText("giphy:api_key")).toBeInTheDocument();
+        expect(section.getByText("•••• (set)")).toBeInTheDocument();
     });
 
     it("shows the runtime on its tab, without asking again", async () => {
@@ -298,7 +329,7 @@ describe("DiagnosticsManager", () => {
             expect(report.plugins.installed).toEqual([{ name: "@rapidmx/mapi", packageVersion: "1.1.0", enabled: true }]);
             expect(report.plugins.status.hash).toBe("h");
             expect(report.metrics.host.cpuPercent).toBe(35);
-            expect(report.errors).toEqual({ versions: null, information: null, runtime: null, plugins: null, metrics: null });
+            expect(report.errors).toEqual({ versions: null, information: null, runtime: null, plugins: null, keyring: null, metrics: null });
             expect(typeof report.generatedAt).toBe("string");
             expect(content).not.toContain("top secret");
             expect(content).not.toContain("logs\":");
@@ -326,6 +357,7 @@ describe("DiagnosticsManager", () => {
                 information: () => jsonResponse(404, { message: "Information is missing." }),
                 runtime: () => jsonResponse(403, { code: "api-104", message: "x" }),
                 plugins: () => jsonResponse(500, { message: "Plugins broke." }),
+                keyring: () => jsonResponse(500, { message: "Keyring broke." }),
                 metrics: () => jsonResponse(403, { code: "api-103", message: "no" }),
             });
             const saveFile = vi.fn();
@@ -339,14 +371,43 @@ describe("DiagnosticsManager", () => {
             expect(report.information).toBeNull();
             expect(report.runtime).toBeNull();
             expect(report.plugins).toBeNull();
+            expect(report.keyring).toBeNull();
             expect(report.metrics).toBeNull();
             expect(report.errors).toEqual({
                 versions: "Versions broke.",
                 information: "Information is missing.",
                 runtime: ELEVATION_MESSAGE,
                 plugins: "Plugins broke.",
+                keyring: "Keyring broke.",
                 metrics: "You are not authorised to view diagnostics.",
             });
+        });
+
+        it("includes the integrations layer and the keyring's key ids, ages and counts, and no key material", async () => {
+            const user = userEvent.setup();
+            const view = configKeysFixture(Date.now(), {
+                reencryption: { targetKid: "aaaa1111", complete: true, startedAt: "2026-10-28T10:00:00.000Z", finishedAt: "2026-10-28T10:05:00.000Z", unreadable: [{ record: "Plugin", uid: "p1", field: "settings.apiKey", kid: "dead0000" }] },
+            });
+            mockApi({
+                information: () => jsonResponse(200, informationFixture({ integrations: [{ name: "giphy:api_key", redacted: true }] })),
+                keyring: () => jsonResponse(200, { ...view, keys: [{ ...view.keys[0], key: "c2VjcmV0" }] }),
+            });
+            const saveFile = vi.fn();
+            render(<DiagnosticsManager createLogSocket={createLogSocket} saveFile={saveFile} />);
+            await screen.findByText("aaaa1111");
+            await user.click(screen.getByRole("button", { name: "Download diagnostics report" }));
+            await waitFor(() => expect(saveFile).toHaveBeenCalledOnce());
+            const report = saved(saveFile);
+            expect(report.information.integrations).toEqual([{ name: "giphy:api_key", redacted: true }]);
+            expect(report.keyring).toEqual({
+                activeKid: "aaaa1111",
+                countedAt: view.countedAt,
+                keys: [{ kid: "aaaa1111", createdAt: view.keys[0].createdAt, envelopes: 12 }],
+                rotationPhase: null,
+                unreadableValues: 1,
+                unreadableAsOf: "2026-10-28T10:05:00.000Z",
+            });
+            expect(saveFile.mock.calls[0][1]).not.toContain("c2VjcmV0");
         });
 
         it("includes the plugin list without a load status when the status could not be read", async () => {
