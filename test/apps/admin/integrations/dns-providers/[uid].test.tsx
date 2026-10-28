@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import React from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyResponse, jsonResponse, mockFetch } from "../../../testUtils.js";
@@ -62,7 +62,7 @@ const host = (recordName: string, recordKind: string, over: Record<string, unkno
 });
 
 interface Handlers {
-    hosts?: () => Response;
+    hosts?: () => Response | Promise<Response>;
     takeover?: (body: any) => Response;
     provider?: () => Response;
     types?: () => Response;
@@ -560,6 +560,48 @@ describe("the deployment's hosts", () => {
         await user.click(dialog.getByRole("button", { name: "Take over" }));
         await screen.findByText(/Takeover queued/);
         expect(calls.find((call) => call.url.endsWith("/takeover"))?.body).toEqual({ hosts: true, records: ["autodiscover.example.com"] });
+    });
+
+    it("reloads on Refresh, clearing the queued note, and closes the dialog on Cancel", async () => {
+        const user = userEvent.setup();
+        let state = "conflict";
+        const calls = mockProvider(cloudflareProvider, { hosts: () => jsonResponse(200, [host("mail.example.com", "A", { state, conflictReason: "not_owned" })]) });
+        renderPage();
+
+        await user.click(await screen.findByRole("button", { name: "Take over host names" }));
+        await user.click(within(screen.getByRole("dialog", { name: "Take over host names" })).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Take over host names" }));
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+        await user.click(screen.getByRole("button", { name: "Take over host names" }));
+        await user.click(within(screen.getByRole("dialog", { name: "Take over host names" })).getByRole("button", { name: "Take over" }));
+        await screen.findByText(/Takeover queued/);
+        const before = calls.filter((call) => call.url.endsWith("/hosts")).length;
+
+        state = "published";
+        await user.click(within((await screen.findByRole("table", { name: "Host names" })).closest("section")!).getByRole("button", { name: "Refresh" }));
+        await waitFor(() => expect(screen.queryByText(/Takeover queued/)).not.toBeInTheDocument());
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Take over host names" })).not.toBeInTheDocument());
+        expect(calls.filter((call) => call.url.endsWith("/hosts")).length).toBe(before + 1);
+    });
+
+    it.each([
+        ["a host list", () => jsonResponse(200, [host("mail.example.com", "A")])],
+        ["a failure", () => jsonResponse(500, { code: "api-500", message: "late boom" })],
+    ])("ignores %s that arrives after the page was left", async (_name, late) => {
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const calls = mockProvider(cloudflareProvider, { hosts: () => gate.then(late) });
+        const { unmount } = renderPage();
+        await screen.findByRole("heading", { name: "Cloudflare" });
+        unmount();
+        release();
+        await waitFor(() => expect(calls.some((call) => call.url.endsWith("/hosts"))).toBe(true));
+        await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
     it("reports a failure to load the hosts", async () => {
