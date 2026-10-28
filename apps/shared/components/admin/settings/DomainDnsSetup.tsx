@@ -7,7 +7,7 @@ import { takeoverDnsRecords } from "../../../../../lib/admin/dnsProvidersApi.js"
 import { DnsManualReason, DnsRecordCheck, Domain, getDnsSetup, getDomain, verifyDomain } from "../../../../../lib/admin/domainsApi.js";
 import Alert from "../ActionAlert.js";
 import Button from "../../../../../lib/components/buttons/Button.js";
-import CopyIconButton from "../../../../../lib/components/buttons/CopyIconButton.js";
+import CopyableValue from "./CopyableValue.js";
 import Modal from "../../../../../lib/components/overlays/Modal.js";
 import { actionErrorMessage } from "../elevation.js";
 
@@ -69,20 +69,10 @@ function splitSrvValue(value: string): { priority: string; weight: string; port:
     return match ? { priority: match[1], weight: match[2], port: match[3], target: match[4] } : null;
 }
 
-/** A value to type into a DNS provider's form, shown in full (long DKIM keys wrap) with a copy icon button beside it. */
-function CopyableValue({ value, copyLabel }: { value: string; copyLabel: string }) {
-    return (
-        <div className="flex items-start gap-2">
-            <code className="flex-1 min-w-0 text-xs break-all">{value}</code>
-            <CopyIconButton value={value} label={copyLabel} className="shrink-0" />
-        </div>
-    );
-}
-
 export interface DomainDnsSetupProps {
     uid: string;
-    /** Called with the domain every time it's (re)loaded - e.g. after "Verify now". */
-    onLoaded?: (domain: Domain) => void;
+    /** Called with the domain and its checklist every time they are (re)loaded - e.g. after "Verify now". */
+    onLoaded?: (domain: Domain, checks: DnsRecordCheck[]) => void;
 }
 
 /**
@@ -109,7 +99,7 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
             .then(([d, checks]) => {
                 setDomain(d);
                 setDnsSetup(checks);
-                onLoaded?.(d);
+                onLoaded?.(d, checks);
             })
             .catch((err) => setError(actionErrorMessage(err, "Could not load this domain.")))
             .finally(() => setLoading(false));
@@ -130,7 +120,7 @@ export default function DomainDnsSetup({ uid, onLoaded }: DomainDnsSetupProps) {
             const [d, checks] = await Promise.all([getDomain(domain!.uid), getDnsSetup(domain!.uid)]);
             setDomain(d);
             setDnsSetup(checks);
-            onLoaded?.(d);
+            onLoaded?.(d, checks);
         } catch (err) {
             setVerifyError(actionErrorMessage(err, "Could not verify this domain."));
         } finally {

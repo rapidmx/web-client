@@ -7,12 +7,16 @@ import { emptyResponse, jsonResponse, mockFetch } from "../testUtils.js";
 import { createApiClient } from "../../../lib/util/api.js";
 import {
     assignDnsProvider,
+    cancelDkimRotation,
     createDomain,
     deleteDomain,
     getApexTxt,
+    getDkimRotation,
     getDnsSetup,
     getDomain,
     listDomains,
+    rotateDkim,
+    setDkimRotationPaused,
     updateApexTxt,
     updateDomain,
     verifyDomain,
@@ -157,6 +161,37 @@ describe("the apex TXT routes", () => {
     });
 });
 
+describe("DKIM rotation", () => {
+    it("reads the rotation, whether the key can rotate and when the next one starts", async () => {
+        const view = { rotation: { phase: "idle" }, rotatable: true, nextScheduledAt: "2026-07-01T00:00:00.000Z" };
+        const fetchMock = mockFetch(() => jsonResponse(200, view));
+        expect(await getDkimRotation("example.com")).toEqual(view);
+        expect(fetchMock).toHaveBeenCalledWith("/api/mail/domains/example.com/dkim/rotation", expect.anything());
+    });
+
+    it("posts Rotate now without the flag, and Key compromised with it", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, domain));
+        await rotateDkim("example.com");
+        await rotateDkim("example.com", { compromised: true });
+        expect(fetchMock.mock.calls.map((call) => [call[0], call[1].method, call[1].body])).toEqual([
+            ["/api/mail/domains/example.com/dkim/rotate", "POST", "{}"],
+            ["/api/mail/domains/example.com/dkim/rotate", "POST", JSON.stringify({ compromised: true })],
+        ]);
+    });
+
+    it("posts the cancel, and puts the pause and the resume", async () => {
+        const fetchMock = mockFetch(() => jsonResponse(200, domain));
+        await cancelDkimRotation("example.com");
+        await setDkimRotationPaused("example.com", true);
+        await setDkimRotationPaused("example.com", false);
+        expect(fetchMock.mock.calls.map((call) => [call[0], call[1].method, call[1].body])).toEqual([
+            ["/api/mail/domains/example.com/dkim/rotation/cancel", "POST", undefined],
+            ["/api/mail/domains/example.com/dkim/rotation", "PUT", JSON.stringify({ paused: true })],
+            ["/api/mail/domains/example.com/dkim/rotation", "PUT", JSON.stringify({ paused: false })],
+        ]);
+    });
+});
+
 describe("with an explicit ApiClient", () => {
     it("every function routes through the given client's own baseUrl/token instead of the default global apiFetch()", async () => {
         const client = createApiClient({ baseUrl: "https://account-a.example.com", getAccessToken: async () => "tok-a" });
@@ -172,8 +207,12 @@ describe("with an explicit ApiClient", () => {
         await assignDnsProvider("example.com", null, client);
         await getApexTxt("example.com", client);
         await updateApexTxt("example.com", { managed: false }, client);
+        await getDkimRotation("example.com", client);
+        await rotateDkim("example.com", {}, client);
+        await cancelDkimRotation("example.com", client);
+        await setDkimRotationPaused("example.com", true, client);
 
-        expect(fetchMock).toHaveBeenCalledTimes(10);
+        expect(fetchMock).toHaveBeenCalledTimes(14);
         for (const call of fetchMock.mock.calls) {
             expect(call[0]).toMatch(/^https:\/\/account-a\.example\.com\/api\//);
             expect((call[1].headers as Headers).get("Authorization")).toBe("jwt tok-a");

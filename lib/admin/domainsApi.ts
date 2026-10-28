@@ -37,6 +37,9 @@ export interface Domain {
     /** Whether RapidMX owns the domain's root TXT records (to publish SPF there) and which other values it keeps in them. Unset means not managed;
      * `keep` and `spf` stay after an opt-out. Changes only through `updateApexTxt()`. */
     apexTxt?: ApexTxtSettings | null;
+    /** The DKIM key rotation in progress, if any (`getDkimRotation()` is the console's view of it). Server-managed: changes only through `rotateDkim()`,
+     * `cancelDkimRotation()` and `setDkimRotationPaused()`. */
+    dkimRotation?: DkimRotationState | null;
 }
 
 export interface ApexTxtSettings {
@@ -177,4 +180,60 @@ export function getApexTxt(uid: string, client?: ApiClient): Promise<ApexTxtView
  * opts out (`managed: false`). Needs an elevated token. Answers the domain. */
 export function updateApexTxt(uid: string, input: { managed: boolean; keep?: string[] }, client?: ApiClient): Promise<Domain> {
     return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/apex-txt`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+/** Why a DKIM key rotation began: the schedule, an administrator's "Rotate now", or a key reported compromised (no publish wait, no overlap). */
+export type DkimRotationReason = "scheduled" | "manual" | "compromised";
+
+/** A domain's DKIM key rotation, as `Domain.dkimRotation` holds it. `idle`: none in progress. `pending`: the new key (`next`, whose `publicKey` is `""`
+ * until it is generated) is published and signing waits for it to be live (`liveSince`) and the publish wait to pass. `switching`: signing switched to the
+ * new key (`switchedAt`) and the mail server hasn't confirmed it yet. `overlap`: confirmed; the old key (`previous`) stays published until its
+ * `retireAt`. */
+export interface DkimRotationState {
+    phase: "idle" | "pending" | "switching" | "overlap";
+    next?: { selector: string; publicKey: string; createdAt: string; liveSince?: string; reason: DkimRotationReason };
+    previous?: { selector: string; publicKey: string; retireAt?: string };
+    /** The reason of the rotation that switched, kept until it is retired. */
+    reason?: DkimRotationReason;
+    switchedAt?: string;
+    lastRotatedAt?: string;
+    lastCancelledAt?: string;
+    /** Scheduled rotation is paused for this domain. */
+    paused?: boolean;
+    /** What is holding the rotation up: no confirmation from the mail server, a key that couldn't be generated. */
+    lastError?: string;
+}
+
+/** Why a domain's key can't rotate: the key provider doesn't rotate, outbound mail is signed by SES, the domain has no key yet, or its key was imported by
+ * hand or can't be told from one. */
+export type DkimRotationBlocker = "unsupported" | "ses" | "no_key" | "imported" | "unknown_key";
+
+/** What `GET /:id/dkim/rotation` answers. */
+export interface DkimRotationView {
+    rotation: DkimRotationState | null;
+    rotatable: boolean;
+    blocker?: DkimRotationBlocker;
+    /** When the next scheduled rotation starts; only while none is in progress, the domain isn't paused and scheduled rotation is on. */
+    nextScheduledAt?: string;
+}
+
+export function getDkimRotation(uid: string, client?: ApiClient): Promise<DkimRotationView> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dkim/rotation`);
+}
+
+/** Starts a rotation of the domain's DKIM key ("Rotate now"). With `compromised`, the publish wait and the overlap are skipped, and during a rotation it
+ * reports the key being replaced as compromised. Needs an elevated token. Answers the domain. */
+export function rotateDkim(uid: string, input: { compromised?: boolean } = {}, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dkim/rotate`, { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Abandons a rotation the mail server hasn't confirmed (a switch not yet confirmed is reverted); a 409 once it has. Needs an elevated token. Answers the
+ * domain. */
+export function cancelDkimRotation(uid: string, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dkim/rotation/cancel`, { method: "POST" });
+}
+
+/** Pauses or resumes scheduled rotation for the domain; a rotation in progress still finishes. Needs an elevated token. Answers the domain. */
+export function setDkimRotationPaused(uid: string, paused: boolean, client?: ApiClient): Promise<Domain> {
+    return withClient(client, `/mail/domains/${encodeURIComponent(uid)}/dkim/rotation`, { method: "PUT", body: JSON.stringify({ paused }) });
 }

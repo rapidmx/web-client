@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import React, { useState } from "react";
 import { useRouter } from "@rapidrest/react/client";
-import { deleteDomain, Domain, updateDomain } from "../../../lib/admin/domainsApi.js";
+import { deleteDomain, DnsRecordCheck, Domain, updateDomain } from "../../../lib/admin/domainsApi.js";
 import AdminShell, { AdminShellProps } from "../../shared/components/admin/layout/AdminShell.js";
 import DomainApexTxt from "../../shared/components/admin/settings/DomainApexTxt.js";
+import DomainDkimRotation from "../../shared/components/admin/settings/DomainDkimRotation.js";
 import DomainDnsProvider from "../../shared/components/admin/settings/DomainDnsProvider.js";
 import DomainDnsSetup from "../../shared/components/admin/settings/DomainDnsSetup.js";
 import Alert from "../../shared/components/admin/ActionAlert.js";
@@ -29,6 +30,8 @@ export default function DomainDetailPage(props: Omit<AdminShellProps, "active"> 
 function DomainDetailContent({ uid }: { uid: string }) {
     const { navigate } = useRouter();
     const [domain, setDomain] = useState<Domain | null>(null);
+    // The checklist the DNS setup panel loaded, which the DKIM rotation panel reads the rotation's records from.
+    const [checks, setChecks] = useState<DnsRecordCheck[]>([]);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -60,7 +63,8 @@ function DomainDetailContent({ uid }: { uid: string }) {
         }
     }
 
-    function handleLoaded(d: Domain) {
+    function handleLoaded(d: Domain, loadedChecks: DnsRecordCheck[]) {
+        setChecks(loadedChecks);
         setDomain(d);
         setAliasInput((current) => (current === null ? d?.aliasOf ?? "" : current));
     }
@@ -107,6 +111,8 @@ function DomainDetailContent({ uid }: { uid: string }) {
             <DomainDnsSetup key={refreshCount} uid={uid} onLoaded={handleLoaded} />
 
             {domain && <DomainDnsProvider domain={domain} onChanged={refresh} />}
+
+            {domain && <DomainDkimRotation domain={domain} checks={checks} onChanged={refresh} />}
 
             {domain?.dnsProviderUid && <DomainApexTxt domain={domain} onChanged={refresh} />}
 
