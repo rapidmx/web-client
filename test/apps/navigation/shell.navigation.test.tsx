@@ -12,7 +12,7 @@
 import React, { useEffect, useState } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RouterProvider, startRouter, type ClientRoute } from "@rapidrest/react/client";
 import { resetPushClient } from "../../../lib/mail/pushClient.js";
 import { jsonResponse, mockFetch } from "../testUtils.js";
@@ -330,6 +330,17 @@ afterEach(async () => {
     // React runs an update made outside an act from the scheduler's immediate; letting one turn of the event loop pass runs what the test left pending now, in
     // this environment, rather than after the last test when the environment is torn down.
     await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+// The last test's roots stay mounted (the router doesn't hand its root back to unmount), so work they schedule after the last afterEach, such as a timer's
+// state update, runs from the scheduler's immediate once the environment is gone. Let the timers the shell and the push client hold fire, inside an act,
+// while it still exists.
+afterAll(async () => {
+    for (let i = 0; i < 5; i++) {
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+    }
 });
 
 describe("the webmail's app shell under the client router", () => {
