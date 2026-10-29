@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-10-29
+
+### Changed
+- Unmount every root startRouter() hydrates or creates in shell.navigation.test.tsx's afterEach, collected through a react-dom/client wrapper, so no mounted root schedules React work after the jsdom environment is gone
+- Collect the roots startRouter() makes by patching the CommonJS react-dom/client in a vi.hoisted block, since vi.mock cannot reach the externalized router, so shell.navigation.test.tsx really unmounts them after each test
+
 ## [0.38.0] - 2026-10-29
 
 ### Added
@@ -1631,7 +1637,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.38.1...HEAD
+[0.38.1]: https://github.com/rapidmx/web-client/compare/v0.38.0...v0.38.1
 [0.38.0]: https://github.com/rapidmx/web-client/compare/v0.37.1...v0.38.0
 [0.37.1]: https://github.com/rapidmx/web-client/compare/v0.37.0...v0.37.1
 [0.37.0]: https://github.com/rapidmx/web-client/compare/v0.36.0...v0.37.0
