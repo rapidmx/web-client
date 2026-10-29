@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-29
+
+### Added
+- Added the rule that the more specific agent model assignment wins where categories overlap
+- Added the admin console's Integrations section with the DNS providers list, form, Test connection, operations and controller state, and the Giphy, STUN, S/MIME signing CA, DNS resolver and plugin registry pages
+- Added the DNS provider select to the domain page, offering Manual and the one provider whose zone covers the domain most specifically, keeping an assigned provider that is disabled or gone, warning that switching removes the records the old provider published, and locking it while the root TXT records are managed
+- Added the Published column to the DNS setup checklist with the automatic and manual states, the reason a record is manual, and the value in the way of a conflict
+- Added Take over for a conflicting record, confirmed first and queued through the domain's provider, with the button disabled once queued, a link to the provider's operations and Check again
+- Added the root TXT records card with the opt-in, its editable keep list and confirmation of what is published and removed, the edit of the keep list while managed, and the opt-out
+- Added the _rapidmx-verify legacy-apex hint, the openpgpkey warning and the labels of the DKIM rotation rows to the checklist
+- Added assignDnsProvider, getApexTxt, updateApexTxt and takeoverDnsRecords
+- Added the DKIM rotation panel to the domain page with the active selector and its age, the phase and its next step, the reason it started and the server's last error, Rotate now, Pause and Resume of scheduled rotation, Key compromised and Cancel rotation behind confirmations that stay open with the server's refusal, the reason a key cannot rotate, and, for a record published by hand, the new record's name and value to copy with a Live badge, a reminder after 7 days and the old record to keep until it retires
+- Added getDkimRotation, rotateDkim, cancelDkimRotation and setDkimRotationPaused with the types of the rotation
+- Added the Configuration encryption page to the admin rail, with the keys and their age and how many values each encrypts, the Active badge taken from the rotation rather than from the copy that answered, Rotate configuration key, Key compromised behind a confirmation, each phase of a rotation with the copies it waits for, the server's warning once the wait has gone on too long, and Activate anyway behind a confirmation naming the copies that were waiting when it opened
+- Added the plugin secret settings' encryption state, the values that can't be read by record and field with when that list was made, the reminder to back up the keyring and, after a compromised rotation, to replace the credentials at their providers, kept for a compromised rotation that failed along with a note that the plain restart drops the compromise
+- Added getConfigKeys, rotateConfigKey, activateConfigKey and configKeysOfRefusal with the types of the keyring's state
+- Added the domains the installation added to the setup wizard's domain step under "Added from your installation", each with its DNS panel, and keep the domains added in the wizard under "Domains you added" only when one was seeded, so that with none seeded the step reads as before Add origin to the Domain type Record the step in the project notes
+- Added the DNS controller and external-dns pods, the integrations layer as a source and the configuration keyring's key ids, ages and envelope counts to Diagnostics, with the keyring in the downloaded report and the unreadable count worded as the last re-encryption pass's, shown even when the versions can't be read
+- Added an afterAll to the shell navigation test that lets the timers the shell and the push client hold fire inside an act while the environment still exists, since the unhandled "window is not defined" came back in CI after the last test
+- Added the Host names section to the DNS provider page with Take over host names for the not_owned hosts only, sending { hosts: true, records } and never a host that has a record of another type
+- Added DnsConflictReason, DnsExistingRecord, takeoverDnsHosts() and listDnsHostPublications() to the admin API and name a hosts takeover in the operations list
+- Added tests for a repeated refusal after a reported change and for the unreadable flag turning up
+
+### Changed
+- Record the standing agent model assignments in the project notes
+- Move the agent model assignments to the top of the project notes, keeping session history at the bottom
+- Update the agent model assignments to JP's revised criteria: Sonnet for general code and review, Opus for architecture, planning, investigation, security and performance, Haiku for simple operations
+- Show "Set, but can't be read: enter it again" on every secret field, read from an unreadable flag on the secret's mask, and never send the flag back
+- Save a DNS provider again against the new version when a refusal came only from the controller's status reports, and reload the integration settings after a refused save
+- Take an emptied STUN server list as the deployment's value instead of sending an empty list
+- Record the Integrations section in the project notes
+- Record the step in the project notes
+- Record the flaky test in the project notes
+- Move CopyableValue out of DomainDnsSetup into its own file and pass the DNS checklist to the page with onLoaded so the panel makes no second lookup
+- Record the step in the project notes
+- Read a running rotation every 10 seconds, noting a failed later read above the keys instead of replacing the page, so that a 404 from an older pod during an upgrade no longer hides a rotation in progress
+- Record the step in the project notes
+- Record the flaky test in the project notes
+- Record the step in the project notes
+- Record the recurrence in the project notes
+- Record in the project notes the audit of W1 to W6 against the spec, which found every web-client item built and nothing left uncommitted
+- Show a conflict with conflictReason type_mismatch on the Domains page and the DNS provider page with the existing records to delete at the DNS host and no Take over button
+- Explain next to the provider's takeover switch that conflicts are taken over automatically for domains and the server's hosts, never the root TXT set
+- Declare the release function in the DnsProviderHosts late-response test without an empty arrow function so lint passes
+- Leave a credential mask's unreadable flag out of the DNS provider page's merge check since the server sets it on its own
+- Install corepack with npm before enabling it in the build workflow, since node:lts-trixie-slim is now Node 26, whose image ships without corepack
+
+### Fixed
+- Fixed the keep list after an opt-out missing the values kept before it, which the restore has not yet put back at the root
+- Fixed the opt-in confirmation listing the root's values from when the page loaded by asking again when it opens and waiting for the answer
+- Fixed the opt-in offering a keep list an Azure provider refuses and a form an rfc2136 provider can never use
+- Fixed a reload dropping unsaved edits of the keep list and an older answer replacing a newer one
+- Fixed the useBranding test leaking the document title into the next test by unmounting before the title is reset
+- Fixed the panel disappearing for the page view when the first read of the rotation failed for any reason but a missing route, by keeping the card with a button to load it again
+- Fixed a refusal shown in a confirmation dialog moving to the card when the dialog is closed
+- Fixed a rotation in progress on a key that can no longer rotate showing only the reason, by also showing its phase, error and Cancel
+- Fixed the shell navigation test leaving React work pending when its last test ends, which ran after the environment was torn down as an unhandled "window is not defined" and failed the whole run, by closing the push client inside the act and letting one turn of the event loop pass
+- Fixed the DNS provider page's second refusal for a change the administrator was already told about by comparing against the config last seen rather than the one first loaded
+
+### Removed
+- Removed the duplicate W6 entry from the project notes
+
 ## [0.37.1] - 2026-10-26
 
 ### Changed
@@ -1569,7 +1631,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed Button, Alert, Skeleton, FormField, PopoverPortal, ContactAvatar, MiniDatePicker, and BottomTabBar, now provided by @rapidmx/react-shared
 
-[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.37.1...HEAD
+[Unreleased]: https://github.com/rapidmx/web-client/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/rapidmx/web-client/compare/v0.37.1...v0.38.0
 [0.37.1]: https://github.com/rapidmx/web-client/compare/v0.37.0...v0.37.1
 [0.37.0]: https://github.com/rapidmx/web-client/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/rapidmx/web-client/compare/v0.35.0...v0.36.0
