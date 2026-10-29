@@ -22,21 +22,21 @@ import { FrameTakeover } from "../../../apps/shared/navigation/frameContext.js";
 import { useNavigate } from "../../../apps/shared/navigation/index.js";
 import { pageTitle } from "../../../apps/shared/navigation/pageTitle.js";
 
-// The router keeps the root it hydrates (or creates) to itself, so the roots are collected here and unmounted after each test: a root left mounted keeps
-// its subscriptions and timers alive past the file, and what they schedule runs after the environment is gone ("window is not defined").
-const roots = vi.hoisted(() => [] as { unmount(): void }[]);
-vi.mock("react-dom/client", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("react-dom/client")>();
-    const track = <T extends { unmount(): void }>(root: T): T => {
-        roots.push(root);
-        return root;
-    };
-    return {
-        ...actual,
-        default: actual,
-        hydrateRoot: (...args: Parameters<typeof actual.hydrateRoot>) => track(actual.hydrateRoot(...args)),
-        createRoot: (...args: Parameters<typeof actual.createRoot>) => track(actual.createRoot(...args)),
-    };
+// The router keeps the root it hydrates (or creates) to itself, and `@rapidrest/react` is externalized, so `vi.mock` can't reach its import of
+// `react-dom/client`. The roots are collected by patching that CommonJS module before the router is imported, and unmounted after each test: a root left
+// mounted keeps its subscriptions and timers alive past the file, and what they schedule runs after the environment is gone ("window is not defined").
+const roots = vi.hoisted(() => {
+    const collected: { unmount(): void }[] = [];
+    const reactDomClient = process.getBuiltinModule("node:module").createRequire(import.meta.url)("react-dom/client");
+    for (const name of ["hydrateRoot", "createRoot"]) {
+        const original = reactDomClient[name];
+        reactDomClient[name] = (...args: unknown[]) => {
+            const root = original(...args);
+            collected.push(root);
+            return root;
+        };
+    }
+    return collected;
 });
 vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
@@ -338,6 +338,9 @@ afterEach(async () => {
     // from a timer, which can fire after the file is done and the environment is gone ("window is not defined", an unhandled error of the whole run).
     await act(async () => {
         resetPushClient();
+        for (const root of roots.splice(0)) {
+            root.unmount();
+        }
         document.body.innerHTML = "";
     });
     vi.unstubAllGlobals();
