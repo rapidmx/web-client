@@ -27,10 +27,17 @@ import { actionErrorMessage } from "../../../shared/components/admin/elevation.j
 
 const LIST_HREF = "/admin/integrations/dns-providers";
 
-/** What of a config an administrator can change, as the server shows it: the controller's status reports move the row's version without touching any of it. */
+/**
+ * What of a config an administrator can change, as the server shows it: the controller's status reports move the row's version without touching any of it.
+ * A credential's `unreadable` flag is the server's own finding (a keyring that changed), not something an administrator set, so it is left out.
+ */
 function configOf(provider: DnsProvider): string {
     const { name, zones, options, credentials, enabled, allowTakeover } = provider;
-    return JSON.stringify({ name, zones, options, credentials, enabled, allowTakeover });
+    const shown: Record<string, unknown> = {};
+    for (const [key, mask] of Object.entries(credentials)) {
+        shown[key] = { ...mask, unreadable: undefined };
+    }
+    return JSON.stringify({ name, zones, options, credentials: shown, enabled, allowTakeover });
 }
 
 export default function DnsProviderPage(props: Omit<AdminShellProps, "active"> & { params: { uid: string } }) {
@@ -48,6 +55,8 @@ function DnsProviderDetail({ uid }: { uid: string }) {
     const [provider, setProvider] = useState<DnsProvider | null>(null);
     // The version a save is made against: the one shown, or a newer one found after a refusal (the form isn't reset to show it).
     const version = useRef(0);
+    // The config an administrator last saw, which a refusal compares the latest one against: the one loaded or saved, then the one a refusal reported.
+    const seen = useRef("");
     const [types, setTypes] = useState<DnsProviderTypeInfo[]>([]);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -59,6 +68,7 @@ function DnsProviderDetail({ uid }: { uid: string }) {
             .then(([loaded, loadedTypes]) => {
                 setProvider(loaded);
                 version.current = loaded.version;
+                seen.current = configOf(loaded);
                 setTypes(loadedTypes);
             })
             .catch((err) => setLoadError(actionErrorMessage(err, "Could not load the DNS provider.")));
@@ -75,13 +85,14 @@ function DnsProviderDetail({ uid }: { uid: string }) {
 
     function accept(saved: DnsProvider) {
         version.current = saved.version;
+        seen.current = configOf(saved);
         setProvider(saved);
     }
 
     // Made against the version shown, so a change someone else saved meanwhile is refused (409) rather than overwritten. The DNS controller moves the
     // version too (every status report that changes, and at least every few minutes), so a refusal reads the config again: when nothing an administrator
     // sets differs, only the status moved and the save is made again against the new version; otherwise the entries stay in the form, the new version is
-    // kept, and saving once more replaces the other change.
+    // kept, and saving once more replaces the other change (a refusal after that compares against what the first one reported, so the change is told once).
     async function handleSave(input: DnsProviderInput) {
         const sent: number = version.current;
         try {
@@ -101,7 +112,9 @@ function DnsProviderDetail({ uid }: { uid: string }) {
                 throw err;
             }
             version.current = latest.version;
-            if (configOf(latest) !== configOf(provider!)) {
+            const reported: string = configOf(latest);
+            if (reported !== seen.current) {
+                seen.current = reported;
                 throw new ApiRequestError(
                     "This DNS provider was changed by someone else. Your entries are kept; save again to replace their change, or reload the page to see it.",
                     409

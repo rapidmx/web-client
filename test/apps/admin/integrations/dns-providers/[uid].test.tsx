@@ -230,6 +230,44 @@ describe("DnsProviderPage", () => {
             expect(versions()).toEqual([4, 6]);
         });
 
+        it("does not refuse again for a change the administrator was already told about when only the status moved the version since", async () => {
+            let reads = 0;
+            let puts = 0;
+            const calls = mockProvider(cloudflareProvider, {
+                provider: () => {
+                    reads++;
+                    if (reads === 1) return jsonResponse(200, cloudflareProvider);
+                    // The second read is after the controller's report moved the version again.
+                    const status = reads === 2 ? cloudflareProvider.status : { ...cloudflareProvider.status, readyReplicas: 0 };
+                    return jsonResponse(200, { ...cloudflareProvider, name: "Renamed elsewhere", version: reads + 4, status });
+                },
+                put: (body) => (puts++ < 2 ? refused() : jsonResponse(200, { ...cloudflareProvider, ...body, credentials: { apiToken: MASK } })),
+            });
+            const user = userEvent.setup();
+            renderPage();
+
+            await user.click(await screen.findByRole("button", { name: "Replace API token" }));
+            await user.type(screen.getByLabelText("API token"), "rotated-token");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+            expect(await screen.findByText(/changed by someone else. Your entries are kept/)).toBeInTheDocument();
+
+            await user.click(screen.getByRole("button", { name: "Save" }));
+            expect(await screen.findByText("Saved.")).toBeInTheDocument();
+            expect(calls.filter((call) => call.method === "PUT").map((call) => call.body.version)).toEqual([4, 6, 7]);
+        });
+
+        it("does not take the server's own unreadable flag on a credential for someone else's change", async () => {
+            const versions = mockRefusal(() => jsonResponse(200, { ...cloudflareProvider, version: 6, credentials: { apiToken: { ...MASK, unreadable: true } } }));
+            const user = userEvent.setup();
+            renderPage();
+
+            await user.click(await screen.findByRole("button", { name: "Replace API token" }));
+            await user.type(screen.getByLabelText("API token"), "rotated-token");
+            await user.click(screen.getByRole("button", { name: "Save" }));
+            expect(await screen.findByText("Saved.")).toBeInTheDocument();
+            expect(versions()).toEqual([4, 6]);
+        });
+
         it("shows the server's message when the version is still the same, or the config can't be read again", async () => {
             let latest: () => Response = () => jsonResponse(200, cloudflareProvider);
             const versions = mockRefusal(() => latest(), 2);
