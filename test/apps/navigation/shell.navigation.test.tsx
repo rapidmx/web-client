@@ -22,6 +22,22 @@ import { FrameTakeover } from "../../../apps/shared/navigation/frameContext.js";
 import { useNavigate } from "../../../apps/shared/navigation/index.js";
 import { pageTitle } from "../../../apps/shared/navigation/pageTitle.js";
 
+// The router keeps the root it hydrates (or creates) to itself, so the roots are collected here and unmounted after each test: a root left mounted keeps
+// its subscriptions and timers alive past the file, and what they schedule runs after the environment is gone ("window is not defined").
+const roots = vi.hoisted(() => [] as { unmount(): void }[]);
+vi.mock("react-dom/client", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("react-dom/client")>();
+    const track = <T extends { unmount(): void }>(root: T): T => {
+        roots.push(root);
+        return root;
+    };
+    return {
+        ...actual,
+        default: actual,
+        hydrateRoot: (...args: Parameters<typeof actual.hydrateRoot>) => track(actual.hydrateRoot(...args)),
+        createRoot: (...args: Parameters<typeof actual.createRoot>) => track(actual.createRoot(...args)),
+    };
+});
 vi.mock("../../../lib/crypto/keyvaultApi.js", () => ({
     getKeyVault: vi.fn().mockResolvedValue({ wrappedKeys: [{ fingerprint: "already-enrolled" }], masterKeyWraps: [] }),
     enrollKey: vi.fn(),
